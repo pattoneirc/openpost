@@ -1,3 +1,4 @@
+import { paintTimer } from '../timers/render-timer';
 /** Shared text and subtitle rasterization for live preview and export. */
 
 import type { TimelineItem } from '../project/types';
@@ -32,10 +33,57 @@ export type TextRasterContext = CanvasRenderingContext2D | OffscreenCanvasRender
 
 export interface TextRasterFrame {
 	absoluteFrame: number;
+	fps?: number;
 }
 
 const SUBTITLE_LAYOUT_CACHE_LIMIT = 32;
 const subtitleLayoutCache = new Map<string, TextBlockLayout>();
+const fontIds = new WeakMap<FontFace, number>();
+const fontLoads = new WeakMap<FontFaceSet, { revision: number }>();
+let nextFontId = 0;
+
+/** FontFaceSet events miss already-loaded additions and descriptor edits. */
+export function textRasterFontKey(): string {
+	// SAFETY: WorkerGlobalScope exposes fonts as FontFaceSet; windows use document.fonts.
+	const fonts = globalThis.document?.fonts ?? (globalThis as { fonts?: FontFaceSet }).fonts;
+	if (!fonts) return '';
+	let loads = fontLoads.get(fonts);
+	if (!loads) {
+		const state = { revision: 0 };
+		const changed = () => state.revision++;
+		fonts.addEventListener('loadingdone', changed);
+		fonts.addEventListener('loadingerror', changed);
+		fontLoads.set(fonts, state);
+		loads = state;
+	}
+	return JSON.stringify([
+		loads.revision,
+		...Array.from(fonts, (face) => {
+			let id = fontIds.get(face);
+			if (id === undefined) {
+				id = nextFontId++;
+				fontIds.set(face, id);
+			}
+			return [
+				id,
+				face.status,
+				face.family,
+				face.style,
+				face.weight,
+				face.stretch,
+				face.unicodeRange,
+				face.featureSettings,
+				face.display,
+				'variationSettings' in face ? face.variationSettings : undefined,
+				'variant' in face ? face.variant : undefined,
+				'sizeAdjust' in face ? face.sizeAdjust : undefined,
+				face.ascentOverride,
+				face.descentOverride,
+				face.lineGapOverride
+			];
+		})
+	]);
+}
 
 function styledSubtitleItem(
 	text: string,
@@ -105,7 +153,7 @@ function getCachedSubtitleLayout(
 	width: number,
 	height: number
 ): TextBlockLayout {
-	const key = subtitleLayoutKey(styled, width, height);
+	const key = `${textRasterFontKey()}:${subtitleLayoutKey(styled, width, height)}`;
 	const cached = subtitleLayoutCache.get(key);
 	if (cached) return cached;
 	const layout = layoutTextBlock(styled, width, height, createCanvasTextMeasurer(context));
@@ -223,8 +271,19 @@ export function renderTextItemRaster(
 ): void {
 	context.clearRect(0, 0, width, height);
 	context.save();
+	if (item.timer)
+		item = paintTimer(
+			context,
+			item,
+			width,
+			height,
+			frame?.absoluteFrame ?? item.from,
+			frame?.fps ?? 30
+		);
 	const layout = layoutTextBlock(item, width, height, createCanvasTextMeasurer(context));
+	if (item.timer) context.globalCompositeOperation = 'destination-over';
 	paintTextBackground(context, item, layout);
+	if (item.timer) context.globalCompositeOperation = 'source-over';
 	if (item.textShadow) {
 		context.shadowColor = item.textShadow.color;
 		context.shadowBlur = item.textShadow.blur;

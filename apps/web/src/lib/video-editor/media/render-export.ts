@@ -8,6 +8,7 @@
  * fallback, persistent chunked audio DSP, and OPFS-backed output streaming.
  */
 
+import { startProfileSpan } from '$lib/performance/profiling';
 import {
 	ALL_FORMATS,
 	AdtsOutputFormat,
@@ -15,10 +16,11 @@ import {
 	AudioSampleSource,
 	BlobSource,
 	BufferTarget,
-	CanvasSink,
+	VideoSampleSink,
 	canEncodeVideo,
 	getFirstEncodableVideoCodec,
 	Input,
+	type InputVideoTrack,
 	MkvOutputFormat,
 	MovOutputFormat,
 	Mp3OutputFormat,
@@ -38,8 +40,7 @@ import { mediaPool } from './pool.svelte';
 import { resolveMediaBlob } from './resolve-media-blob';
 import { resolveAnimatedItemAt } from '../timeline/animated-properties';
 import { scaleItemForCanvas } from './render-geometry';
-import { renderSubtitleCueRaster, renderSubtitleRaster, renderTextItemRaster } from './text-raster';
-import { renderShapeItemRaster } from '../shapes/render';
+import { ItemRasterizer } from './item-rasterizer';
 import { animatedFrameIndexForItem, isAnimatedImageMedia } from './animated-image-plan';
 import { animatedImageCache } from './animated-image-client';
 import type { AnimatedImageFrames as AnimatedImageFramesResult } from './animated-image-client';
@@ -65,7 +66,6 @@ import {
 	outputDurationFrames,
 	paintOrder,
 	planNestedMixdown,
-	selectCuesAtFrame,
 	sliceMixEntries,
 	transitionBlendAtFrame,
 	type MixEntry
@@ -85,7 +85,7 @@ import { ensureProResDecoderForCodec } from './prores-decoder';
 import { ensureAc3DecoderForCodec } from './ac3-decoder';
 import { mixAudioWindows } from '../audio/bounded-audio-mixer';
 import { RenderDisposalGate } from './render-disposal';
-import { ResilientVideoCanvasDecoder } from './render-video-decoder';
+import { ResilientVideoFrameDecoder } from './render-video-decoder';
 
 export interface RenderExportProgress {
 	phase: 'preparing' | 'mixing' | 'rendering' | 'encoding' | 'finalizing';
@@ -138,11 +138,6 @@ const VIDEO_BITRATES = {
 	standard: 8_000_000,
 	high: 16_000_000
 } as const;
-
-interface VideoDecoder {
-	input: Input;
-	sink: ResilientVideoCanvasDecoder;
-}
 
 interface ArtifactTarget {
 	target: BufferTarget | StreamTarget;
@@ -277,13 +272,16 @@ export class TimelineFrameRenderer {
 	private readonly burnSubtitles: boolean;
 	private readonly trackOrderById: Map<string, number>;
 	private readonly adjustmentLayers: AdjustmentLayerScope[];
-	private readonly decoders = new Map<string, VideoDecoder>();
+	private readonly videoTracks = new Map<string, Promise<InputVideoTrack | null>>();
+	private readonly decoders = new Map<string, ResilientVideoFrameDecoder>();
+	private readonly activeDecoders = new Set<string>();
 	private readonly imageCache = new Map<string, ImageBitmap>();
 	private readonly animatedFrames = new Map<string, Promise<AnimatedImageFramesResult | null>>();
 	private readonly inputs: Input[] = [];
 	private readonly stackCompositor: CanvasStackCompositor;
-	private readonly textCanvas = new OffscreenCanvas(1, 1);
+	private readonly itemRasterizer: ItemRasterizer;
 	private readonly nestedRenderers = new Map<string, TimelineFrameRenderer>();
+	private readonly activeNestedRenderers = new Set<string>();
 	private readonly lottieProvider = new LottieFrameProvider();
 	private readonly lottieBlobs = new Map<string, Blob>();
 	private readonly lottieSpecs = new Map<string, Promise<LottieRenderSpec>>();
@@ -303,6 +301,7 @@ export class TimelineFrameRenderer {
 				? options.backgroundColor
 				: (project.metadata.backgroundColor ?? '#000000');
 		this.fps = project.metadata.fps;
+		this.itemRasterizer = new ItemRasterizer(this.width, this.height, this.fps);
 		const items = project.timeline?.items ?? [];
 		const tracks = project.timeline?.tracks ?? [];
 		this.trackOrderById = new Map(tracks.map((track) => [track.id, track.order]));
@@ -323,71 +322,7 @@ export class TimelineFrameRenderer {
 		this.itemsById = new Map(items.map((item) => [item.id, item]));
 	}
 
-	private textSource(item: TimelineItem, frame: number) {
-		const width = Math.max(1, Math.round(item.transform?.width ?? this.width));
-		const height = Math.max(1, Math.round(item.transform?.height ?? this.height));
-		this.textCanvas.width = width;
-		this.textCanvas.height = height;
-		const context = this.textCanvas.getContext('2d');
-		if (!context) throw new Error('Failed to create the text raster context.');
-		renderTextItemRaster(context, item, width, height, {
-			absoluteFrame: frame
-		});
-		return {
-			source: this.textCanvas,
-			width,
-			height
-		};
-	}
-
-	private subtitleSource(item: TimelineItem, text: string) {
-		const width = Math.max(1, Math.round(item.transform?.width ?? this.width));
-		const height = Math.max(1, Math.round(item.transform?.height ?? this.height));
-		this.textCanvas.width = width;
-		this.textCanvas.height = height;
-		const context = this.textCanvas.getContext('2d');
-		if (!context) throw new Error('Failed to create the subtitle raster context.');
-		renderSubtitleRaster(context, text, item, width, height);
-		return {
-			source: this.textCanvas,
-			width,
-			height
-		};
-	}
-
-	private karaokeSubtitleSource(
-		item: TimelineItem,
-		cue: import('../project/types').SubtitleCue,
-		frame: number
-	) {
-		const width = Math.max(1, Math.round(item.transform?.width ?? this.width));
-		const height = Math.max(1, Math.round(item.transform?.height ?? this.height));
-		this.textCanvas.width = width;
-		this.textCanvas.height = height;
-		const context = this.textCanvas.getContext('2d');
-		if (!context) throw new Error('Failed to create the subtitle raster context.');
-		renderSubtitleCueRaster(context, cue, item, width, height, frame);
-		return {
-			source: this.textCanvas,
-			width,
-			height
-		};
-	}
-
-	private shapeSource(item: TimelineItem) {
-		const width = Math.max(1, Math.round(item.transform?.width ?? this.width));
-		const height = Math.max(1, Math.round(item.transform?.height ?? this.height));
-		this.textCanvas.width = width;
-		this.textCanvas.height = height;
-		const context = this.textCanvas.getContext('2d');
-		if (!context) throw new Error('Failed to create the shape raster context.');
-		renderShapeItemRaster(context, item, width, height);
-		return { source: this.textCanvas, width, height };
-	}
-
-	private async getDecoder(mediaId: string): Promise<VideoDecoder | null> {
-		const existing = this.decoders.get(mediaId);
-		if (existing) return existing;
+	private async openVideoTrack(mediaId: string): Promise<InputVideoTrack | null> {
 		const media = mediaPool.get(mediaId);
 		if (!media) return null;
 		const blob = await resolveMediaBlob(media);
@@ -399,19 +334,32 @@ export class TimelineFrameRenderer {
 		const videoTrack = await input.getPrimaryVideoTrack();
 		if (!videoTrack) return null;
 		await ensureProResDecoderForCodec(videoTrack.codec);
-		const decoder: VideoDecoder = {
-			input,
-			sink: new ResilientVideoCanvasDecoder(
-				(hardwareAcceleration) =>
-					new CanvasSink(videoTrack, {
-						width: this.width,
-						height: this.height,
-						fit: 'contain',
-						decoderOptions: { hardwareAcceleration }
-					})
-			)
-		};
-		this.decoders.set(mediaId, decoder);
+		return videoTrack;
+	}
+
+	private async getDecoder(item: TimelineItem): Promise<ResilientVideoFrameDecoder | null> {
+		const mediaId = item.mediaId;
+		if (!mediaId) return null;
+		this.activeDecoders.add(item.id);
+		let track = this.videoTracks.get(mediaId);
+		if (!track) {
+			track = this.openVideoTrack(mediaId);
+			this.videoTracks.set(mediaId, track);
+		}
+		const videoTrack = await track;
+		if (!videoTrack) return null;
+		const existing = this.decoders.get(item.id);
+		if (existing) return existing;
+		// Clips sharing a source can play different times simultaneously, including in a transition.
+		const decoder = new ResilientVideoFrameDecoder(
+			(hardwareAcceleration) => new VideoSampleSink(videoTrack, { hardwareAcceleration }),
+			{
+				width: this.width,
+				height: this.height,
+				reverse: item.isReversed
+			}
+		);
+		this.decoders.set(item.id, decoder);
 		return decoder;
 	}
 
@@ -486,24 +434,25 @@ export class TimelineFrameRenderer {
 		return { source: bitmap, width: resolved.width, height: resolved.height };
 	}
 
+	private *sourceTimestampsAfter(item: TimelineItem, frame: number): Generator<number> {
+		for (let nextFrame = frame + 1; nextFrame < item.from + item.durationInFrames; nextFrame++) {
+			yield frameToSourceSeconds(item, nextFrame, this.fps);
+		}
+	}
+
 	private async sourceForItem(
 		resolvedItem: TimelineItem,
 		originalItem: TimelineItem,
 		frame: number
 	): Promise<StackLayerSource | null> {
 		if (resolvedItem.type === 'background') return null;
-		if (resolvedItem.type === 'subtitle') {
-			const cue = selectCuesAtFrame(resolvedItem.cues ?? [], frame)[0];
-			if (!cue) return null;
-			// Shared karaoke helper guarantees preview and export resolve the same active word
-			// at exact frame boundaries; fallback renders exactly as a normal caption.
-			if (resolvedItem.captionHighlightMode === 'karaoke' && cue.words && cue.words.length > 0) {
-				return this.karaokeSubtitleSource(resolvedItem, cue, frame);
-			}
-			return this.subtitleSource(resolvedItem, cue.text);
+		if (
+			resolvedItem.type === 'subtitle' ||
+			resolvedItem.type === 'text' ||
+			resolvedItem.type === 'shape'
+		) {
+			return this.itemRasterizer.render(resolvedItem, frame);
 		}
-		if (resolvedItem.type === 'text') return this.textSource(resolvedItem, frame);
-		if (resolvedItem.type === 'shape') return this.shapeSource(resolvedItem);
 		if (resolvedItem.type === 'composition' && resolvedItem.compositionId) {
 			if (this.ancestry.has(resolvedItem.compositionId)) return null;
 			const composition = this.project.timeline?.compositions?.find(
@@ -511,6 +460,7 @@ export class TimelineFrameRenderer {
 			);
 			if (!composition) return null;
 			const rendererKey = `${composition.id}:${originalItem.id}:${JSON.stringify(originalItem.compositionControlOverrides ?? {})}`;
+			this.activeNestedRenderers.add(rendererKey);
 			let renderer = this.nestedRenderers.get(rendererKey);
 			if (!renderer) {
 				const compositionItems = applyCompositionControlOverrides(
@@ -590,16 +540,17 @@ export class TimelineFrameRenderer {
 			return source ? { source, width, height } : null;
 		}
 		if (resolvedItem.type === 'video') {
-			const decoder = await this.getDecoder(resolvedItem.mediaId);
+			const decoder = await this.getDecoder(originalItem);
 			if (!decoder) return null;
-			const wrapped = await decoder.sink.getCanvas(
-				frameToSourceSeconds(originalItem, frame, this.fps)
+			const wrapped = await decoder.getFrame(
+				frameToSourceSeconds(originalItem, frame, this.fps),
+				originalItem.isReversed ? this.sourceTimestampsAfter(originalItem, frame) : undefined
 			);
 			return wrapped
 				? {
-						source: wrapped.canvas,
-						width: wrapped.canvas.width,
-						height: wrapped.canvas.height
+						source: wrapped.source,
+						width: wrapped.width,
+						height: wrapped.height
 					}
 				: null;
 		}
@@ -618,15 +569,19 @@ export class TimelineFrameRenderer {
 	}
 
 	async render(frame: number): Promise<OffscreenCanvas> {
+		const finishProfile = startProfileSpan('Video compose', 'Frame');
 		this.disposal.enter();
 		try {
 			return await this.renderFrame(frame);
 		} finally {
 			this.disposal.leave();
+			finishProfile?.();
 		}
 	}
 
 	private async renderFrame(frame: number): Promise<OffscreenCanvas> {
+		this.activeDecoders.clear();
+		this.activeNestedRenderers.clear();
 		this.stackCompositor.beginFrame(this.width, this.height, this.backgroundColor);
 		const activeMasks = this.orderedItems
 			.filter(
@@ -697,7 +652,10 @@ export class TimelineFrameRenderer {
 					resolveParticipant(outgoingItem),
 					resolveParticipant(incomingItem)
 				]);
-				if (!outgoing || !incoming) continue;
+				if (!outgoing || !incoming) {
+					this.itemRasterizer.release();
+					continue;
+				}
 				this.stackCompositor.compositeTransition(
 					outgoing,
 					incoming,
@@ -705,11 +663,15 @@ export class TimelineFrameRenderer {
 					blend.progress,
 					frame / this.fps
 				);
+				this.itemRasterizer.release();
 				transitionRendered = true;
 				continue;
 			}
 			const participant = await resolveParticipant(item);
-			if (!participant || participant.alpha <= 0) continue;
+			if (!participant || participant.alpha <= 0) {
+				this.itemRasterizer.release();
+				continue;
+			}
 			this.stackCompositor.compositeLayer(
 				participant.source,
 				participant.item,
@@ -717,13 +679,25 @@ export class TimelineFrameRenderer {
 				frame / this.fps,
 				participant.masks
 			);
+			this.itemRasterizer.release();
 		}
+		this.itemRasterizer.release();
 		this.stackCompositor.applyOutputEffects(
 			sequenceColorGradeEffectsAtFrame(this.adjustmentLayers, frame),
 			frame / this.fps
 		);
 
 		this.stackCompositor.assertExactRender();
+		for (const [id, decoder] of this.decoders) {
+			if (this.activeDecoders.has(id)) continue;
+			decoder.dispose();
+			this.decoders.delete(id);
+		}
+		for (const [id, renderer] of this.nestedRenderers) {
+			if (this.activeNestedRenderers.has(id)) continue;
+			renderer.dispose();
+			this.nestedRenderers.delete(id);
+		}
 		return this.canvas;
 	}
 
@@ -732,6 +706,8 @@ export class TimelineFrameRenderer {
 	}
 
 	private disposeResources(): void {
+		for (const decoder of this.decoders.values()) decoder.dispose();
+		this.decoders.clear();
 		for (const input of this.inputs) input.dispose?.();
 		for (const renderer of this.nestedRenderers.values()) renderer.dispose();
 		this.nestedRenderers.clear();
@@ -740,6 +716,7 @@ export class TimelineFrameRenderer {
 		this.lottieProvider.destroy();
 		this.lottieBlobs.clear();
 		this.lottieSpecs.clear();
+		this.itemRasterizer.dispose();
 		this.stackCompositor.dispose();
 	}
 }
@@ -930,7 +907,8 @@ export async function renderMultiTrackVideoArtifact(
 			audioSource = null;
 		}
 	}
-	const feedTask = runFeed();
+	const finishAudio = startProfileSpan('Video audio', 'Mix and encode');
+	const feedTask = runFeed().finally(finishAudio);
 	feedTask.catch(() => undefined);
 
 	const frameRenderer = new TimelineFrameRenderer(project, {
@@ -949,8 +927,13 @@ export async function renderMultiTrackVideoArtifact(
 				timestamp: outputFrame / fps,
 				duration: 1 / fps
 			});
-			await videoSource.add(sample);
-			sample.close();
+			const finishEncode = startProfileSpan('Video encode', 'Submit frame');
+			try {
+				await videoSource.add(sample);
+			} finally {
+				sample.close();
+				finishEncode?.();
+			}
 
 			report(options, 'rendering', outputFrame + 1, totalFrames);
 		}
@@ -959,7 +942,8 @@ export async function renderMultiTrackVideoArtifact(
 		report(options, 'encoding', totalFrames, totalFrames);
 		await feedTask;
 		report(options, 'finalizing', totalFrames, totalFrames);
-		await output.finalize();
+		const finishFinalize = startProfileSpan('Export', 'Finalize');
+		await output.finalize().finally(finishFinalize);
 	} catch (error) {
 		try {
 			if (output.state === 'started') await output.cancel();
@@ -1088,7 +1072,8 @@ export async function renderTimelineAudioArtifact(
 		if (producedWindows === 0) throw new Error('The audio mix is empty.');
 		source.close();
 		report(options, 'finalizing', totalFrames, totalFrames);
-		await output.finalize();
+		const finishFinalize = startProfileSpan('Export', 'Finalize');
+		await output.finalize().finally(finishFinalize);
 	} catch (error) {
 		try {
 			if (output.state === 'started') await output.cancel();

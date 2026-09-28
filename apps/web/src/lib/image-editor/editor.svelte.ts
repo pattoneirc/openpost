@@ -13,6 +13,8 @@ import {
 	imageEditorID
 } from './document';
 import { defaultLayerEffects, defaultTextCurve } from './effects';
+import { imageEditorPageDimensions } from './page-dimensions';
+import { IMAGE_EDITOR_SCHEMA_VERSION } from './types';
 import {
 	applyImageEditorCropWindow,
 	resetImageEditorCrop,
@@ -25,6 +27,7 @@ import {
 	type ImageEditorCollectiveTransformKey
 } from './collective-transform';
 import { ImageEditorHistory } from './history';
+import { editTextWithRuns, styleTextRange, type ImageEditorTextEdit } from './text-runs';
 import {
 	rasterResultLayer,
 	type ImageEditorRasterPlan,
@@ -42,12 +45,15 @@ import {
 	pixelMaskToSpans,
 	strokePixelMask,
 	strokePixelMaskRegion,
+	subtractPixelMaskRegionFromSpans,
 	type PixelMaskRegion,
 	smoothSelectionPoints,
 	subtractPixelMasks,
+	translatePixelMaskRegion,
 	translatePixelMask,
 	transformPixelMask,
 	mergeSelectionIDs,
+	type SelectionBounds,
 	type SelectionPoint,
 	type ImageEditorPixelSelection
 } from './selection';
@@ -59,6 +65,7 @@ import type {
 	ImageEditorBrandKit,
 	ImageEditorBrandTextStyle,
 	ImageEditorLayer,
+	ImageEditorTextRun,
 	ImageEditorImageAdjustments,
 	ImageEditorPage,
 	ImageEditorPageBackground,
@@ -192,8 +199,32 @@ export class ImageEditorController {
 	revision = $state(0);
 	canEdit = $state(false);
 	document = $state.raw<ImageEditorDocument | null>(null);
-	activePageID = $state('');
-	selectedLayerIDs = $state.raw<string[]>([]);
+	private pageID = $state('');
+	private layerIDs = $state.raw<string[]>([]);
+	get activePageID(): string {
+		return this.pageID;
+	}
+	set activePageID(value: string) {
+		if (value !== this.pageID) this.textRange = null;
+		this.pageID = value;
+	}
+	get selectedLayerIDs(): string[] {
+		return this.layerIDs;
+	}
+	set selectedLayerIDs(value: string[]) {
+		if (
+			value.length !== this.layerIDs.length ||
+			value.some((id, index) => id !== this.layerIDs[index])
+		)
+			this.textRange = null;
+		this.layerIDs = value;
+	}
+	textRange = $state.raw<{
+		pageID: string;
+		layerID: string;
+		start: number;
+		end: number;
+	} | null>(null);
 	activeTool = $state<ImageEditorTool>('select');
 	selectionMode = $state<ImageEditorSelectionMode>('replace');
 	magicSelectTolerance = $state(32);
@@ -255,6 +286,12 @@ export class ImageEditorController {
 	private imageAdjustmentGesture: ImageAdjustmentGesture | null = null;
 	private pageColorGradeGesture: PageColorGradeGesture | null = null;
 
+	get activePageDimensions(): { width: number; height: number } {
+		return this.document && this.activePage
+			? imageEditorPageDimensions(this.document, this.activePage)
+			: { width: 1, height: 1 };
+	}
+
 	get activePage(): ImageEditorPage | null {
 		return this.document?.pages.find((page) => page.id === this.activePageID) ?? null;
 	}
@@ -266,7 +303,8 @@ export class ImageEditorController {
 	addGuide(axis: 'horizontal' | 'vertical', value: number): void {
 		const page = this.activePage;
 		if (!page || !this.document) return;
-		const limit = axis === 'horizontal' ? this.document.height_px : this.document.width_px;
+		const limit =
+			axis === 'horizontal' ? this.activePageDimensions.height : this.activePageDimensions.width;
 		const next = Math.max(0, Math.min(limit, value));
 		this.mutate(m.image_editor_add_guide(), (document) => {
 			const target = document.pages.find((candidate) => candidate.id === this.activePageID);
@@ -279,7 +317,8 @@ export class ImageEditorController {
 
 	updateGuide(axis: 'horizontal' | 'vertical', index: number, value: number): void {
 		if (!this.document) return;
-		const limit = axis === 'horizontal' ? this.document.height_px : this.document.width_px;
+		const limit =
+			axis === 'horizontal' ? this.activePageDimensions.height : this.activePageDimensions.width;
 		this.mutate(
 			m.image_editor_move_guide(),
 			(document) => {
@@ -358,8 +397,11 @@ export class ImageEditorController {
 		this.revision = response.revision;
 		this.canEdit = response.can_edit;
 		this.document = cloneImageEditorDocument(response.document);
+		if (this.document.schema_version === 1)
+			this.document.schema_version = IMAGE_EDITOR_SCHEMA_VERSION;
 		this.activePageID = response.document.pages[0]?.id ?? '';
 		this.selectedLayerIDs = [];
+		this.textRange = null;
 		this.pixelSelection = null;
 		this.floatingPixelSelection = null;
 		this.selectionAnchorID = '';
@@ -654,15 +696,19 @@ export class ImageEditorController {
 		if (!this.document) return;
 		if (this.floatingPixelSelection) this.commitFloatingPixelSelection();
 		const current =
-			this.pixelSelection?.width === this.document.width_px &&
-			this.pixelSelection.height === this.document.height_px
+			this.pixelSelection?.width === this.activePageDimensions.width &&
+			this.pixelSelection.height === this.activePageDimensions.height
 				? this.pixelSelection.data
 				: null;
 		const combined = combinePixelMasks(current, data, mode);
-		this.pixelSelection = pixelMaskBounds(combined, this.document.width_px, this.document.height_px)
+		this.pixelSelection = pixelMaskBounds(
+			combined,
+			this.activePageDimensions.width,
+			this.activePageDimensions.height
+		)
 			? {
-					width: this.document.width_px,
-					height: this.document.height_px,
+					width: this.activePageDimensions.width,
+					height: this.activePageDimensions.height,
 					data: combined,
 					targetLayerIDs: [
 						...new SvelteSet([...(this.pixelSelection?.targetLayerIDs ?? []), ...targetLayerIDs])
@@ -1048,21 +1094,25 @@ export class ImageEditorController {
 		return promotedIDs;
 	}
 
-	movePixelSelection(data: Uint8Array, deltaX: number, deltaY: number): void {
+	movePixelSelection(
+		data: Uint8Array,
+		deltaX: number,
+		deltaY: number,
+		bounds?: SelectionBounds | null
+	): void {
 		if (!this.pixelSelection) return;
-		const translated = translatePixelMask(
+		const translated = translatePixelMaskRegion(
 			data,
 			this.pixelSelection.width,
 			this.pixelSelection.height,
+			bounds === undefined
+				? pixelMaskBounds(data, this.pixelSelection.width, this.pixelSelection.height)
+				: bounds,
 			deltaX,
 			deltaY
 		);
-		this.pixelSelection = pixelMaskBounds(
-			translated,
-			this.pixelSelection.width,
-			this.pixelSelection.height
-		)
-			? { ...this.pixelSelection, data: translated }
+		this.pixelSelection = translated.bounds
+			? { ...this.pixelSelection, data: translated.data }
 			: null;
 	}
 
@@ -1082,7 +1132,9 @@ export class ImageEditorController {
 				'gradient'
 			].includes(this.activeTool)
 		) {
-			const mask = new Uint8Array(this.document.width_px * this.document.height_px);
+			const mask = new Uint8Array(
+				this.activePageDimensions.width * this.activePageDimensions.height
+			);
 			mask.fill(1);
 			this.applyPixelSelection(mask, this.selectedLayerIDs.slice(-1), 'replace');
 			return;
@@ -1103,10 +1155,10 @@ export class ImageEditorController {
 			locked: false,
 			opacity: 1,
 			transform: defaultTransform(
-				Math.min(600, this.document.width_px * 0.7),
-				Math.max(96, this.document.height_px * 0.12),
-				this.document.width_px * 0.15,
-				this.document.height_px * 0.42
+				Math.min(600, this.activePageDimensions.width * 0.7),
+				Math.max(96, this.activePageDimensions.height * 0.12),
+				this.activePageDimensions.width * 0.15,
+				this.activePageDimensions.height * 0.42
 			),
 			text: {
 				text: m.image_editor_new_text(),
@@ -1116,7 +1168,7 @@ export class ImageEditorController {
 				underline: false,
 				strike: false,
 				wrap: 'word',
-				font_size: Math.max(32, Math.round(this.document.width_px / 12)),
+				font_size: Math.max(32, Math.round(this.activePageDimensions.width / 12)),
 				color: '#1c1917',
 				align: 'center',
 				line_height: 1.1,
@@ -1132,7 +1184,7 @@ export class ImageEditorController {
 
 	addShape(kind: NonNullable<ImageEditorLayer['shape']>['kind'] = 'rectangle'): void {
 		if (!this.document) return;
-		const size = Math.min(this.document.width_px, this.document.height_px) * 0.28;
+		const size = Math.min(this.activePageDimensions.width, this.activePageDimensions.height) * 0.28;
 		const layer: ImageEditorLayer = {
 			id: imageEditorID('layer'),
 			type: 'shape',
@@ -1150,8 +1202,8 @@ export class ImageEditorController {
 			transform: defaultTransform(
 				size,
 				kind === 'line' ? 8 : size,
-				(this.document.width_px - size) / 2,
-				(this.document.height_px - size) / 2
+				(this.activePageDimensions.width - size) / 2,
+				(this.activePageDimensions.height - size) / 2
 			),
 			shape: {
 				kind,
@@ -1180,14 +1232,17 @@ export class ImageEditorController {
 			visible: true,
 			locked: false,
 			opacity: 1,
-			transform: defaultTransform(this.document.width_px, this.document.height_px),
+			transform: defaultTransform(
+				this.activePageDimensions.width,
+				this.activePageDimensions.height
+			),
 			paint: {
 				kind: 'fill',
 				color: this.paintColor,
 				size: 1,
 				opacity: 1,
-				source_width: this.document.width_px,
-				source_height: this.document.height_px,
+				source_width: this.activePageDimensions.width,
+				source_height: this.activePageDimensions.height,
 				points: [],
 				spans: []
 			},
@@ -1214,8 +1269,8 @@ export class ImageEditorController {
 			this.pencilSmoothing
 		);
 		const stroke = strokePixelMaskRegion(
-			this.document.width_px,
-			this.document.height_px,
+			this.activePageDimensions.width,
+			this.activePageDimensions.height,
 			samples,
 			this.pencilSize,
 			this.pencilRoughness
@@ -1224,7 +1279,11 @@ export class ImageEditorController {
 		if (this.pixelSelection) {
 			for (let y = 0; y < stroke.height; y++) {
 				for (let x = 0; x < stroke.width; x++) {
-					if (!this.pixelSelection.data[(stroke.y + y) * this.document.width_px + stroke.x + x]) {
+					if (
+						!this.pixelSelection.data[
+							(stroke.y + y) * this.activePageDimensions.width + stroke.x + x
+						]
+					) {
 						stroke.data[y * stroke.width + x] = 0;
 					}
 				}
@@ -1251,12 +1310,13 @@ export class ImageEditorController {
 			if (target.type === 'paint' && target.paint) {
 				const width = Math.max(1, Math.round(target.paint.source_width));
 				const height = Math.max(1, Math.round(target.paint.source_height));
-				const paintMask = pixelSpansToMask(target.paint.spans, width, height);
-				const eraseMask = strokePixelMask(width, height, points, size);
-				target.paint.spans = pixelMaskToSpans(
-					subtractPixelMasks(paintMask, eraseMask),
+				const eraseMask = strokePixelMaskRegion(width, height, points, size);
+				if (!eraseMask) return;
+				target.paint.spans = subtractPixelMaskRegionFromSpans(
+					target.paint.spans,
 					width,
-					height
+					height,
+					eraseMask
 				);
 				target.erase_mask = undefined;
 				return;
@@ -1340,8 +1400,8 @@ export class ImageEditorController {
 			{
 				x: 0,
 				y: 0,
-				width: this.document.width_px,
-				height: this.document.height_px,
+				width: this.activePageDimensions.width,
+				height: this.activePageDimensions.height,
 				data: mask
 			},
 			name
@@ -1380,12 +1440,16 @@ export class ImageEditorController {
 		name = m.image_editor_gradient()
 	): void {
 		if (!this.document) return;
-		const bounds = pixelMaskBounds(mask, this.document.width_px, this.document.height_px);
+		const bounds = pixelMaskBounds(
+			mask,
+			this.activePageDimensions.width,
+			this.activePageDimensions.height
+		);
 		if (!bounds) return;
 		const spans = pixelMaskToSpans(
 			mask,
-			this.document.width_px,
-			this.document.height_px,
+			this.activePageDimensions.width,
+			this.activePageDimensions.height,
 			bounds.x,
 			bounds.y
 		);
@@ -1508,8 +1572,8 @@ export class ImageEditorController {
 		const hasIntrinsicSize = Boolean(media.width && media.height);
 		const sourceWidth = hasIntrinsicSize ? media.width! : 1;
 		const sourceHeight = hasIntrinsicSize ? media.height! : 1;
-		const maxWidth = this.document.width_px * 0.72;
-		const maxHeight = this.document.height_px * 0.72;
+		const maxWidth = this.activePageDimensions.width * 0.72;
+		const maxHeight = this.activePageDimensions.height * 0.72;
 		const { width, height } = hasIntrinsicSize
 			? fitImageSize(sourceWidth, sourceHeight, maxWidth, maxHeight)
 			: {
@@ -1529,15 +1593,15 @@ export class ImageEditorController {
 				Math.max(
 					-width * 0.5,
 					Math.min(
-						this.document.width_px - width * 0.5,
-						(center?.x ?? this.document.width_px / 2) - width / 2
+						this.activePageDimensions.width - width * 0.5,
+						(center?.x ?? this.activePageDimensions.width / 2) - width / 2
 					)
 				),
 				Math.max(
 					-height * 0.5,
 					Math.min(
-						this.document.height_px - height * 0.5,
-						(center?.y ?? this.document.height_px / 2) - height / 2
+						this.activePageDimensions.height - height * 0.5,
+						(center?.y ?? this.activePageDimensions.height / 2) - height / 2
 					)
 				)
 			),
@@ -1580,14 +1644,14 @@ export class ImageEditorController {
 		if (!this.document || sourceWidth <= 0 || sourceHeight <= 0) return;
 		const layer = this.activePage?.layers.find((candidate) => candidate.id === id);
 		if (!layer?.image?.intrinsic_pending) return;
-		const maxWidth = this.document.width_px * 0.72;
-		const maxHeight = this.document.height_px * 0.72;
+		const maxWidth = this.activePageDimensions.width * 0.72;
+		const maxHeight = this.activePageDimensions.height * 0.72;
 		const { width, height } = fitImageSize(sourceWidth, sourceHeight, maxWidth, maxHeight);
 		this.updateLayer(id, {
 			transform: {
 				...layer.transform,
-				x: (this.document.width_px - width) / 2,
-				y: (this.document.height_px - height) / 2,
+				x: (this.activePageDimensions.width - width) / 2,
+				y: (this.activePageDimensions.height - height) / 2,
 				width,
 				height
 			},
@@ -1620,6 +1684,42 @@ export class ImageEditorController {
 			},
 			coalesceKey
 		);
+	}
+
+	setTextRange(layerID: string, start: number, end: number): void {
+		this.textRange = end > start ? { pageID: this.activePageID, layerID, start, end } : null;
+	}
+
+	updateTextContent(
+		id: string,
+		text: string,
+		edit?: ImageEditorTextEdit
+	): ImageEditorLayer['text'] {
+		const layer = this.activePage?.layers.find((item) => item.id === id);
+		if (!layer?.text || layer.locked) return layer?.text;
+		const next = editTextWithRuns(layer.text, text, edit);
+		this.updateLayer(id, { text: next }, `text:${id}`);
+		return next;
+	}
+
+	updateTextStyle<K extends 'font_weight' | 'font_style' | 'underline' | 'color'>(
+		id: string,
+		property: K,
+		value: NonNullable<ImageEditorTextRun[K]>,
+		coalesceKey?: string
+	): void {
+		const layer = this.activePage?.layers.find((item) => item.id === id);
+		if (!layer?.text || layer.locked) return;
+		const range =
+			this.textRange?.pageID === this.activePageID && this.textRange.layerID === id
+				? this.textRange
+				: null;
+		const text = range
+			? styleTextRange(layer.text, range.start, range.end, {
+					[property]: value
+				})
+			: { ...layer.text, [property]: value };
+		this.updateLayer(id, { text }, coalesceKey);
 	}
 
 	applyImageCrop(id: string, window: ImageEditorCropWindow): void {
@@ -2100,9 +2200,13 @@ export class ImageEditorController {
 	addPage(): void {
 		if (!this.document || this.document.pages.length >= 35) return;
 		const page = blankImageEditorPage(`Page ${this.document.pages.length + 1}`);
+		page.width_px = this.activePageDimensions.width;
+		page.height_px = this.activePageDimensions.height;
 		this.mutate('Add page', (document) => document.pages.push(page));
+		this.clearPixelSelection();
 		this.activePageID = page.id;
 		this.selectedLayerIDs = [];
+		this.fitZoom();
 	}
 
 	duplicatePage(): void {
@@ -2115,12 +2219,16 @@ export class ImageEditorController {
 			this.activePage,
 			m.image_editor_page_copy_name({ name: displayName })
 		);
+		page.width_px = this.activePageDimensions.width;
+		page.height_px = this.activePageDimensions.height;
 		this.mutate('Duplicate page', (document) => {
 			const index = document.pages.findIndex((item) => item.id === this.activePageID);
 			document.pages.splice(index + 1, 0, page);
 		});
+		this.clearPixelSelection();
 		this.activePageID = page.id;
 		this.selectedLayerIDs = [];
+		this.fitZoom();
 	}
 
 	deletePage(): void {
@@ -2129,9 +2237,11 @@ export class ImageEditorController {
 		this.mutate('Delete page', (document) => {
 			document.pages.splice(index, 1);
 		});
+		this.clearPixelSelection();
 		this.activePageID =
 			this.document.pages[Math.min(index, this.document.pages.length - 1)]?.id ?? '';
 		this.selectedLayerIDs = [];
+		this.fitZoom();
 	}
 
 	reorderPage(pageID: string, targetIndex: number): void {
@@ -2153,8 +2263,8 @@ export class ImageEditorController {
 		this.setViewportSize(containerWidth, containerHeight);
 		this.zoom = Math.min(
 			1,
-			Math.max(0.1, (containerWidth - 80) / this.document.width_px),
-			Math.max(0.1, (containerHeight - 80) / this.document.height_px)
+			Math.max(0.1, (containerWidth - 80) / this.activePageDimensions.width),
+			Math.max(0.1, (containerHeight - 80) / this.activePageDimensions.height)
 		);
 		this.panX = 0;
 		this.panY = 0;

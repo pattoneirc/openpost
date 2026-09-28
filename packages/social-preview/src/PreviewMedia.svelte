@@ -1,4 +1,5 @@
 <script lang="ts">
+  import PreviewDocument from "./PreviewDocument.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import FileText from "@lucide/svelte/icons/file-text";
@@ -6,7 +7,13 @@
   import type { PreviewMedia } from "./model";
 
   type Layout =
-    "grid" | "carousel" | "facebook" | "single" | "discord" | "document";
+    | "grid"
+    | "carousel"
+    | "facebook"
+    | "single"
+    | "discord"
+    | "album"
+    | "document";
 
   interface Props {
     media: PreviewMedia[];
@@ -21,14 +28,43 @@
     class: className = "",
     emptyLabel = "",
   }: Props = $props();
+  const MAX_VISIBLE_POSITION_DOTS = 5;
   let currentIndex = $state(0);
+  let measuredRatios = $state<Record<string, number>>({});
+
+  function aspectRatio(item: PreviewMedia | undefined): number | undefined {
+    if (!item) return undefined;
+    return item.aspectRatio && item.aspectRatio > 0
+      ? item.aspectRatio
+      : measuredRatios[item.src];
+  }
+
+  function measure(item: PreviewMedia, width: number, height: number) {
+    if (width > 0 && height > 0) measuredRatios[item.src] = width / height;
+  }
 
   const safeIndex = $derived(
     Math.min(currentIndex, Math.max(0, media.length - 1)),
   );
   const active = $derived(media[safeIndex]);
+  const positionStart = $derived(
+    Math.max(
+      0,
+      Math.min(
+        safeIndex - Math.floor(MAX_VISIBLE_POSITION_DOTS / 2),
+        media.length - MAX_VISIBLE_POSITION_DOTS,
+      ),
+    ),
+  );
+  const visiblePositions = $derived(
+    media.slice(positionStart, positionStart + MAX_VISIBLE_POSITION_DOTS),
+  );
   const visibleGridMedia = $derived(media.slice(0, 4));
   const visibleFacebookMedia = $derived(media.slice(0, 5));
+  const galleryMedia = $derived(
+    media.filter((item) => item.kind !== "document"),
+  );
+  const documents = $derived(media.filter((item) => item.kind === "document"));
   const gridCount = $derived(Math.min(media.length, 4));
   const facebookCount = $derived(Math.min(media.length, 5));
 
@@ -40,7 +76,7 @@
 {#snippet mediaTile(item: PreviewMedia, extraClass = "", overflow = 0)}
   <div
     class={["media-tile", `kind-${item.kind}`, extraClass]}
-    style:--media-ratio={item.aspectRatio ?? 16 / 9}
+    style:--media-ratio={aspectRatio(item) ?? 16 / 9}
   >
     {#if item.kind === "video"}
       <video
@@ -50,6 +86,12 @@
         muted
         playsinline
         preload="metadata"
+        onloadedmetadata={(event) =>
+          measure(
+            item,
+            event.currentTarget.videoWidth,
+            event.currentTarget.videoHeight,
+          )}
       ></video>
       <span class="video-play" aria-hidden="true"
         ><Play fill="currentColor" /></span
@@ -57,13 +99,16 @@
       {#if item.durationLabel}<span class="duration">{item.durationLabel}</span
         >{/if}
     {:else if item.kind === "document"}
-      <div class="document-page">
-        <FileText aria-hidden="true" />
-        <strong>{item.alt || "Document preview"}</strong>
-        <span>PDF</span>
-      </div>
+      <PreviewDocument media={item} />
     {:else}
-      <img src={item.src} alt={item.alt || ""} />
+      <img
+        src={item.src}
+        alt={item.alt || ""}
+        onload={(event) => {
+          const image = event.currentTarget as HTMLImageElement;
+          measure(item, image.naturalWidth, image.naturalHeight);
+        }}
+      />
     {/if}
     {#if overflow > 0}<span class="overflow-count">+{overflow}</span>{/if}
   </div>
@@ -77,7 +122,13 @@
     </div>
   {/if}
 {:else if layout === "carousel" && active}
-  <div class={["media-carousel", className]}>
+  <div
+    class={["media-carousel", className]}
+    style:--carousel-ratio={Math.max(
+      0.75,
+      Math.min(1.91, aspectRatio(media[0]) ?? 1),
+    )}
+  >
     {@render mediaTile(active, "carousel-tile")}
     {#if media.length > 1}
       <span class="carousel-count">{safeIndex + 1}/{media.length}</span>
@@ -102,7 +153,8 @@
         </button>
       {/if}
       <div class="carousel-dots" aria-label="Media position">
-        {#each media as item, index (item.id)}
+        {#each visiblePositions as item, offset (item.id)}
+          {@const index = positionStart + offset}
           <button
             type="button"
             aria-label={`Show media ${index + 1}`}
@@ -114,6 +166,22 @@
         {/each}
       </div>
     {/if}
+  </div>
+{:else if layout === "discord" || layout === "album"}
+  <div class={["attachment-gallery", `layout-${layout}`, className]}>
+    {#if galleryMedia.length}
+      <div class="mosaic" class:single={galleryMedia.length === 1}>
+        {#each galleryMedia as item (item.id)}{@render mediaTile(item)}{/each}
+      </div>
+    {/if}
+    {#each documents as item (item.id)}
+      <div class="file-attachment">
+        <FileText aria-hidden="true" />
+        <div>
+          <strong>{item.alt || "Document"}</strong><span>File attachment</span>
+        </div>
+      </div>
+    {/each}
   </div>
 {:else if layout === "facebook"}
   <div class={["facebook-media", `count-${facebookCount}`, className]}>
@@ -172,6 +240,15 @@
     object-fit: cover;
   }
 
+  .single-media img,
+  .single-media video,
+  .media-grid.count-1 img,
+  .media-grid.count-1 video,
+  .facebook-media.count-1 img,
+  .facebook-media.count-1 video {
+    object-fit: contain;
+  }
+
   .media-tile.kind-video {
     background: #000;
   }
@@ -218,7 +295,7 @@
   }
 
   .media-carousel .carousel-tile {
-    aspect-ratio: 1;
+    aspect-ratio: var(--carousel-ratio, 1);
   }
 
   .carousel-button {
@@ -393,39 +470,6 @@
     border-radius: 0.5rem;
   }
 
-  .document-page {
-    display: grid;
-    height: 100%;
-    min-height: 19rem;
-    place-items: center;
-    align-content: center;
-    gap: 0.8rem;
-    background:
-      linear-gradient(90deg, #f3f2ef 2.2rem, transparent 2.2rem),
-      repeating-linear-gradient(#fff 0 1.5rem, #e6e3df 1.5rem 1.55rem);
-    color: #232323;
-    padding: 3rem;
-    text-align: center;
-  }
-
-  .document-page :global(svg) {
-    width: 2.4rem;
-    height: 2.4rem;
-    color: #0a66c2;
-  }
-
-  .document-page strong {
-    max-width: 25ch;
-    font-size: 1.15rem;
-    line-height: 1.3;
-  }
-
-  .document-page span {
-    color: #666;
-    font-size: 0.72rem;
-    font-weight: 700;
-  }
-
   .empty-media {
     display: grid;
     min-height: 18rem;
@@ -447,14 +491,82 @@
     font-size: 0.82rem;
   }
 
-  @media (max-width: 32rem) {
+  @media (pointer: coarse) {
     .carousel-button {
       width: 2.75rem;
       height: 2.75rem;
     }
-
-    .document-page {
-      min-height: 14rem;
+  }
+  .attachment-gallery {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+    width: min(100%, 32rem);
+  }
+  .mosaic {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 3px;
+    overflow: hidden;
+    border-radius: 0.5rem;
+  }
+  .mosaic .media-tile {
+    aspect-ratio: 1;
+  }
+  .mosaic.single {
+    grid-template-columns: 1fr;
+  }
+  .mosaic.single .media-tile {
+    aspect-ratio: var(--media-ratio);
+    max-height: 32rem;
+  }
+  .mosaic:not(.single) .media-tile:first-child:nth-last-child(odd) {
+    grid-column: 1 / -1;
+    aspect-ratio: 2;
+  }
+  .file-attachment {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    border: 1px solid var(--native-border, #d8dde1);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    background: var(--native-soft, #f1f5f7);
+    color: var(--native-fg, #18242b);
+  }
+  .file-attachment > :global(svg) {
+    width: 1.8rem;
+    height: 1.8rem;
+    flex: none;
+    color: light-dark(#2678a7, #6bb6ed);
+  }
+  .file-attachment > div {
+    display: grid;
+    min-width: 0;
+    gap: 0.2rem;
+  }
+  .file-attachment strong {
+    font-size: 0.82rem;
+    overflow-wrap: anywhere;
+  }
+  .file-attachment span {
+    color: var(--native-muted, #52636b);
+    font-size: 0.72rem;
+  }
+  @media (pointer: coarse) {
+    .carousel-dots button {
+      flex-shrink: 0;
+      min-width: 44px;
+      width: 44px;
+      height: 44px;
     }
+    .carousel-dots {
+      overflow-x: auto;
+      justify-content: safe center;
+    }
+  }
+  .media-tile.kind-document {
+    aspect-ratio: auto;
+    max-height: none;
   }
 </style>

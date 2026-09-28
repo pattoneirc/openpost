@@ -1,4 +1,12 @@
 <script lang="ts">
+	import SharedPollEditor from './compose/shared-poll-editor.svelte';
+	import {
+		readSharedPoll,
+		resolvePollPreview,
+		clearPollSettings,
+		supportsNativePoll,
+		type SharedPoll
+	} from './compose/polls';
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { z } from 'zod';
 	import { captureTelemetryEvent } from '@openpost/telemetry';
@@ -136,6 +144,7 @@
 	} from './compose/schedule-timezone';
 	import {
 		buildPublicationPayload,
+		parseComposerSettingOptionalString,
 		type ComposerModeKey,
 		type ComposerPublicationPayload,
 		type ComposerSettings,
@@ -177,6 +186,7 @@
 	import { composerErrorMessage } from '$lib/composer/error-presentation';
 	import { createComposerPublicationClient } from '$lib/composer/publication-client';
 	import { buildComposerPreview } from '$lib/compose-preview';
+	import ComposerPreview from '$lib/components/composer-preview.svelte';
 	import { openPreviewWindow, type PreviewWindowSession } from '$lib/preview-window';
 	import { uploadMediaFile, type MediaUploadResult } from '$lib/media-upload-client';
 	import type { MediaPickerVideoSelection } from '$lib/media-picker';
@@ -495,6 +505,8 @@
 	let lastSavedScheduleAt = '';
 	let appliedInitialContextKey = $state('');
 	const previewSessions = new SvelteMap<string, PreviewWindowSession>();
+	let previewOpen = $state(false);
+	const previewId = $props.id();
 	const textareaRefs = new SvelteMap<number, HTMLTextAreaElement>();
 	const randomDelayOptions = [0, 5, 10, 15, 30, 45, 60];
 	const desktopComposerControls = new MediaQuery('min-width: 768px');
@@ -821,7 +833,16 @@
 	const settingsAccount = $derived(
 		accounts.find((account) => account.id === settingsAccountId) ?? null
 	);
-	const settingsDialogFields = $derived(settingsAccount ? visibleSettings(settingsAccount) : []);
+	const settingsDialogFields = $derived(
+		settingsAccount
+			? visibleSettings(settingsAccount).filter(
+					(field) =>
+						!activePost?.poll ||
+						activePost.poll.destinations[settingsAccount.id]?.mode === 'legacy' ||
+						!field.key.startsWith('poll_')
+				)
+			: []
+	);
 	const settingsDialogValues = $derived(
 		settingsAccount ? dialogSettingsForAccount(settingsAccount) : {}
 	);
@@ -834,9 +855,21 @@
 			selectedAccounts.map((account) => [account.id, dialogSettingsForAccount(account)])
 		)
 	);
+	const editorMediaAltTexts = $derived.by(() => {
+		const values = new SvelteMap(mediaAltTexts);
+		if (activeVariantAccountId) {
+			for (const [mediaId, settings] of Object.entries(mediaSettingsByAccount)) {
+				const alt = parseComposerSettingOptionalString(settings[activeVariantAccountId]?.alt_text);
+				if (alt !== undefined) values.set(mediaId, alt);
+			}
+		}
+		return values;
+	});
 	const capabilityInputSnapshot = $derived(
 		JSON.stringify({
 			workspace: selectedWorkspaceId,
+			variants: Array.from(variants.entries()),
+			mediaAltTexts: Array.from(mediaAltTexts.entries()),
 			accounts: selectedAccountIds,
 			mode: textComposerMode,
 			requestedOutputProfiles,
@@ -844,7 +877,8 @@
 			posts: posts.map((post) => ({
 				key: post.key,
 				content: post.content,
-				mediaIds: post.mediaIds
+				mediaIds: post.mediaIds,
+				poll: post.poll
 			})),
 			settingsByAccount,
 			segmentSettingsByPost,
@@ -914,7 +948,9 @@
 			selectedAccounts.every((account) => accountReadiness(account, 'publish_scheduled').canProceed)
 	);
 	const canSaveEditedPost = $derived(
-		canSubmitPublication && (!(selectedDate && selectedTime) || canSchedulePublication)
+		hasContent &&
+			selectedAccountIds.length > 0 &&
+			(!(selectedDate && selectedTime) || canSchedulePublication)
 	);
 	const activeVariantAccount = $derived(
 		activeVariantAccountId ? (accounts.find((a) => a.id === activeVariantAccountId) ?? null) : null
@@ -1213,6 +1249,7 @@
 			formatLockedByAccount,
 			scheduleOverridesByAccount,
 			variants: variantEntries,
+			mediaAltTexts: Array.from(mediaAltTexts.entries()),
 			linkUrl,
 			settingsByAccount,
 			segmentSettingsByPost,
@@ -1326,25 +1363,147 @@
 		);
 	}
 
+	function pollProjection(post: PostItem, account: SocialAccount) {
+		return resolvePollPreview(
+			post.poll,
+			account.id,
+			visibleSettings(account),
+			getVariantContent(account.id, post.key) ?? post.content,
+			segmentSettingsByPost[post.key]?.[account.id] ?? {}
+		);
+	}
+
+	function updateSharedPoll(post: PostItem, poll: SharedPoll | undefined) {
+		if (poll && !post.poll) {
+			poll = {
+				...poll,
+				destinations: {
+					...poll.destinations,
+					...Object.fromEntries(
+						selectedAccounts
+							.filter((account) =>
+								Boolean(segmentSettingsByPost[post.key]?.[account.id]?.poll_options)
+							)
+							.map((account) => [account.id, { mode: 'legacy' as const }])
+					)
+				}
+			};
+		}
+		posts = posts.map((item) => (item.key === post.key ? { ...item, poll } : item));
+		if (!poll && post.poll) {
+			segmentSettingsByPost = {
+				...segmentSettingsByPost,
+				[post.key]: Object.fromEntries(
+					Object.entries(segmentSettingsByPost[post.key] ?? {}).map(([id, settings]) => [
+						id,
+						post.poll?.destinations[id]?.mode === 'legacy' ? settings : clearPollSettings(settings)
+					])
+				)
+			};
+		}
+		validationIssues = [];
+		scheduleAutoSave();
+		scheduleCapabilityResolve();
+	}
+
+	function sharedPollError(post: PostItem, account: SocialAccount): string {
+		const poll = post.poll;
+		if (!poll) return '';
+		const choice = poll.destinations[account.id];
+		if (!choice) return m.compose_poll_decision();
+		if (choice.mode === 'omit' || choice.mode === 'legacy') return '';
+		const content = choice.mode === 'custom' ? choice.poll : poll;
+		if (!content?.question.trim()) return m.compose_poll_question_required();
+		const missing = content.options.findIndex((option) => !option.text.trim());
+		if (missing >= 0) return m.compose_poll_option_required({ number: missing + 1 });
+		if (content.options.length < 2) return m.compose_poll_minimum({ count: 2 });
+		if (
+			choice.mode !== 'text' &&
+			posts.length > 1 &&
+			resolvedCapabilities[account.id]?.segment_strategy === 'join'
+		)
+			return m.compose_poll_join_conflict();
+		if (choice.mode === 'text') return '';
+		const fields = visibleSettings(account);
+		if (!supportsNativePoll(fields)) return m.compose_poll_unavailable();
+		const definition = fields.find((field) => field.key === 'poll_options')!;
+		if ((getVariantMediaIds(account.id, post.key) ?? post.mediaIds).length)
+			return m.compose_poll_media_conflict();
+		if (content.options.length > (definition.constraints?.max_items ?? 4))
+			return m.compose_poll_maximum({ count: definition.constraints?.max_items ?? 4 });
+		const maxLength = definition.constraints?.max_length;
+		if (maxLength && content.options.some((option) => [...option.text.trim()].length > maxLength))
+			return m.compose_poll_limit({ count: maxLength });
+		if (
+			(content.multiple && !fields.some((field) => field.key === 'poll_multiple')) ||
+			(content.hide_totals && !fields.some((field) => field.key === 'poll_hide_totals'))
+		)
+			return m.compose_poll_feature_unsupported();
+		if (
+			fields.some((field) => field.key === 'poll_duration') &&
+			![86400, 259200, 604800, 1209600].includes(content.duration_seconds)
+		)
+			return m.compose_poll_duration_invalid();
+		return '';
+	}
+
 	function previewForAccount(account: SocialAccount) {
+		const joined =
+			resolvedCapabilities[account.id]?.segment_strategy === 'join' && posts.length > 1;
+		const segments = posts.map((post) => {
+			const mediaIds = getVariantMediaIds(account.id, post.key) ?? post.mediaIds;
+			const projection = joined
+				? {
+						body: getVariantContent(account.id, post.key) ?? post.content,
+						settings: segmentSettingsByPost[post.key]?.[account.id] ?? {}
+					}
+				: pollProjection(post, account);
+			return {
+				id: post.key,
+				text: projection.body,
+				settings: projection.settings,
+				media: mediaIds.map((id) => ({
+					id,
+					mimeType: mediaMimeTypes.get(id),
+					altText: mediaAltTextForAccount(id, account.id)
+				}))
+			};
+		});
+		if (joined) {
+			let projection = {
+				body: segments
+					.map((segment) => segment.text.trim())
+					.filter(Boolean)
+					.join('\n\n'),
+				settings: segments[0].settings
+			};
+			for (const post of posts) {
+				if (
+					post.poll?.destinations[account.id]?.mode === 'text' ||
+					post.poll?.destinations[account.id]?.mode === 'omit'
+				) {
+					projection = resolvePollPreview(
+						post.poll,
+						account.id,
+						visibleSettings(account),
+						projection.body,
+						projection.settings
+					);
+				}
+			}
+			segments.splice(0, segments.length, {
+				...segments[0],
+				text: projection.body,
+				settings: projection.settings,
+				media: segments.flatMap((segment) => segment.media)
+			});
+		}
 		return buildComposerPreview({
 			account,
 			mode: textComposerMode,
 			outputProfile:
 				requestedOutputProfiles[account.id] ?? resolvedCapabilities[account.id]?.output_profile,
-			segments: posts.map((post) => {
-				const mediaIds = getVariantMediaIds(account.id, post.key) ?? post.mediaIds;
-				return {
-					id: post.key,
-					text: getVariantContent(account.id, post.key) ?? post.content,
-					media: mediaIds.map((id) => ({
-						id,
-						mimeType: mediaMimeTypes.get(id),
-						altText: mediaAltTexts.get(id)
-					})),
-					settings: segmentSettingsByPost[post.key]?.[account.id] ?? {}
-				};
-			}),
+			segments,
 			destinationSettings: settingsForAccount(account),
 			linkUrl
 		});
@@ -1477,6 +1636,9 @@
 
 	function configuredPollErrorForAccount(account: SocialAccount): string {
 		for (const post of posts) {
+			const sharedError = sharedPollError(post, account);
+			if (sharedError) return sharedError;
+			if (post.poll && post.poll.destinations[account.id]?.mode !== 'legacy') continue;
 			const definition = visibleSettings(account).find(
 				(setting) => setting.key === 'poll_options' && setting.scope === 'segment'
 			);
@@ -1516,7 +1678,8 @@
 		if (!hasContent) blockers.push(m.compose_please_enter_content());
 		if (
 			isThread &&
-			posts.filter((post) => post.content.trim() || post.mediaIds.length > 0).length < 2
+			posts.filter((post) => post.content.trim() || post.mediaIds.length > 0 || post.poll).length <
+				2
 		) {
 			blockers.push(m.compose_thread_minimum());
 		}
@@ -1734,6 +1897,7 @@
 			segments: posts.map((post, index) => ({
 				id: `legacy-segment:${targetPublicationID}:${index}`,
 				content: post.content,
+				poll: post.poll,
 				url: index === 0 ? linkUrl : '',
 				media: publicationMedia(post.mediaIds),
 				settingsByAccount: segmentSettingsByPost[post.key] ?? {}
@@ -1918,7 +2082,9 @@
 				};
 				for (const media of segment.media ?? []) {
 					const mediaSettings = parseComposerSettingsRecord(media.settings ?? {});
-					if (media.alt_text) mediaSettings.alt_text = media.alt_text;
+					if ((media.alt_text ?? '') !== (mediaAltTexts.get(media.id) ?? '')) {
+						mediaSettings.alt_text = media.alt_text ?? '';
+					}
 					if (media.thumbnail_timestamp_ms) {
 						mediaSettings.thumbnail_timestamp_ms = media.thumbnail_timestamp_ms;
 					}
@@ -1973,6 +2139,25 @@
 					region,
 					account_settings: Object.fromEntries(
 						selectedAccounts.map((account) => [account.id, settingsForAccount(account)])
+					),
+					account_segments: Object.fromEntries(
+						selectedAccountIds.map((accountId) => [
+							accountId,
+							posts.map((post) => ({
+								id: post.key,
+								content: pollProjection(
+									post,
+									selectedAccounts.find((account) => account.id === accountId)!
+								).body,
+								url: post === posts[0] ? linkUrl : '',
+								media: (getVariantMediaIds(accountId, post.key) ?? post.mediaIds).map(
+									(mediaId) => ({
+										media_id: mediaId,
+										alt_text: mediaAltTextForAccount(mediaId, accountId)
+									})
+								)
+							}))
+						])
 					),
 					segments: posts.map((post) => ({
 						id: post.key,
@@ -2408,6 +2593,14 @@
 	}
 
 	async function openImageEditorFromComposer() {
+		return openStillEditorFromComposer('image');
+	}
+
+	async function openTemplateEditorFromComposer() {
+		return openStillEditorFromComposer('template');
+	}
+
+	async function openStillEditorFromComposer(editor: 'image' | 'template') {
 		if (!selectedWorkspaceId) return;
 		const workspaceId = selectedWorkspaceId;
 		const generation = saveGeneration;
@@ -2424,7 +2617,7 @@
 			max_selection: composerMediaLimit,
 			constraints: {
 				max_count: composerMediaLimit,
-				allowed_mimes: ['image/png', 'image/jpeg', 'image/webp'],
+				allowed_mimes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
 				thread_segment: mediaPickerPostIndex
 			}
 		});
@@ -2446,7 +2639,7 @@
 		});
 		await goto(
 			resolveAppPath(
-				`/image-editor/new?workspace=${encodeURIComponent(workspaceId)}&return_token=${encodeURIComponent(token.token)}`
+				`${editor === 'template' ? '/templates' : '/image-editor/new'}?workspace=${encodeURIComponent(workspaceId)}&return_token=${encodeURIComponent(token.token)}`
 			)
 		);
 	}
@@ -2617,6 +2810,7 @@
 		posts = canonicalSegments.map((segment) => ({
 			key: segment.id,
 			content: segment.body,
+			poll: readSharedPoll(segment.settings),
 			mediaIds: (segment.media ?? []).map((media) => media.id)
 		}));
 		if (posts.length === 0) {
@@ -2634,7 +2828,11 @@
 		mediaAltTexts = new Map();
 		const publicationMedia = [
 			...canonicalSegments.flatMap((segment) => segment.media ?? []),
-			...(publication.media ?? [])
+			...(publication.media ?? []),
+			...(publication.renditions ?? []).flatMap((rendition) => [
+				...(rendition.media ?? []),
+				...(rendition.segments ?? []).flatMap((segment) => segment.media ?? [])
+			])
 		];
 		mediaMimeTypes = new Map(publicationMedia.map((media) => [media.id, media.mime_type] as const));
 		mediaSizes = new Map();
@@ -2658,6 +2856,12 @@
 				: Promise.resolve(),
 			loadAccounts(selectedWorkspaceId, selectedAccountIds)
 		]);
+		mediaAltTexts = new SvelteMap(
+			[
+				...(publication.media ?? []),
+				...canonicalSegments.flatMap((segment) => segment.media ?? [])
+			].map((media) => [media.id, media.alt_text ?? ''])
+		);
 		hydrateCanonicalSettings(publication);
 		if (resolveAfter) await resolveCapabilities();
 		lastSavedSnapshot = getSaveSnapshot();
@@ -3607,7 +3811,7 @@
 			error = m.compose_select_date_time();
 			return false;
 		}
-		const pollError = configuredPollError();
+		const pollError = selectedDate && selectedTime ? configuredPollError() : '';
 		if (pollError) {
 			error = pollError;
 			return false;
@@ -4201,27 +4405,31 @@
 		variants = newVariants;
 	}
 
+	function mediaAltTextForAccount(mediaId: string, accountId: string): string {
+		const override = mediaSettingsByAccount[mediaId]?.[accountId]?.alt_text;
+		return parseComposerSettingOptionalString(override) ?? mediaAltTexts.get(mediaId) ?? '';
+	}
+
 	function setMediaAltText(mediaId: string, alt: string) {
 		captionRequests.get(mediaId)?.abort();
 		suppressedCaptionMediaIds.add(mediaId);
 		failedCaptionMediaIds.delete(mediaId);
-		const newAlts = new SvelteMap(mediaAltTexts);
-		if (alt.trim()) {
-			newAlts.set(mediaId, alt.trim());
-		} else {
-			newAlts.delete(mediaId);
+		if (activeVariantAccountId) {
+			mediaSettingsByAccount = {
+				...mediaSettingsByAccount,
+				[mediaId]: {
+					...mediaSettingsByAccount[mediaId],
+					[activeVariantAccountId]: {
+						...mediaSettingsByAccount[mediaId]?.[activeVariantAccountId],
+						alt_text: alt.trim()
+					}
+				}
+			};
+			scheduleAutoSave();
+			return;
 		}
-		mediaAltTexts = newAlts;
-
-		// Persist to backend
-		client
-			.PATCH('/media/{id}', {
-				params: { path: { id: mediaId } },
-				body: { alt_text: alt.trim() }
-			})
-			.catch((e: any) => {
-				console.error('Failed to save alt text:', e);
-			});
+		mediaAltTexts = new SvelteMap(mediaAltTexts).set(mediaId, alt.trim());
+		scheduleAutoSave();
 	}
 
 	// --------------------------------------------------------------------------
@@ -4907,6 +5115,10 @@
 
 	function convertGeneratedThreadToPost(): void {
 		if (!generationUndo || posts.length < 2) return;
+		if (posts.slice(1).some((post) => post.poll)) {
+			error = m.compose_poll_join_conflict();
+			return;
+		}
 		const source = posts[0];
 		const joinedSource: PostItem = {
 			...source,
@@ -5701,12 +5913,22 @@
 								multiAccount={selectedAccounts.length > 1}
 								segmentStrategy={resolvedCapabilities[activeVariantAccount.id]?.segment_strategy}
 								postCount={posts.length}
-								onPreview={() => openAccountPreview(activeVariantAccount!)}
+								{previewOpen}
+								{previewId}
+								onPreview={() => (previewOpen = !previewOpen)}
 								onSettings={() => openDestinationSettings(activeVariantAccount!)}
 								onResetField={(field) => resetVariantField(activeVariantAccount!.id, field)}
 								onResync={() => resyncAccount(activeVariantAccount!.id)}
 								onDestinationAction={openDestinationAction}
 							/>
+							<div id={previewId}>
+								{#if previewOpen}
+									<ComposerPreview
+										model={previewForAccount(activeVariantAccount)}
+										onOpenFull={() => openAccountPreview(activeVariantAccount!)}
+									/>
+								{/if}
+							</div>
 						{/if}
 					</section>
 				{/if}
@@ -5888,7 +6110,7 @@
 										<ComposerMediaGrid
 											mediaIds={editorMediaIds}
 											mediaCount={editorMediaCount}
-											altTexts={mediaAltTexts}
+											altTexts={editorMediaAltTexts}
 											captioningIds={captioningMediaIds}
 											bind:editingAltMediaId
 											pendingUploads={pendingMediaUploads}
@@ -5953,6 +6175,39 @@
 												/>
 											{/if}
 										</div>
+
+										<SharedPollEditor
+											value={post.poll}
+											body={post.content}
+											destinations={selectedAccounts.map((account) => ({
+												id: account.id,
+												label: accountContextLabel(account),
+												fields: visibleSettings(account),
+												body: getVariantContent(account.id, post.key) ?? post.content,
+												error: sharedPollError(post, account)
+											}))}
+											onChange={(poll) => updateSharedPoll(post, poll)}
+											onExclude={toggleAccount}
+											onLegacySettings={(id) => {
+												activePostIndex = i;
+												const account = selectedAccounts.find((item) => item.id === id);
+												if (account) openDestinationSettings(account);
+											}}
+											onCustomizeText={(id) => {
+												activeVariantAccountId = id;
+												activePostIndex = i;
+												unsyncAccount(id);
+												const account = selectedAccounts.find((item) => item.id === id);
+												if (account && post.poll?.destinations[id]?.mode === 'text') {
+													const text = pollProjection(post, account).body;
+													handleVariantChange(id, i, text);
+													updateSharedPoll(post, {
+														...post.poll,
+														destinations: { ...post.poll.destinations, [id]: { mode: 'omit' } }
+													});
+												}
+											}}
+										/>
 
 										{#if i === 0 && !activeVariantAccountId && !isThread && postBuilderError}
 											<p class="border-t py-3 text-sm text-destructive" role="alert">
@@ -6318,6 +6573,7 @@
 		void generateMissingMediaAltText(addedIds, postContext);
 	}}
 	onCreate={openImageEditorFromComposer}
+	onCreateTemplate={openTemplateEditorFromComposer}
 	onCreateVideo={openVideoEditorFromComposer}
 />
 

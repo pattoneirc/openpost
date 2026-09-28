@@ -69,6 +69,10 @@
 	} from '../recovery';
 	import { saveGuestImageEditorDesign, storeGuestImageEditorMedia } from '../local-persistence';
 	import {
+		releaseLocalImageEditorMediaForDesign,
+		retainLocalImageEditorMediaForDesign
+	} from '../local-media-url';
+	import {
 		createGuestImageEditorDesignFromDocument,
 		getGuestImageEditorMediaForMigration,
 		replaceGuestImageEditorMediaIDs
@@ -89,6 +93,7 @@
 		type ImageEditorRenderedPage
 	} from '../static-renderer';
 	import { imageEditorExportBudget } from '../export-budget';
+	import { imageEditorPageDimensions } from '../page-dimensions';
 	import {
 		imageEditorPageExportFingerprint,
 		reusableImageEditorExports,
@@ -178,6 +183,9 @@
 	} = $props();
 
 	const editor = provideImageEditor(new ImageEditorController());
+	$effect(() => {
+		editor.setBrandKit(initialBrandKit);
+	});
 	const backgroundRemoval = new ImageEditorBackgroundRemoval();
 	const editorTabID = crypto.randomUUID();
 	const DESKTOP_TOOL_RAIL_WIDTH = 56;
@@ -439,8 +447,23 @@
 	let exportFormat = $derived(editor.document?.export_defaults.format ?? 'png');
 	let exportSupportsTransparency = $derived(exportFormat !== 'jpeg');
 	let exportPixelCount = $derived(
-		(editor.document?.width_px ?? 0) * (editor.document?.height_px ?? 0) * exportPages.length
+		editor.document
+			? exportPages.reduce((total, page) => {
+					const size = imageEditorPageDimensions(editor.document!, page);
+					return total + size.width * size.height;
+				}, 0)
+			: 0
 	);
+	let exportSizeLabel = $derived.by(() => {
+		if (!editor.document || exportPages.length === 0) return '';
+		const first = imageEditorPageDimensions(editor.document, exportPages[0]);
+		return exportPages.every((page) => {
+			const size = imageEditorPageDimensions(editor.document!, page);
+			return size.width === first.width && size.height === first.height;
+		})
+			? `${first.width} × ${first.height}`
+			: m.image_editor_mixed_sizes();
+	});
 	let exportBudget = $derived(
 		editor.document
 			? imageEditorExportBudget(
@@ -620,7 +643,6 @@
 		}
 		if (!editor.document) {
 			editor.load(initial);
-			editor.setBrandKit(initialBrandKit);
 			editor.pagesExpanded = initial.document.pages.length > 1;
 			coverPreviewMediaID = initial.cover_preview_media_id ?? '';
 		}
@@ -679,6 +701,7 @@
 	}
 
 	onMount(() => {
+		if (guestMode) retainLocalImageEditorMediaForDesign(editor.id);
 		const designChannel =
 			!guestMode && typeof BroadcastChannel !== 'undefined'
 				? new BroadcastChannel(`openpost-image-editor:${editor.id}`)
@@ -895,6 +918,7 @@
 		window.addEventListener('beforeunload', beforeUnload);
 		return () => {
 			editorViewActive = false;
+			if (guestMode) releaseLocalImageEditorMediaForDesign(editor.id);
 			rasterAbort?.abort();
 			exportPreviewGeneration++;
 			unsubscribe();
@@ -1485,11 +1509,13 @@
 
 	async function exportProject(): Promise<void> {
 		if (!editor.document || projectBusy) return;
+		const view = captureEditorMutationView();
 		if (editor.floatingPixelSelection) editor.commitFloatingPixelSelection();
 		projectBusy = true;
 		projectError = '';
 		try {
 			const blob = await createImageEditorProjectArchive(editor.document, projectMediaSource);
+			if (!editorMutationViewIsCurrent(view)) return;
 			const url = URL.createObjectURL(blob);
 			const anchor = document.createElement('a');
 			anchor.href = url;
@@ -2534,7 +2560,7 @@
 			if (!document) return;
 			await placeExternalFiles(
 				[file],
-				{ x: document.width_px / 2, y: document.height_px / 2 },
+				{ x: editor.activePageDimensions.width / 2, y: editor.activePageDimensions.height / 2 },
 				editor.activePageID
 			);
 			return;
@@ -2750,7 +2776,9 @@
 			controller.signal.throwIfAborted();
 			if (!editorMutationViewIsCurrent(view)) return;
 			if (exportMode === 'download') {
-				await downloadRenderedPages(rendered, editor.document.title);
+				await downloadRenderedPages(rendered, editor.document.title, controller.signal);
+				controller.signal.throwIfAborted();
+				if (!editorMutationViewIsCurrent(view)) return;
 				exportDialogOpen = false;
 				exportSuccessfulByPage = {};
 				suppressSavedAnnouncementUntil = Date.now() + 5_000;
@@ -4655,8 +4683,7 @@
 				<div class="flex flex-wrap items-center justify-between gap-2">
 					<div>
 						<p class="text-sm font-semibold">
-							{exportFormat.toUpperCase()} · {editor.document?.width_px ?? 0} ×
-							{editor.document?.height_px ?? 0}
+							{exportFormat.toUpperCase()} · {exportSizeLabel}
 						</p>
 						<p class="mt-0.5 text-xs text-muted-foreground">
 							{m.image_editor_export_summary({

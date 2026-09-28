@@ -36,3 +36,5 @@ export * from "./themes";
 export * from "./workspace-settings";
 export * from "./voice-profiles";
 export * from "./video-projects";
+export * from "./screenshot-templates";
+export * from "./workflows";

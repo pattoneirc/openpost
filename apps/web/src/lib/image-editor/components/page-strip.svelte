@@ -4,9 +4,12 @@
 	import { prefersReducedMotion } from 'svelte/motion';
 	import { useImageEditor } from '../editor.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { Input } from '$lib/components/ui/input';
 	import { ThemeIcon } from '$lib/themes/icons';
 	import TemplatePreview from './template-preview.svelte';
+	import ImageEditorResizeDialog from './image-editor-resize-dialog.svelte';
+	import { imageEditorPageDimensions } from '../page-dimensions';
 	import { m } from '$lib/paraglide/messages';
 	import type { SelectionPoint } from '../selection';
 	import type { ImageEditorPage } from '../types';
@@ -33,6 +36,7 @@
 	let editingPageID = $state('');
 	let pageNameDraft = $state('');
 	let pageNameInput = $state<HTMLInputElement | null>(null);
+	let resizePageOpen = $state(false);
 	let strip = $state<HTMLDivElement>();
 	function focusPage(id: string) {
 		void tick().then(() =>
@@ -57,8 +61,11 @@
 		if (previewDocument !== editor.document) cancelReorder();
 	});
 	function selectPage(page: ImageEditorPage): void {
+		const changed = editor.activePageID !== page.id;
+		if (changed) editor.clearPixelSelection();
 		editor.activePageID = page.id;
 		editor.selectedLayerIDs = [];
+		if (changed) editor.fitZoom();
 	}
 
 	function beginPageDrag(page: ImageEditorPage): void {
@@ -115,7 +122,11 @@
 		reorderAnnouncement =
 			announcement === 'dropped'
 				? m.interaction_reorder_dropped({ name, position: target + 1 })
-				: m.interaction_reorder_moved({ name, position: target + 1, total: pages.length });
+				: m.interaction_reorder_moved({
+						name,
+						position: target + 1,
+						total: pages.length
+					});
 		focusPage(pageID);
 	}
 
@@ -140,7 +151,10 @@
 				cancelReorder();
 				if (pages.findIndex((page) => page.id === pageID) !== target)
 					editor.reorderPage(pageID, target);
-				reorderAnnouncement = m.interaction_reorder_dropped({ name, position: target + 1 });
+				reorderAnnouncement = m.interaction_reorder_dropped({
+					name,
+					position: target + 1
+				});
 				focusPage(pageID);
 			} else {
 				previewDocument = editor.document;
@@ -198,11 +212,15 @@
 		externalDropPageID = '';
 		insertionPageID = '';
 		if (files.length > 0 && editor.canEdit && editor.document) {
-			editor.activePageID = pageID;
-			editor.selectedLayerIDs = [];
+			const page = pages.find((candidate) => candidate.id === pageID);
+			if (!page) return;
+			selectPage(page);
 			void onExternalFiles?.(
 				files,
-				{ x: editor.document.width_px / 2, y: editor.document.height_px / 2 },
+				{
+					x: editor.activePageDimensions.width / 2,
+					y: editor.activePageDimensions.height / 2
+				},
 				pageID
 			);
 			return;
@@ -222,6 +240,7 @@
 		{#if editor.document}
 			{@const gridDocument = editor.document}
 			{#each displayPages as page, index (page.id)}
+				{@const pageSize = imageEditorPageDimensions(gridDocument, page)}
 				<button
 					animate:flip={{ duration: prefersReducedMotion.current ? 0 : 200 }}
 					class:page-grabbed={keyboardDraggingID === page.id}
@@ -233,7 +252,7 @@
 					aria-describedby={hintID}
 					type="button"
 					draggable={editor.canEdit}
-					class="flex h-16 w-24 shrink-0 flex-col overflow-hidden rounded-md border bg-card text-left {page.id ===
+					class="flex h-[72px] w-24 shrink-0 flex-col overflow-hidden rounded-md border bg-card text-left {page.id ===
 					editor.activePageID
 						? 'ring-2 ring-primary'
 						: ''} {externalDropPageID === page.id ? 'bg-primary/10 ring-2 ring-primary' : ''}"
@@ -245,10 +264,10 @@
 					ondrop={(event) => handlePageDrop(event, page.id, index)}
 					onkeydown={(event) => reorderPageFromKeyboard(event, page.id, index)}
 					data-external-drop={externalDropPageID === page.id ? 'active' : undefined}
-					aria-label={m.image_editor_page_label({
+					aria-label={`${m.image_editor_page_label({
 						number: index + 1,
 						name: displayPageName(page.name, index)
-					})}
+					})}, ${pageSize.width} × ${pageSize.height} px`}
 					aria-current={page.id === editor.activePageID ? 'page' : undefined}
 					aria-keyshortcuts="Space Enter ArrowLeft ArrowRight Alt+ArrowLeft Alt+ArrowRight Escape"
 					title={m.interaction_reorder_hint()}
@@ -260,12 +279,18 @@
 							compact
 							cached
 							deferUpdates={editor.colorPreviewActive}
-							dimensionKey={`${gridDocument.width_px}:${gridDocument.height_px}`}
+							dimensionKey={`${pageSize.width}:${pageSize.height}`}
 							label={displayPageName(page.name, index)}
 						/>
 					</span>
-					<span class="w-full truncate border-t px-1.5 py-0.5 text-xs">
-						{index + 1}. {displayPageName(page.name, index)}
+					<span
+						class="w-full border-t px-1.5 py-0.5 text-[10px] leading-3"
+						title={`${pageSize.width} × ${pageSize.height} px`}
+					>
+						<span class="block truncate">{index + 1}. {displayPageName(page.name, index)}</span>
+						<span class="block text-muted-foreground tabular-nums"
+							>{pageSize.width}×{pageSize.height}</span
+						>
 					</span>
 				</button>
 			{/each}
@@ -291,6 +316,16 @@
 		>
 			<ThemeIcon role="copy" />
 			<span class="sr-only">{m.image_editor_duplicate_page()}</span>
+		</Button>
+		<Button
+			variant="ghost"
+			size="icon-xs"
+			class={buttonClass}
+			onclick={() => (resizePageOpen = true)}
+			disabled={!editor.canEdit}
+		>
+			<ThemeIcon role="edit" />
+			<span class="sr-only">{m.image_editor_resize_page()}</span>
 		</Button>
 		<Button
 			variant="ghost"
@@ -326,7 +361,7 @@
 				<Input
 					bind:ref={pageNameInput}
 					bind:value={pageNameDraft}
-					class="ml-1 h-7 min-w-28 flex-1 text-xs sm:max-w-52"
+					class="ml-1 h-7 min-w-0 flex-1 text-xs sm:max-w-52 sm:min-w-28"
 					aria-label={m.image_editor_page_name()}
 					maxlength={120}
 					onblur={() => finishRenamePage(true)}
@@ -341,7 +376,68 @@
 					}}
 				/>
 			{/if}
-			<div class="ml-auto flex gap-1">
+			<div class="ml-auto flex gap-1 sm:hidden">
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					class="size-11"
+					aria-label={m.image_editor_add_page()}
+					onclick={() => editor.addPage()}
+					disabled={!editor.canEdit}><ThemeIcon role="add" /></Button
+				>
+				<Button
+					variant="ghost"
+					size="icon-xs"
+					class="size-11"
+					aria-label={m.image_editor_resize_page()}
+					onclick={() => (resizePageOpen = true)}
+					disabled={!editor.canEdit}><ThemeIcon role="edit" /></Button
+				>
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}
+							<Button
+								{...props}
+								variant="ghost"
+								size="icon-xs"
+								class="size-11"
+								aria-label={m.image_editor_more_actions()}
+								><ThemeIcon role="more-horizontal" /></Button
+							>
+						{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content align="end">
+						<DropdownMenu.Item
+							class="[@media(pointer:coarse)]:min-h-11"
+							disabled={!editor.canEdit || activeIndex < 0 || Boolean(editingPageID)}
+							onclick={beginRenamePage}>{m.image_editor_rename_page()}</DropdownMenu.Item
+						>
+						<DropdownMenu.Item
+							class="[@media(pointer:coarse)]:min-h-11"
+							disabled={!editor.canEdit || activeIndex <= 0}
+							onclick={() => moveActivePage(-1)}
+							>{m.interaction_reorder_previous()}</DropdownMenu.Item
+						>
+						<DropdownMenu.Item
+							class="[@media(pointer:coarse)]:min-h-11"
+							disabled={!editor.canEdit || activeIndex >= pages.length - 1}
+							onclick={() => moveActivePage(1)}>{m.interaction_reorder_next()}</DropdownMenu.Item
+						>
+						<DropdownMenu.Item
+							class="[@media(pointer:coarse)]:min-h-11"
+							disabled={!editor.canEdit}
+							onclick={() => editor.duplicatePage()}
+							>{m.image_editor_duplicate_page()}</DropdownMenu.Item
+						>
+						<DropdownMenu.Item
+							class="[@media(pointer:coarse)]:min-h-11"
+							disabled={!editor.canEdit || pages.length <= 1}
+							onclick={() => editor.deletePage()}>{m.image_editor_delete_page()}</DropdownMenu.Item
+						>
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			</div>
+			<div class="ml-auto hidden gap-1 sm:flex">
 				<Button
 					variant="ghost"
 					size="icon-xs"
@@ -426,6 +522,8 @@
 		</div>
 	{/if}
 </div>
+
+<ImageEditorResizeDialog bind:open={resizePageOpen} scope="page" />
 
 <span id={hintID} class="sr-only">{m.interaction_reorder_hint()}</span>
 <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"

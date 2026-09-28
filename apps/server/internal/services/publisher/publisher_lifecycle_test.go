@@ -46,6 +46,51 @@ func TestHandlePublishPublicationJobRecordsAmbiguousFailureWithoutRetry(t *testi
 	require.NotContains(t, events[len(events)-1].MetadataJSON, "provider rejected post")
 }
 
+func TestRetryPreservesPublicationRunAt(t *testing.T) {
+	t.Parallel()
+
+	srv := newPublisherLifecycleTestServer(t, &fakePublisherAdapter{externalID: "external-retry"})
+	originalRunAt := time.Date(2026, time.September, 20, 12, 0, 0, 0, time.UTC)
+	_, err := srv.db.NewUpdate().Model((*models.Publication)(nil)).
+		Set("status = ?", models.PublicationStatusFailed).
+		Set("actual_run_at = ?", originalRunAt).
+		Where("id = ?", "publication-1").Exec(t.Context())
+	require.NoError(t, err)
+	_, err = srv.db.NewUpdate().Model((*models.Rendition)(nil)).
+		Set("status = ?", models.RenditionStatusFailed).
+		Set("error_retryable = ?", true).
+		Where("id = ?", "rendition-1").Exec(t.Context())
+	require.NoError(t, err)
+
+	require.NoError(t, srv.publishPublication(t))
+	var publication models.Publication
+	require.NoError(t, srv.db.NewSelect().Model(&publication).Where("id = ?", "publication-1").Scan(t.Context()))
+	require.Equal(t, models.PublicationStatusPublished, publication.Status)
+	require.True(t, originalRunAt.Equal(publication.ActualRunAt), "retry must not move the publication's original date")
+}
+
+func TestPublishReturnsFinalizationFailureAfterProviderSuccess(t *testing.T) {
+	t.Parallel()
+
+	adapter := &fakePublisherAdapter{externalID: "external-1"}
+	srv := newPublisherLifecycleTestServer(t, adapter)
+	srv.service.SetNotificationService(notifications.NewService(srv.db, notifications.Options{
+		EmailDelivery: publisherTestEmailSender{},
+		PublicURL:     "https://app.openpost.test",
+	}))
+	ctx, payload := srv.authorizedPublicationJob(t)
+	_, err := srv.db.NewDropTable().Model((*models.UserNotification)(nil)).Exec(ctx)
+	require.NoError(t, err)
+
+	err = srv.service.HandlePublishPublicationJob(ctx, payload)
+
+	require.ErrorContains(t, err, "user_notifications")
+	require.Equal(t, 1, adapter.publishCalls)
+	var publication models.Publication
+	require.NoError(t, srv.db.NewSelect().Model(&publication).Where("id = ?", "publication-1").Scan(ctx))
+	require.Equal(t, models.PublicationStatusPublishing, publication.Status)
+}
+
 func TestSuccessfulFinalPublicationEnqueuesQueueEmptiedReminder(t *testing.T) {
 	t.Parallel()
 
@@ -360,4 +405,26 @@ func requireLifecycleTypes(t *testing.T, events []models.PublicationLifecycleEve
 	for i, eventType := range expected {
 		require.Equal(t, eventType, events[i].Type)
 	}
+}
+
+func TestPublishedTransitionRecoversWithItsDurableEventWithoutAnotherSend(t *testing.T) {
+	adapter := &fakePublisherAdapter{externalID: "external-1"}
+	srv := newPublisherLifecycleTestServer(t, adapter)
+	ctx, payload := srv.authorizedPublicationJob(t)
+	_, err := srv.db.ExecContext(ctx, `CREATE TRIGGER reject_published_event BEFORE INSERT ON publication_lifecycle_events WHEN NEW.type = 'published' BEGIN SELECT RAISE(ABORT, 'event storage failed'); END`)
+	require.NoError(t, err)
+	require.Error(t, srv.service.HandlePublishPublicationJob(ctx, payload))
+	var rendition models.Rendition
+	require.NoError(t, srv.db.NewSelect().Model(&rendition).Where("id = ?", "rendition-1").Scan(ctx))
+	require.NotEqual(t, models.RenditionStatusPublished, rendition.Status)
+	require.True(t, rendition.ErrorRetryable)
+	_, err = srv.db.ExecContext(ctx, `DROP TRIGGER reject_published_event`)
+	require.NoError(t, err)
+	require.NoError(t, srv.service.HandlePublishPublicationJob(ctx, payload))
+	require.NoError(t, srv.db.NewSelect().Model(&rendition).Where("id = ?", "rendition-1").Scan(ctx))
+	require.Equal(t, models.RenditionStatusPublished, rendition.Status)
+	require.Equal(t, 1, adapter.publishCalls)
+	count, err := srv.db.NewSelect().Model((*models.PublicationLifecycleEvent)(nil)).Where("rendition_id = ? AND type = ?", "rendition-1", lifecycle.EventPublished).Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/openpost/backend/internal/services/providerreadiness"
 	"github.com/openpost/backend/internal/services/providerwrite"
 	"github.com/openpost/backend/internal/services/publicationauth"
+	"github.com/openpost/backend/internal/services/publicationpoll"
 	"github.com/openpost/backend/internal/services/publicurl"
 	"github.com/openpost/backend/internal/services/tokenmanager"
 	"github.com/openpost/backend/internal/services/usage"
@@ -222,10 +223,15 @@ func (s *Service) HandlePublishPublicationJob(ctx context.Context, jobPayload st
 	if err := s.db.NewSelect().Model(publication).Where("id = ?", payload.PublicationID).Scan(ctx); err != nil {
 		return err
 	}
+	now := time.Now().UTC()
 	if _, err := s.db.NewUpdate().Model(publication).
 		Set("status = ?", models.PublicationStatusPublishing).
-		Set("actual_run_at = ?", time.Now().UTC()).
-		Set("updated_at = ?", time.Now().UTC()).
+		Set("actual_run_at = CASE WHEN status IN (?) AND actual_run_at IS NOT NULL THEN actual_run_at ELSE ? END", bun.List([]string{
+			models.PublicationStatusPublishing,
+			models.PublicationStatusPublished,
+			models.PublicationStatusFailed,
+		}), now).
+		Set("updated_at = ?", now).
 		Where("id = ?", publication.ID).
 		Exec(ctx); err != nil {
 		log.Printf("[Publisher] Failed to mark publication %s as publishing: %v", publication.ID, err)
@@ -324,7 +330,9 @@ func (s *Service) HandlePublishPublicationJob(ctx context.Context, jobPayload st
 		}
 	}
 
-	s.finalizePublication(ctx, publication)
+	if err := s.finalizePublication(ctx, publication); err != nil {
+		return err
+	}
 	if retryFailure != nil {
 		return retryFailure
 	}
@@ -415,8 +423,7 @@ func (s *Service) persistTerminalPreflightFailure(
 			},
 		)
 	}
-	s.finalizePublication(ctx, &publication)
-	return nil
+	return s.finalizePublication(ctx, &publication)
 }
 
 func (s *Service) persistRenditionFailure(
@@ -595,28 +602,10 @@ func (s *Service) publishRendition(
 		externalURL = publisherExternalURL(externalID)
 	}
 	publishedAt := time.Now().UTC()
-	if _, err := s.db.NewUpdate().Model(rendition).
-		Set("status = ?", models.RenditionStatusPublished).
-		Set("external_id = ?", externalID).
-		Set("external_url = ?", externalURL).
-		Set("error_message = ''").
-		Set("error_kind = ''").
-		Set("error_code = ''").
-		Set("error_http_status = 0").
-		Set("error_retryable = ?", false).
-		Set("error_retry_at = NULL").
-		Set("error_action = ''").
-		Set("updated_at = ?", publishedAt).
-		Where("id = ?", rendition.ID).
-		Exec(ctx); err != nil {
-		return fmt.Errorf("updating rendition status: %w", err)
+	if err := s.completeRendition(ctx, publication, rendition, externalID, externalURL, publishedAt); err != nil {
+		return err
 	}
 	s.recordPublishedPost(ctx, publication.WorkspaceID)
-	s.recordPublicationLifecycleEvent(ctx, publication.WorkspaceID, publication.ID, rendition.ID, lifecycle.EventPublished, lifecycle.StatusSucceeded, "rendition published", map[string]any{
-		"platform":     rendition.Platform,
-		"external_id":  externalID,
-		"external_url": externalURL,
-	})
 	s.captureRenditionEvent(ctx, telemetry.EventRenditionPublished, publication, rendition, nil, rendition.ID, publishedAt)
 	s.scheduleReposts(ctx, rendition.ID)
 	s.publishFirstCommentBestEffort(ctx, publication, rendition, provider, token, account.AccountID, externalID, settings)
@@ -655,6 +644,66 @@ func (s *Service) publishRenditionSegments(
 	_ = json.Unmarshal([]byte(rendition.SettingsJSON), &destinationSettings)
 	if err := validatePublishingTarget(ctx, provider, token, account.AccountID, destinationSettings); err != nil {
 		return err
+	}
+
+	// Resolve every poll before the first provider write, including queued API drafts.
+	var canonical []models.PublicationSegment
+	if err := s.db.NewSelect().Model(&canonical).Where("publication_id = ?", publication.ID).Order("position ASC").Scan(ctx); err != nil {
+		return err
+	}
+	hasPoll := false
+	for _, source := range canonical {
+		var sourceSettings map[string]any
+		_ = json.Unmarshal([]byte(source.SettingsJSON), &sourceSettings)
+		if sourceSettings[publicationpoll.SettingsKey] == nil {
+			continue
+		}
+		hasPoll = true
+		if len(segments) == 1 && len(canonical) > 1 {
+			continue
+		}
+		for i := range segments {
+			segment := &segments[i]
+			if segment.PublicationSegmentID != source.ID {
+				continue
+			}
+			body := source.Body
+			if segment.BodyOverride != nil {
+				body = *segment.BodyOverride
+			}
+			var settings map[string]any
+			_ = json.Unmarshal([]byte(segment.SettingsJSON), &settings)
+			resolvedBody, resolvedSettings, pollErr := publicationpoll.Resolve(sourceSettings, account.ID, rendition.Platform, rendition.OutputProfile, body, settings)
+			if pollErr != nil {
+				return pollErr
+			}
+			segment.Body = resolvedBody
+			segment.SettingsJSON = mustPublisherJSON(resolvedSettings)
+		}
+	}
+	if hasPoll && len(segments) == 1 && len(canonical) > 1 {
+		var sources []map[string]any
+		var bodies []string
+		for _, source := range canonical {
+			var values map[string]any
+			_ = json.Unmarshal([]byte(source.SettingsJSON), &values)
+			sources = append(sources, values)
+			if body := strings.TrimSpace(source.Body); body != "" {
+				bodies = append(bodies, body)
+			}
+		}
+		body := strings.Join(bodies, "\n\n")
+		if segments[0].BodyOverride != nil {
+			body = *segments[0].BodyOverride
+		}
+		var settings map[string]any
+		_ = json.Unmarshal([]byte(segments[0].SettingsJSON), &settings)
+		body, settings, pollErr := publicationpoll.ResolveJoined(sources, account.ID, rendition.Platform, rendition.OutputProfile, body, settings)
+		if pollErr != nil {
+			return pollErr
+		}
+		segments[0].Body = body
+		segments[0].SettingsJSON = mustPublisherJSON(settings)
 	}
 
 	parentExternalID := ""
@@ -832,21 +881,8 @@ func (s *Service) publishRenditionSegments(
 	}
 
 	publishedAt := time.Now().UTC()
-	if _, err := s.db.NewUpdate().Model(rendition).
-		Set("status = ?", models.RenditionStatusPublished).
-		Set("external_id = ?", rootExternalID).
-		Set("external_url = ?", rootExternalURL).
-		Set("error_message = ''").
-		Set("error_kind = ''").
-		Set("error_code = ''").
-		Set("error_http_status = 0").
-		Set("error_retryable = ?", false).
-		Set("error_retry_at = NULL").
-		Set("error_action = ''").
-		Set("updated_at = ?", publishedAt).
-		Where("id = ?", rendition.ID).
-		Exec(ctx); err != nil {
-		return fmt.Errorf("updating segmented rendition status: %w", err)
+	if err := s.completeRendition(ctx, publication, rendition, rootExternalID, rootExternalURL, publishedAt); err != nil {
+		return err
 	}
 	s.captureRenditionEvent(ctx, telemetry.EventRenditionPublished, publication, rendition, map[string]any{
 		"segment_count": len(segments),
@@ -2274,11 +2310,10 @@ func (s *Service) providerForAccount(ctx context.Context, workspaceID string, ac
 	return provider, providerKey, false, nil
 }
 
-func (s *Service) finalizePublication(ctx context.Context, publication *models.Publication) {
+func (s *Service) finalizePublication(ctx context.Context, publication *models.Publication) error {
 	var renditions []models.Rendition
 	if err := s.db.NewSelect().Model(&renditions).Where("publication_id = ?", publication.ID).Scan(ctx); err != nil {
-		log.Printf("[Publisher] Failed to load renditions for publication %s: %v", publication.ID, err)
-		return
+		return fmt.Errorf("load renditions for publication %s: %w", publication.ID, err)
 	}
 	hasFailed := false
 	allPublished := len(renditions) > 0
@@ -2309,10 +2344,10 @@ func (s *Service) finalizePublication(ctx context.Context, publication *models.P
 		return s.createPublicationResultNotifications(txCtx, tx, publication, status, renditions)
 	})
 	if err != nil {
-		log.Printf("[Publisher] Failed to finalize publication %s: %v", publication.ID, err)
-		return
+		return fmt.Errorf("finalize publication %s: %w", publication.ID, err)
 	}
 	s.cleanupPublishedPublicationMedia(ctx, publication.ID, status)
+	return nil
 }
 
 func (s *Service) cleanupPublishedPublicationMedia(ctx context.Context, publicationID, status string) {
@@ -2567,4 +2602,33 @@ func (s *Service) getPublicMediaURL(media models.MediaAttachment) string {
 		media,
 		time.Now().UTC().Add(15*time.Minute),
 	)
+}
+
+// The published state and its durable event are one commit. Source consumers can
+// recover missed worker wakeups by reading the event after a process restart.
+func (s *Service) completeRendition(ctx context.Context, publication *models.Publication, rendition *models.Rendition, externalID, externalURL string, publishedAt time.Time) error {
+	err := s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if _, err := tx.NewUpdate().Model(rendition).
+			Set("status = ?", models.RenditionStatusPublished).
+			Set("external_id = ?", externalID).
+			Set("external_url = ?", externalURL).
+			Set("error_message = ''").
+			Set("error_kind = ''").
+			Set("error_code = ''").
+			Set("error_http_status = 0").
+			Set("error_retryable = ?", false).
+			Set("error_retry_at = NULL").
+			Set("error_action = ''").
+			Set("updated_at = ?", publishedAt).
+			Where("id = ?", rendition.ID).
+			Exec(ctx); err != nil {
+			return fmt.Errorf("updating rendition status: %w", err)
+		}
+		_, err := lifecycle.NewService(tx).Record(ctx, lifecycle.EventInput{WorkspaceID: publication.WorkspaceID, PublicationID: publication.ID, RenditionID: rendition.ID, Type: lifecycle.EventPublished, Status: lifecycle.StatusSucceeded, Message: "rendition published", CreatedAt: publishedAt, Metadata: map[string]any{"platform": rendition.Platform, "external_id": externalID, "external_url": externalURL}})
+		return err
+	})
+	if err != nil {
+		return &renditionCompletionError{cause: err}
+	}
+	return nil
 }

@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Canvas, IText } from 'fabric';
-import { page as browserPage } from 'vitest/browser';
 import { renderImageEditorPage } from './static-renderer';
 import { OpenPostFabricAdapter } from './fabric-adapter';
+import { editTextWithRuns, type ImageEditorTextEdit } from './text-runs';
 import {
 	imageEditorCollectiveTransform,
 	transformImageEditorCollectiveMember
@@ -11,7 +11,8 @@ import type {
 	ImageEditorDocument,
 	ImageEditorGradientType,
 	ImageEditorLayer,
-	ImageEditorPage
+	ImageEditorPage,
+	ImageEditorTextValue
 } from './types';
 
 function adapterInternals<T extends object>(adapter: OpenPostFabricAdapter): T {
@@ -80,7 +81,15 @@ function documentFixture(page: ImageEditorPage, width = 360, height = 240): Imag
 async function mountAdapter(
 	document: ImageEditorDocument,
 	page: ImageEditorPage,
-	options: { staticCanvas?: boolean; renderScale?: number } = {}
+	options: {
+		staticCanvas?: boolean;
+		renderScale?: number;
+		onTextChange?: (
+			id: string,
+			text: string,
+			edit?: ImageEditorTextEdit
+		) => ImageEditorTextValue | void;
+	} = {}
 ) {
 	const canvas = window.document.createElement('canvas');
 	window.document.body.append(canvas);
@@ -93,7 +102,7 @@ async function mountAdapter(
 		renderScale: options.renderScale,
 		onSelection: () => undefined,
 		onTransform: () => undefined,
-		onTextChange: () => undefined
+		onTextChange: options.onTextChange ?? (() => undefined)
 	});
 	await adapter.mount();
 	return { adapter, canvas };
@@ -116,6 +125,125 @@ function pixelDigest(canvas: HTMLCanvasElement): number {
 	}
 	return hash >>> 0;
 }
+
+it('renders saved grapheme emphasis in the live canvas and static export', async () => {
+	const layer: ImageEditorLayer = {
+		id: 'headline',
+		type: 'text',
+		name: 'Headline',
+		visible: true,
+		locked: false,
+		opacity: 1,
+		transform: {
+			x: 20,
+			y: 20,
+			width: 300,
+			height: 100,
+			rotation: 0,
+			flip_x: false,
+			flip_y: false
+		},
+		text: {
+			text: 'A👩🏽‍🚀B',
+			runs: [{ start: 2, end: 3, font_weight: 700, color: '#ff0000' }],
+			font_family: 'Arial',
+			font_weight: 400,
+			font_style: 'normal',
+			font_size: 52,
+			color: '#000000',
+			align: 'left',
+			line_height: 1,
+			letter_spacing: 0,
+			stroke_width: 0,
+			shadow: { color: '#00000000', blur: 0, offset_x: 0, offset_y: 0 }
+		}
+	};
+	const page = pageFixture([layer]);
+	const document = documentFixture(page);
+	const live = await mountAdapter(document, page);
+	const exported = await mountAdapter(document, page, { staticCanvas: true });
+	try {
+		const objects = adapterInternals<{ objectByLayerID: Map<string, IText> }>(live.adapter);
+		const glyph = objects.objectByLayerID.get('headline');
+		expect(glyph?.styles[0]?.[2]).toMatchObject({
+			fontWeight: 700,
+			fill: '#ff0000'
+		});
+		expect(glyph?.styles[0]?.[1]).toBeUndefined();
+		await settleCanvas();
+		expect(pixelDigest(live.canvas)).toBe(pixelDigest(exported.canvas));
+		const changedLayer: ImageEditorLayer = {
+			...layer,
+			text: {
+				...layer.text!,
+				text: 'A\n👩🏽‍🚀B',
+				runs: [{ start: 3, end: 4, font_weight: 700, color: '#ff0000' }]
+			}
+		};
+		const changedPage = pageFixture([changedLayer]);
+		await live.adapter.sync(documentFixture(changedPage), changedPage);
+		expect(objects.objectByLayerID.get('headline')?.styles[1]?.[1]).toMatchObject({
+			fontWeight: 700,
+			fill: '#ff0000'
+		});
+	} finally {
+		live.adapter.dispose();
+		exported.adapter.dispose();
+		live.canvas.remove();
+		exported.canvas.remove();
+	}
+});
+
+it('uses the Fabric textarea edit position for repeated text', async () => {
+	const layer: ImageEditorLayer = {
+		...renderLayer('text', 40, 40, 260, 100),
+		type: 'text',
+		shape: undefined,
+		text: {
+			text: 'aaaa',
+			runs: [{ start: 3, end: 4, font_weight: 700 }],
+			font_family: 'Arial',
+			font_weight: 400,
+			font_style: 'normal',
+			font_size: 80,
+			color: '#000000',
+			align: 'left',
+			line_height: 1.1,
+			letter_spacing: 0,
+			stroke_width: 0,
+			shadow: { color: '#00000000', blur: 0, offset_x: 0, offset_y: 0 }
+		}
+	};
+	const page = pageFixture([layer]);
+	let updated: ImageEditorTextValue | undefined;
+	const mounted = await mountAdapter(documentFixture(page), page, {
+		onTextChange(_id, text, edit) {
+			updated = editTextWithRuns(layer.text!, text, edit);
+			return updated;
+		}
+	});
+	try {
+		const { objectByLayerID } = adapterInternals<{ objectByLayerID: Map<string, IText> }>(
+			mounted.adapter
+		);
+		const target = objectByLayerID.get(layer.id)!;
+		target.enterEditing();
+		const textarea = target.hiddenTextarea!;
+		textarea.setSelectionRange(0, 0);
+		textarea.dispatchEvent(
+			new InputEvent('beforeinput', { bubbles: true, inputType: 'deleteContentForward' })
+		);
+		textarea.value = 'aaa';
+		textarea.setSelectionRange(0, 0);
+		textarea.dispatchEvent(
+			new InputEvent('input', { bubbles: true, inputType: 'deleteContentForward' })
+		);
+		expect(updated?.runs).toEqual([{ start: 2, end: 3, font_weight: 700 }]);
+		target.exitEditing();
+	} finally {
+		mounted.adapter.dispose();
+	}
+});
 
 function pixelAt(canvas: HTMLCanvasElement, x: number, y: number): number[] {
 	const context = canvas.getContext('2d');
@@ -163,6 +291,34 @@ async function freshRenderDigest(page: ImageEditorPage, selectedIDs: string[]): 
 }
 
 describe('OpenPost Image Editor Fabric reconciliation', () => {
+	it('updates selected-layer eyedropper pixels after an edit', async () => {
+		const layer = renderLayer('sampled', 10, 10, 40, 40);
+		layer.transform.rotation = 30;
+		const coveringLayer = renderLayer('cover', 10, 10, 40, 40);
+		coveringLayer.shape!.fill = '#0000ff';
+		const page = pageFixture([layer, coveringLayer]);
+		const mounted = await mountAdapter(documentFixture(page), page);
+		try {
+			const readPixels = vi.spyOn(CanvasRenderingContext2D.prototype, 'getImageData');
+			const before = mounted.adapter.sampleLayerPixelGrid('sampled', {
+				x: 30,
+				y: 30
+			});
+			expect(Array.from(before!.centerPixel).slice(0, 3)).toEqual([249, 115, 22]);
+			expect(readPixels.mock.calls.map(([, , width, height]) => [width, height])).toEqual([[9, 9]]);
+			readPixels.mockRestore();
+			const nextPage = structuredClone(page);
+			nextPage.layers[0].shape!.fill = '#123456';
+			await mounted.adapter.sync(documentFixture(nextPage), nextPage);
+			const after = mounted.adapter.sampleLayerPixelGrid('sampled', {
+				x: 30,
+				y: 30
+			});
+			expect(Array.from(after!.centerPixel).slice(0, 3)).toEqual([18, 52, 86]);
+		} finally {
+			mounted.adapter.dispose();
+		}
+	});
 	it.each([
 		{ key: 'rotation' as const, value: 45, selectionUpdates: { angle: 15 } },
 		{ key: 'flip_x' as const, value: true, selectionUpdates: { flipX: true } }
@@ -614,10 +770,6 @@ describe('OpenPost Image Editor text layer outlines', () => {
 			});
 			try {
 				await settleCanvas();
-				await browserPage.screenshot({
-					element: mounted.canvas,
-					path: `../../../../../test-results/text-outline-${position}.png`
-				});
 				const pixels = mounted.canvas.getContext('2d')!.getImageData(0, 0, 360, 240).data;
 				let glyphOutline = 0;
 				let emptyBoxOutline = 0;
@@ -672,21 +824,17 @@ describe('OpenPost Image Editor text layer outlines', () => {
 		const layer = textLayer();
 		layer.opacity = 0.5;
 		const page = pageFixture([layer]);
-		const mounted = await mountAdapter(documentFixture(page), page, { staticCanvas: true });
+		const mounted = await mountAdapter(documentFixture(page), page, {
+			staticCanvas: true
+		});
 		const plainPage = structuredClone(page);
 		delete plainPage.layers[0].effects!.stroke;
-		const plain = await mountAdapter(documentFixture(plainPage), plainPage, { staticCanvas: true });
+		const plain = await mountAdapter(documentFixture(plainPage), plainPage, {
+			staticCanvas: true
+		});
 		try {
 			const withoutOutline = plain.canvas.getContext('2d')!.getImageData(0, 0, 360, 240).data;
 			const withOutline = mounted.canvas.getContext('2d')!.getImageData(0, 0, 360, 240).data;
-			await browserPage.screenshot({
-				element: mounted.canvas,
-				path: '../../../../../test-results/text-outline-translucent.png'
-			});
-			await browserPage.screenshot({
-				element: plain.canvas,
-				path: '../../../../../test-results/text-plain-translucent.png'
-			});
 			let darkest = 255;
 			for (let i = 0; i < withoutOutline.length; i += 4)
 				darkest = Math.min(darkest, withoutOutline[i]);

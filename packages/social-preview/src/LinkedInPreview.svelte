@@ -8,6 +8,7 @@
   import PreviewMedia from "./PreviewMedia.svelte";
   import PreviewPoll from "./PreviewPoll.svelte";
   import VerifiedBadge from "./VerifiedBadge.svelte";
+  import PreviewText from "./PreviewText.svelte";
 
   interface Props {
     model: PreviewModel;
@@ -16,9 +17,7 @@
 
   let { model, compact = false }: Props = $props();
   const primary = $derived(model.segments[0] ?? { id: "primary", text: "" });
-  const primaryMedia = $derived(
-    primary.media?.length ? primary.media : model.media,
-  );
+  const primaryMedia = $derived(primary.media ?? model.media);
   const displayMedia = $derived(
     model.format === "document" && model.title
       ? primaryMedia.map((item) =>
@@ -32,7 +31,13 @@
 </script>
 
 {#snippet postText(segment: PreviewSegment)}
-  <p class="post-text">{segment.text || "Your post will appear here."}</p>
+  <div class="post-text">
+    <PreviewText
+      text={segment.text || "Your post will appear here."}
+      lines={2}
+      buttonLabel="… more"
+    />
+  </div>
 {/snippet}
 
 <article class={["linkedin-preview", compact && "compact"]}>
@@ -44,7 +49,7 @@
         {#if model.identity.verified}<VerifiedBadge platform="linkedin" />{/if}
         <span>· You</span>
       </div>
-      <span>@{model.identity.handle.replace(/^@/u, "")}</span>
+      {#if model.subtitle}<span>{model.subtitle}</span>{/if}
       <span class="timestamp"
         >{model.createdAtLabel} · <Globe2 aria-label="Public" /></span
       >
@@ -57,13 +62,13 @@
     {@render postText(primary)}
   </div>
 
-  {#if model.card}<PreviewAttachment
-      card={model.card}
+  {#if primary.card ?? model.card}<PreviewAttachment
+      card={(primary.card ?? model.card)!}
       platform="linkedin"
     />{/if}
-  {#if model.poll}
+  {#if primary.poll ?? model.poll}
     <div class="poll-wrap">
-      <PreviewPoll poll={model.poll} platform="linkedin" />
+      <PreviewPoll poll={(primary.poll ?? model.poll)!} platform="linkedin" />
     </div>
   {/if}
 
@@ -73,7 +78,9 @@
       layout={model.format === "document" ||
       displayMedia[0]?.kind === "document"
         ? "document"
-        : "single"}
+        : displayMedia.length > 1
+          ? "facebook"
+          : "single"}
     />
   {:else if model.format === "video"}
     <PreviewMedia media={[]} layout="single" emptyLabel="Video preview" />
@@ -85,14 +92,13 @@
     </div>
   {/if}
 
-  <div class="engagement-summary">
+  <div class="action-row">
+    <PreviewAvatar identity={model.identity} size={24} />
+    <div class="actions"><PreviewActions platform="linkedin" {compact} /></div>
     <span class="reaction-cluster" aria-hidden="true"
       ><i>👍</i><i>♥</i><i>👏</i></span
     >
-    <span>0 reactions</span>
-    <span class="engagement-right">0 comments · 0 reposts</span>
   </div>
-  <div class="action-row"><PreviewActions platform="linkedin" {compact} /></div>
 
   {#if replies.length > 0}
     <div class="comment-thread">
@@ -104,6 +110,18 @@
               <strong>{model.identity.displayName}</strong>
               <span>Author</span>
               {@render postText(reply)}
+              {#if reply.card}<PreviewAttachment
+                  card={reply.card}
+                  platform="linkedin"
+                />{/if}
+              {#if reply.poll}<PreviewPoll
+                  poll={reply.poll}
+                  platform="linkedin"
+                />{/if}
+              {#if reply.media?.length}<PreviewMedia
+                  media={reply.media}
+                  layout="grid"
+                />{/if}
             </div>
             <small>Like · Reply · {model.createdAtLabel}</small>
           </div>
@@ -115,12 +133,12 @@
 
 <style>
   .linkedin-preview {
-    --native-bg: #f4f2ee;
-    --native-surface: #fff;
-    --native-fg: rgb(0 0 0 / 90%);
-    --native-muted: rgb(0 0 0 / 60%);
-    --native-border: #e0dfdc;
-    --native-soft: #edf3f8;
+    --native-bg: light-dark(#f4f2ee, #000);
+    --native-surface: light-dark(#fff, #1b1f23);
+    --native-fg: light-dark(rgb(0 0 0 / 90%), rgb(255 255 255 / 90%));
+    --native-muted: light-dark(rgb(0 0 0 / 60%), rgb(255 255 255 / 60%));
+    --native-border: light-dark(#e0dfdc, #38434f);
+    --native-soft: light-dark(#edf3f8, #293138);
     width: min(100%, 34.75rem);
     overflow: hidden;
     border: 1px solid var(--native-border);
@@ -247,17 +265,6 @@
     font-weight: 700;
   }
 
-  .engagement-summary {
-    display: flex;
-    min-height: 2.3rem;
-    align-items: center;
-    gap: 0.4rem;
-    margin-inline: 1rem;
-    border-bottom: 1px solid var(--native-border);
-    color: var(--native-muted);
-    font-size: 0.72rem;
-  }
-
   .reaction-cluster {
     display: flex;
   }
@@ -284,12 +291,17 @@
     background: #6dae4f;
   }
 
-  .engagement-right {
-    margin-left: auto;
+  .action-row {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-height: 2.5rem;
+    padding: 0 0.85rem;
   }
 
-  .action-row {
-    padding: 0.15rem 0.6rem;
+  .actions {
+    flex: 1;
+    min-width: 0;
   }
 
   .comment-thread {
@@ -309,7 +321,7 @@
     display: grid;
     gap: 0.15rem;
     border-radius: 0 0.7rem 0.7rem;
-    background: #f2f2f2;
+    background: light-dark(#f2f2f2, #293138);
     padding: 0.55rem 0.7rem;
   }
 
@@ -339,35 +351,7 @@
     padding-inline: 0.75rem;
   }
 
-  @media (prefers-color-scheme: dark) {
-    .linkedin-preview {
-      --native-bg: #000;
-      --native-surface: #1b1f23;
-      --native-fg: rgb(255 255 255 / 90%);
-      --native-muted: rgb(255 255 255 / 60%);
-      --native-border: #38434f;
-      --native-soft: #293138;
-    }
-
-    .comment-bubble {
-      background: #293138;
-    }
-  }
-
-  :global(.dark) .linkedin-preview {
-    --native-bg: #000;
-    --native-surface: #1b1f23;
-    --native-fg: rgb(255 255 255 / 90%);
-    --native-muted: rgb(255 255 255 / 60%);
-    --native-border: #38434f;
-    --native-soft: #293138;
-  }
-
-  :global(.dark) .comment-bubble {
-    background: #293138;
-  }
-
-  @media (max-width: 32rem) {
+  @container (max-width: 32rem) {
     .linkedin-preview {
       border-inline: 0;
       border-radius: 0;

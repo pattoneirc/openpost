@@ -1,7 +1,7 @@
 import type { EditorColorGrade } from '$lib/editor-color-grade/model';
 import type { StockMediaProvenance } from '$lib/stock-media';
 
-export const IMAGE_EDITOR_SCHEMA_VERSION = 1 as const;
+export const IMAGE_EDITOR_SCHEMA_VERSION = 2 as const;
 export const IMAGE_EDITOR_LIMITS = {
 	minDimension: 64,
 	maxDimension: 4096,
@@ -87,6 +87,7 @@ export interface ImageEditorTextCurve {
 
 export interface ImageEditorTextValue {
 	text: string;
+	runs?: ImageEditorTextRun[];
 	font_family: string;
 	font_asset_id?: string;
 	font_weight: number;
@@ -104,6 +105,15 @@ export interface ImageEditorTextValue {
 	stroke_width: number;
 	shadow: ImageEditorTextShadow;
 	curve?: ImageEditorTextCurve;
+}
+
+export interface ImageEditorTextRun {
+	start: number;
+	end: number;
+	font_weight?: number;
+	font_style?: 'normal' | 'italic';
+	underline?: boolean;
+	color?: string;
 }
 
 export interface ImageEditorImageAdjustments extends EditorColorGrade {
@@ -256,6 +266,9 @@ export interface ImageEditorLayer {
 export interface ImageEditorPage {
 	id: string;
 	name: string;
+	/** Omitted in legacy documents; both dimensions then inherit the document defaults. */
+	width_px?: number;
+	height_px?: number;
 	background_color: string;
 	background?: ImageEditorPageBackground;
 	/** Versioned output grade applied after the complete page has been composited. */
@@ -271,7 +284,7 @@ export interface ImageEditorPage {
 }
 
 export interface ImageEditorDocument {
-	schema_version: typeof IMAGE_EDITOR_SCHEMA_VERSION;
+	schema_version: 1 | typeof IMAGE_EDITOR_SCHEMA_VERSION;
 	title: string;
 	preset_key: string;
 	width_px: number;
@@ -385,7 +398,14 @@ export interface ImageEditorBrandFont {
 	license_acknowledged_at?: string;
 }
 
+export interface ImageEditorEffectPreset {
+	id: string;
+	name: string;
+	effects: ImageEditorLayerEffects;
+}
+
 export interface ImageEditorBrandKit {
+	effect_presets?: ImageEditorEffectPreset[];
 	id: string;
 	workspace_id: string;
 	name: string;

@@ -42,9 +42,9 @@ var mcpPostVariantRetiredNames = []string{
 	"list_rendition_comments",
 }
 
-func mcpCallToolResult(t *testing.T, srv *mcpTestServer, token, id, name string, args map[string]any) map[string]any {
+func mcpCallToolResult(t *testing.T, srv *mcpTestServer, id, name string, args map[string]any) map[string]any {
 	t.Helper()
-	resp := srv.request(t, token, map[string]any{
+	resp := srv.request(t, "web-token", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  "tools/call",
@@ -61,7 +61,7 @@ func mcpCallToolResult(t *testing.T, srv *mcpTestServer, token, id, name string,
 
 func mcpRequireToolSuccess(t *testing.T, srv *mcpTestServer, id, name string, args map[string]any) map[string]any {
 	t.Helper()
-	out := mcpCallToolResult(t, srv, "web-token", id, name, args)
+	out := mcpCallToolResult(t, srv, id, name, args)
 	require.Nil(t, out["error"], "tool %s must succeed: %v", name, out["error"])
 	result, ok := out["result"].(map[string]any)
 	require.True(t, ok, "tool %s must return a result", name)
@@ -298,12 +298,12 @@ func TestMCPPostVariantAliasEndToEnd(t *testing.T) {
 
 	// Variant-scoped aliases route to the domain handlers instead of failing
 	// as unknown operations.
-	reply := mcpCallToolResult(t, srv, "web-token", "alias-reply", "reply_to_variant", map[string]any{
+	reply := mcpCallToolResult(t, srv, "alias-reply", "reply_to_variant", map[string]any{
 		"variant_id": "missing-variant", "body": "hello",
 	})
 	require.Equal(t, "variant not found", reply["error"].(map[string]any)["message"])
 
-	comments := mcpCallToolResult(t, srv, "web-token", "alias-comments", "list_variant_comments", map[string]any{
+	comments := mcpCallToolResult(t, srv, "alias-comments", "list_variant_comments", map[string]any{
 		"variant_id": "missing-variant",
 	})
 	require.Equal(t, "variant not found", comments["error"].(map[string]any)["message"])
@@ -374,4 +374,30 @@ func TestMCPPostVariantAnnotations(t *testing.T) {
 		_, ok = annotations["idempotentHint"].(bool)
 		require.True(t, ok, "tool %s must carry idempotentHint", name)
 	}
+}
+
+func TestMCPExplicitVariantFormatRoundTrip(t *testing.T) {
+	t.Parallel()
+	srv := newMCPTestServer(t)
+	created := mcpRequireToolSuccess(t, srv, "locked-create", "create_post", map[string]any{
+		"workspace_id": "ws-1", "content_profile": "short_text", "source_text": "Explicit format",
+		"variants": []any{map[string]any{
+			"social_account_id": "account-1", "profile": "short_text", "output_profile": "x.post", "format_locked": true,
+		}},
+	})
+	post := created["structuredContent"].(map[string]any)["publication"].(map[string]any)
+	loaded := mcpRequireToolSuccess(t, srv, "locked-get", "get_post", map[string]any{"post_id": post["id"], "detail": "full"})
+	post = loaded["structuredContent"].(map[string]any)["publication"].(map[string]any)
+	variants := post["renditions"].([]any)
+	require.Equal(t, true, variants[0].(map[string]any)["format_locked"])
+	updated := mcpRequireToolSuccess(t, srv, "locked-update", "set_post_variants", map[string]any{
+		"post_id": post["id"], "expected_revision": post["revision"],
+		"variants": []any{map[string]any{
+			"social_account_id": "account-1", "profile": "short_text", "output_profile": "x.post", "format_locked": false,
+		}},
+	})
+	post = updated["structuredContent"].(map[string]any)["publication"].(map[string]any)
+	loaded = mcpRequireToolSuccess(t, srv, "unlocked-get", "get_post", map[string]any{"post_id": post["id"], "detail": "full"})
+	post = loaded["structuredContent"].(map[string]any)["publication"].(map[string]any)
+	require.Equal(t, false, post["renditions"].([]any)[0].(map[string]any)["format_locked"])
 }

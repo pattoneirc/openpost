@@ -25,12 +25,20 @@
   let currentIndex = $state(0);
 
   const segment = $derived(model.segments[0] ?? { id: "primary", text: "" });
-  const media = $derived(segment.media?.length ? segment.media : model.media);
+  const media = $derived(segment.media ?? model.media);
   const safeIndex = $derived(
     Math.min(currentIndex, Math.max(0, media.length - 1)),
   );
   const activeMedia = $derived(media[safeIndex]);
   const handle = $derived(model.identity.handle.replace(/^@/u, ""));
+  const caption = $derived(
+    platform === "youtube"
+      ? model.title || segment.text
+      : platform === "facebook" &&
+          (model.format === "reel" || model.format === "video")
+        ? model.subtitle || segment.text
+        : segment.text || model.title,
+  );
   const isStory = $derived(model.format === "story");
   const playerLabel = $derived(
     `${platform === "youtube" ? "YouTube" : platform[0]?.toUpperCase() + platform.slice(1)} ${model.format} player`,
@@ -95,7 +103,9 @@
         size={34}
         ring={platform === "instagram"}
       />
-      <strong>{handle}</strong>
+      <strong
+        >{platform === "facebook" ? model.identity.displayName : handle}</strong
+      >
       <span>{model.createdAtLabel}</span>
       <MoreHorizontal aria-hidden="true" />
       <X aria-hidden="true" />
@@ -104,6 +114,8 @@
     <div class="player-heading">
       {#if platform === "facebook"}<strong>Reels</strong>{/if}
       {#if platform === "youtube"}<strong>Shorts</strong>{/if}
+      {#if platform === "instagram"}<strong>Reels</strong>{/if}
+      {#if platform === "tiktok"}<strong>For You</strong>{/if}
       <span class="volume"><Volume2 aria-hidden="true" /></span>
       <MoreHorizontal aria-hidden="true" />
     </div>
@@ -139,12 +151,20 @@
   {:else}
     <div class="vertical-copy">
       <div class="author-row">
-        <strong>@{handle}</strong>
+        {#if platform !== "tiktok"}<PreviewAvatar
+            identity={model.identity}
+            size={28}
+          />{/if}
+        <strong
+          >{platform === "facebook"
+            ? model.identity.displayName
+            : `@${handle}`}</strong
+        >
         {#if platform === "instagram" || platform === "youtube"}
           <span>{platform === "youtube" ? "Subscribe" : "Follow"}</span>
         {/if}
       </div>
-      <p>{segment.text || model.title || "Your caption will appear here."}</p>
+      <p>{caption || "Your caption will appear here."}</p>
       <div class="audio-row">
         <Music2 aria-hidden="true" />
         <span
@@ -155,7 +175,10 @@
       </div>
     </div>
     <div class="action-stack">
-      <PreviewAvatar identity={model.identity} size={40} />
+      {#if platform === "tiktok"}<PreviewAvatar
+          identity={model.identity}
+          size={40}
+        />{/if}
       <PreviewActions {platform} vertical />
       {#if platform === "tiktok"}
         <span class="music-disc"><Music2 aria-hidden="true" /></span>
@@ -497,7 +520,7 @@
 
   .player-progress span {
     display: block;
-    width: 31%;
+    width: 0;
     height: 100%;
     background: white;
   }
@@ -527,10 +550,30 @@
     --player-width: 20rem;
   }
 
-  @media (max-width: 32rem) {
+  @container (max-width: 32rem) {
     .vertical-preview {
       width: min(100%, 22rem);
       border-radius: 0.45rem;
     }
+  }
+  .vertical-media img,
+  .vertical-media video {
+    object-fit: contain;
+  }
+  .story-heading strong,
+  .author-row strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .story-heading > :global(svg) {
+    flex: none;
+  }
+  .platform-tiktok .vertical-copy {
+    bottom: 2rem;
+  }
+  .platform-youtube .audio-row {
+    display: none;
   }
 </style>

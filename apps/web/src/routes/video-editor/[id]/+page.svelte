@@ -21,6 +21,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 	import { ProtectedIcon, ThemeIcon, type ProtectedIconRole } from '$lib/themes/icons';
 	import type { ThemeIconRole } from '$lib/themes/contracts';
 	import PanelResizeHandle from '$lib/components/panel-resize-handle.svelte';
+	import { toast } from 'svelte-sonner';
 	import { showToast } from '$lib/toast';
 	import { ui } from '$lib/stores/ui.svelte';
 	import FeedbackDialog from '$lib/components/feedback-dialog.svelte';
@@ -77,6 +78,9 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 	import { mediaPool } from '$lib/video-editor/media/pool.svelte';
 	import type { ProjectAssetImporter } from '$lib/video-editor/media/types';
 	import type { ProjectMediaDeleteResult } from '$lib/video-editor/media/project-media-delete';
+	import ReusableLibrary from '$lib/video-editor/components/reusable-library.svelte';
+	import { videoLibrary } from '$lib/video-editor/library/library-store.svelte';
+	import TimerBrowser from '$lib/video-editor/components/timer-browser.svelte';
 	import { formatMediaDuration } from '$lib/video-editor/media/library-view';
 	import { outputDurationFrames } from '$lib/video-editor/media/render-plan';
 	import { mediaRecovery } from '$lib/video-editor/media/media-recovery.svelte';
@@ -484,7 +488,13 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 	let recordingOpen = $state(false);
 	let unsupportedAudioRequest = $state<UnsupportedAudioImportRequest | null>(null);
 	let unsupportedAudioResolve: ((decision: 'import' | 'cancel') => void) | null = null;
+	$effect(() => {
+		const scope = cloudStorage ? workspaceCtx.currentWorkspace?.id : 'local';
+		if (scope) void videoLibrary.load(scope).catch((error) => toast.error(String(error)));
+	});
 	type LeftPanel =
+		| 'library'
+		| 'timers'
 		| 'media'
 		| 'stock'
 		| 'text'
@@ -739,6 +749,24 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 			icon: 'editor-text'
 		},
 		{
+			value: 'transcript',
+			label: m.video_editor_transcript(),
+			iconKind: 'protected',
+			icon: 'editor-captions'
+		},
+		{
+			value: 'transitions',
+			label: m.video_editor_transition(),
+			iconKind: 'protected',
+			icon: 'editor-transitions'
+		},
+		{
+			value: 'effects',
+			label: m.video_editor_effects(),
+			iconKind: 'protected',
+			icon: 'editor-effects'
+		},
+		{
 			value: 'shapes',
 			// oxlint-disable-next-line anti-slop/no-shape-in-symbol-names -- The generated message key names the user-facing Shapes tool.
 			label: m.video_editor_shapes(),
@@ -758,29 +786,13 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 			icon: 'editor-stickers'
 		},
 		{
-			value: 'effects',
-			label: m.video_editor_effects(),
-			iconKind: 'protected',
-			icon: 'editor-effects'
-		},
-		{
-			value: 'transitions',
-			label: m.video_editor_transition(),
-			iconKind: 'protected',
-			icon: 'editor-transitions'
-		},
-		{
 			value: 'lottie',
 			label: m.video_editor_animations(),
 			iconKind: 'protected',
 			icon: 'editor-animation'
 		},
-		{
-			value: 'transcript',
-			label: m.video_editor_transcript(),
-			iconKind: 'protected',
-			icon: 'editor-captions'
-		}
+		{ value: 'timers', label: m.video_editor_timers(), iconKind: 'theme', icon: 'time' },
+		{ value: 'library', label: m.video_editor_library(), iconKind: 'theme', icon: 'favorite' }
 	]);
 	const utilityLeftPanelOptions = $derived<LeftPanelOption[]>([
 		{
@@ -3046,9 +3058,27 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 												<SceneBrowserPanel />
 											{:else if leftPanel === 'text'}
 												<TextTemplateBrowser
+													importAsset={cloudStorage ? importCloudEditorProjectAsset : undefined}
 													selectedTextItemId={selectedIsText ? selectedItemId : null}
 													onapplied={() => editorSession.scheduleAutosave()}
 													oninserted={handleVectorAssetInserted}
+												/>
+											{:else if leftPanel === 'library'}
+												<ReusableLibrary
+													ontransition={handleApplyTransition}
+													selectedIds={selectedLeftPanelItemIds}
+													oninserted={(ids) => {
+														selectedItemIds = ids;
+														selectedItemId = ids[0] ?? null;
+														editorSession.scheduleAutosave();
+													}}
+													onedit={() => editorSession.scheduleAutosave()}
+													importAsset={cloudStorage ? importCloudEditorProjectAsset : undefined}
+												/>
+											{:else if leftPanel === 'timers'}
+												<TimerBrowser
+													oninserted={handleVectorAssetInserted}
+													importAsset={cloudStorage ? importCloudEditorProjectAsset : undefined}
 												/>
 											{:else if leftPanel === 'shapes'}
 												<ShapePanel oninserted={handleVectorAssetInserted} />
@@ -3066,7 +3096,12 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 												<EffectBrowserPanel
 													selectedItemIds={selectedLeftPanelItemIds}
 													oninserted={handleVectorAssetInserted}
-													onedit={() => editorSession.scheduleAutosave()}
+													onedit={() => {
+														editorSession.scheduleAutosave();
+														editInspectorTab = 'effects';
+														expandRightSidebar();
+														mobileEditPane = 'tools';
+													}}
 												/>
 											{:else if leftPanel === 'transitions'}
 												<TransitionBrowserPanel onapply={handleApplyTransition} />
@@ -3181,6 +3216,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 											/>
 										{/key}
 										<TransportBar
+											workspaceId={cloudStorage ? workspaceCtx.currentWorkspace?.id : undefined}
 											{projectId}
 											importProjectAsset={cloudStorage ? importCloudEditorProjectAsset : undefined}
 											onvoiceoverinserted={handleVoiceoverInserted}

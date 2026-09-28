@@ -1,6 +1,6 @@
 import { planCatalog, purchaseTerms, selfHostedDeployment } from '@openpost/plan-catalog';
-import { mediaTools } from '@openpost/social-images';
-import { PLATFORM_LIMITS } from '../../../web/src/lib/platform-limits';
+import { mediaTools, previewTools } from '@openpost/social-images';
+import { PLATFORM_LIMITS } from '@openpost/platform-text';
 import publicClaimManifest from '../../../../config/provider-certification/public-claims.json';
 
 type PublicProviderClaim = {
@@ -675,7 +675,7 @@ const platformImplementations = [
 			}
 		],
 		limits: [
-			`${PLATFORM_LIMITS.threads.charLimit} characters`,
+			`${PLATFORM_LIMITS.threads.charLimit} UTF-8 bytes`,
 			PLATFORM_LIMITS.threads.media,
 			'Reply chains',
 			'Public media URL and approved Meta app access required'
@@ -1148,6 +1148,7 @@ export const landingPlatforms = landingPlatformSlugs.map((slug) => {
 });
 
 export const tools = [
+	...previewTools,
 	...mediaTools,
 	{
 		slug: 'social-media-video-editor',
@@ -1200,6 +1201,8 @@ export const tools = [
 export type MarketingToolSlug = (typeof tools)[number]['slug'];
 
 export function getToolCategory(slug: MarketingToolSlug) {
+	if (slug === 'post-preview-generator' || previewTools.some((tool) => tool.slug === slug))
+		return 'Previews';
 	if (slug === 'social-media-video-editor') return 'Video';
 	if (slug === 'social-media-image-editor') return 'Images';
 	return mediaTools.find((tool) => tool.slug === slug)?.category ?? 'Writing & planning';

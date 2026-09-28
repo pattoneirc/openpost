@@ -6,13 +6,16 @@ import type {
 	ImageEditorImageAdjustments,
 	ImageEditorLayer,
 	ImageEditorPage,
-	ImageEditorTool
+	ImageEditorTool,
+	ImageEditorTextValue
 } from './types';
+import { textGraphemeOffset, textGraphemes, type ImageEditorTextEdit } from './text-runs';
 import {
 	defaultImageAdjustments,
 	isEmptyImageEditorPaintLayer,
 	imageEditorPageBackground
 } from './document';
+import { imageEditorPageDimensions } from './page-dimensions';
 import { createTextCurvePath, shadowColor, shadowOffset, textCurveStartOffset } from './effects';
 import {
 	createImageEditorCanvasGradient,
@@ -63,6 +66,14 @@ interface FabricObjectCollection extends FabricObject {
 
 interface EditableFabricText extends FabricObject {
 	text: string;
+	hiddenTextarea?: HTMLTextAreaElement | null;
+	selectionStart: number;
+	selectionEnd: number;
+	styles: Record<number, Record<number, Record<string, string | number | boolean>>>;
+	get2DCursorLocation(
+		index: number,
+		skipWrapping?: boolean
+	): { lineIndex: number; charIndex: number };
 	initDimensions(): void;
 	enterEditing(): void;
 	selectAll?(): void;
@@ -139,7 +150,8 @@ interface FabricAdapterOptions {
 	onSelection(ids: string[]): void;
 	onTransform(id: string, updates: Partial<ImageEditorLayer['transform']>): void;
 	onAltDuplicate?(entries: Array<{ id: string; transform: ImageEditorLayer['transform'] }>): void;
-	onTextChange(id: string, text: string): void;
+	onTextChange(id: string, text: string, edit?: ImageEditorTextEdit): ImageEditorTextValue | void;
+	onTextSelectionChange?(id: string, start: number, end: number): void;
 	onTextEditingChange?(editing: boolean): void;
 	onImageDimensions?(id: string, width: number, height: number): void;
 	onMissingMedia?(mediaID: string, layerID?: string): void;
@@ -428,6 +440,7 @@ export class OpenPostFabricAdapter {
 	private onTransform: FabricAdapterOptions['onTransform'];
 	private onAltDuplicate: NonNullable<FabricAdapterOptions['onAltDuplicate']>;
 	private onTextChange: FabricAdapterOptions['onTextChange'];
+	private onTextSelectionChange: NonNullable<FabricAdapterOptions['onTextSelectionChange']>;
 	private onTextEditingChange: NonNullable<FabricAdapterOptions['onTextEditingChange']>;
 	private onImageDimensions: NonNullable<FabricAdapterOptions['onImageDimensions']>;
 	private onMissingMedia: NonNullable<FabricAdapterOptions['onMissingMedia']>;
@@ -438,6 +451,16 @@ export class OpenPostFabricAdapter {
 	};
 	private altDuplicatePending = false;
 	private altOriginGhost: FabricObject | null = null;
+	private activeTextInput: {
+		target: EditableFabricText;
+		textarea: HTMLTextAreaElement;
+		beforeInput: (event: Event) => void;
+		input: () => void;
+		compositionStart: () => void;
+		compositionEnd: () => void;
+		compositionRange: { start: number; end: number } | null;
+		edit?: ImageEditorTextEdit;
+	} | null = null;
 
 	constructor(options: FabricAdapterOptions) {
 		this.element = options.canvas;
@@ -454,10 +477,15 @@ export class OpenPostFabricAdapter {
 		this.onTransform = options.onTransform;
 		this.onAltDuplicate = options.onAltDuplicate ?? (() => undefined);
 		this.onTextChange = options.onTextChange;
+		this.onTextSelectionChange = options.onTextSelectionChange ?? (() => undefined);
 		this.onTextEditingChange = options.onTextEditingChange ?? (() => undefined);
 		this.onImageDimensions = options.onImageDimensions ?? (() => undefined);
 		this.onMissingMedia = options.onMissingMedia ?? (() => undefined);
 		this.onRenderError = options.onRenderError ?? (() => undefined);
+	}
+
+	private get pageDimensions(): { width: number; height: number } {
+		return imageEditorPageDimensions(this.document, this.page);
 	}
 
 	async mount(): Promise<void> {
@@ -465,15 +493,15 @@ export class OpenPostFabricAdapter {
 		this.gradeRenderer = new ImageGradeRenderer(createGpuCompositor);
 		this.canvas = this.staticMode
 			? new this.fabric.StaticCanvas(this.element, {
-					width: Math.max(1, Math.round(this.document.width_px * this.renderScale)),
-					height: Math.max(1, Math.round(this.document.height_px * this.renderScale)),
+					width: Math.max(1, Math.round(this.pageDimensions.width * this.renderScale)),
+					height: Math.max(1, Math.round(this.pageDimensions.height * this.renderScale)),
 					backgroundColor: 'transparent',
 					renderOnAddRemove: false,
 					enableRetinaScaling: false
 				})
 			: new this.fabric.Canvas(this.element, {
-					width: this.document.width_px,
-					height: this.document.height_px,
+					width: this.pageDimensions.width,
+					height: this.pageDimensions.height,
 					backgroundColor: 'transparent',
 					selection: false,
 					preserveObjectStacking: true,
@@ -504,8 +532,14 @@ export class OpenPostFabricAdapter {
 		this.guideObjects = [];
 		this.backgroundObject = null;
 		this.canvas.setDimensions({
-			width: Math.max(1, Math.round(document.width_px * this.renderScale)),
-			height: Math.max(1, Math.round(document.height_px * this.renderScale))
+			width: Math.max(
+				1,
+				Math.round(imageEditorPageDimensions(document, page).width * this.renderScale)
+			),
+			height: Math.max(
+				1,
+				Math.round(imageEditorPageDimensions(document, page).height * this.renderScale)
+			)
 		});
 		if (this.staticMode) this.canvas.setZoom(this.renderScale);
 		this.canvas.backgroundColor = 'transparent';
@@ -541,8 +575,8 @@ export class OpenPostFabricAdapter {
 	async sync(document: ImageEditorDocument, page: ImageEditorPage): Promise<void> {
 		if (!this.canvas || !this.fabric) return;
 		const dimensionsChanged =
-			document.width_px !== this.document.width_px ||
-			document.height_px !== this.document.height_px;
+			imageEditorPageDimensions(document, page).width !== this.pageDimensions.width ||
+			imageEditorPageDimensions(document, page).height !== this.pageDimensions.height;
 		const pageChanged = page.id !== this.page.id;
 		const backgroundChanged =
 			JSON.stringify(imageEditorPageBackground(page)) !== this.backgroundSnapshot;
@@ -713,8 +747,8 @@ export class OpenPostFabricAdapter {
 		}
 		this.clearGuides();
 		const excluded = new Set(options.excludeLayerIDs ?? []);
-		const candidatesX = [0, this.document.width_px / 2, this.document.width_px];
-		const candidatesY = [0, this.document.height_px / 2, this.document.height_px];
+		const candidatesX = [0, this.pageDimensions.width / 2, this.pageDimensions.width];
+		const candidatesY = [0, this.pageDimensions.height / 2, this.pageDimensions.height];
 		this.appendPrecisionCandidates(candidatesX, candidatesY);
 		for (const object of imageEditorFabricObjects(this.canvas.getObjects())) {
 			if (
@@ -742,10 +776,10 @@ export class OpenPostFabricAdapter {
 		const threshold = SNAP_SCREEN_PX / this.screenZoom();
 		const snapped = snapImageEditorPoint(point, filteredX, filteredY, threshold, options.axes);
 		if (snapped.guideX !== null) {
-			this.addGuide([snapped.guideX, 0, snapped.guideX, this.document.height_px]);
+			this.addGuide([snapped.guideX, 0, snapped.guideX, this.pageDimensions.height]);
 		}
 		if (snapped.guideY !== null) {
-			this.addGuide([0, snapped.guideY, this.document.width_px, snapped.guideY]);
+			this.addGuide([0, snapped.guideY, this.pageDimensions.width, snapped.guideY]);
 		}
 		return snapped;
 	}
@@ -765,10 +799,10 @@ export class OpenPostFabricAdapter {
 		candidatesX.push(...this.snapGuideX);
 		candidatesY.push(...this.snapGuideY);
 		if (this.snapGridSize <= 0) return;
-		for (let x = this.snapGridSize; x < this.document.width_px; x += this.snapGridSize) {
+		for (let x = this.snapGridSize; x < this.pageDimensions.width; x += this.snapGridSize) {
 			candidatesX.push(x);
 		}
-		for (let y = this.snapGridSize; y < this.document.height_px; y += this.snapGridSize) {
+		for (let y = this.snapGridSize; y < this.pageDimensions.height; y += this.snapGridSize) {
 			candidatesY.push(y);
 		}
 	}
@@ -876,7 +910,7 @@ export class OpenPostFabricAdapter {
 			this.canvas.renderAll();
 			return this.canvas
 				.getContext()
-				.getImageData(0, 0, this.document.width_px, this.document.height_px);
+				.getImageData(0, 0, this.pageDimensions.width, this.pageDimensions.height);
 		} finally {
 			this.canvas.backgroundColor = background;
 			objects.forEach((object, index) => (object.visible = visibility[index]));
@@ -888,7 +922,8 @@ export class OpenPostFabricAdapter {
 		if (!this.canvas || this.staticMode) return null;
 		const x = Math.floor(point.x);
 		const y = Math.floor(point.y);
-		if (x < 0 || y < 0 || x >= this.document.width_px || y >= this.document.height_px) return null;
+		if (x < 0 || y < 0 || x >= this.pageDimensions.width || y >= this.pageDimensions.height)
+			return null;
 		try {
 			return this.canvas.getContext().getImageData(x, y, 1, 1).data;
 		} catch {
@@ -903,15 +938,15 @@ export class OpenPostFabricAdapter {
 		if (
 			centerX < 0 ||
 			centerY < 0 ||
-			centerX >= this.document.width_px ||
-			centerY >= this.document.height_px
+			centerX >= this.pageDimensions.width ||
+			centerY >= this.pageDimensions.height
 		)
 			return null;
 		const safeRadius = Math.max(1, Math.min(16, Math.floor(radius)));
 		const startX = Math.max(0, centerX - safeRadius);
 		const startY = Math.max(0, centerY - safeRadius);
-		const endX = Math.min(this.document.width_px, centerX + safeRadius + 1);
-		const endY = Math.min(this.document.height_px, centerY + safeRadius + 1);
+		const endX = Math.min(this.pageDimensions.width, centerX + safeRadius + 1);
+		const endY = Math.min(this.pageDimensions.height, centerY + safeRadius + 1);
 		try {
 			const image = this.canvas
 				.getContext()
@@ -933,8 +968,32 @@ export class OpenPostFabricAdapter {
 	}
 
 	sampleLayerPixelGrid(id: string, point: SelectionPoint, radius = 4): ImageEditorPixelGrid | null {
-		const sample = this.rasterizeLayerAtPoint(id, point);
-		return sample ? imageEditorPixelGrid(sample.image, sample.point, radius) : null;
+		const object = this.objectByLayerID.get(id);
+		if (!object || !globalThis.document) return null;
+		const { width: pageWidth, height: pageHeight } = imageEditorPageDimensions(
+			this.document,
+			this.page
+		);
+		const centerX = Math.floor(point.x);
+		const centerY = Math.floor(point.y);
+		if (centerX < 0 || centerY < 0 || centerX >= pageWidth || centerY >= pageHeight) return null;
+		const safeRadius = Math.max(1, Math.min(16, Math.floor(radius)));
+		const startX = Math.max(0, centerX - safeRadius);
+		const startY = Math.max(0, centerY - safeRadius);
+		const endX = Math.min(pageWidth, centerX + safeRadius + 1);
+		const endY = Math.min(pageHeight, centerY + safeRadius + 1);
+		const canvas = globalThis.document.createElement('canvas');
+		canvas.width = endX - startX;
+		canvas.height = endY - startY;
+		const context = canvas.getContext('2d', { willReadFrequently: true });
+		if (!context) return null;
+		context.translate(-startX, -startY);
+		object.render(context);
+		return imageEditorPixelGrid(
+			context.getImageData(0, 0, canvas.width, canvas.height),
+			{ x: centerX - startX, y: centerY - startY },
+			safeRadius
+		);
 	}
 
 	previewImageLayer(id: string, preview?: ImageEditorLayer): void {
@@ -1126,6 +1185,7 @@ export class OpenPostFabricAdapter {
 
 	dispose(): void {
 		this.renderSequence++;
+		this.releaseTextInput();
 		for (const object of this.objectByLayerID.values()) this.releaseObjectURL(object);
 		this.revokeObjectURLs();
 		this.objectByLayerID.clear();
@@ -1218,8 +1278,79 @@ export class OpenPostFabricAdapter {
 			}
 		});
 		canvas.on('text:changed', (event) => this.emitTextChange(event.target));
-		canvas.on('text:editing:entered', () => this.onTextEditingChange(true));
-		canvas.on('text:editing:exited', () => this.onTextEditingChange(false));
+		canvas.on('text:selection:changed', (event) => {
+			const target = event.target;
+			if (isEditableFabricText(target) && target.__imageEditorLayerID) {
+				this.onTextSelectionChange(
+					target.__imageEditorLayerID,
+					target.selectionStart,
+					target.selectionEnd
+				);
+			}
+		});
+		canvas.on('text:editing:entered', (event) => {
+			if (isEditableFabricText(event.target)) this.captureTextInput(event.target);
+			this.onTextEditingChange(true);
+		});
+		canvas.on('text:editing:exited', () => {
+			this.releaseTextInput();
+			this.onTextEditingChange(false);
+		});
+	}
+
+	private captureTextInput(target: EditableFabricText): void {
+		this.releaseTextInput();
+		const textarea = target.hiddenTextarea;
+		if (!textarea) return;
+		const beforeInput = (event: Event): void => {
+			if (!(event instanceof InputEvent)) return;
+			const active = this.activeTextInput;
+			if (!active || active.target !== target) return;
+			const composing = event.inputType === 'insertCompositionText' && active.compositionRange;
+			active.edit = {
+				start: composing
+					? composing.start
+					: textGraphemeOffset(textarea.value, textarea.selectionStart),
+				end: composing ? composing.end : textGraphemeOffset(textarea.value, textarea.selectionEnd),
+				inputType: event.inputType,
+				previousText: textarea.value
+			};
+		};
+		const input = (): void => {
+			const range = this.activeTextInput?.compositionRange;
+			if (range) range.end = textGraphemeOffset(textarea.value, textarea.selectionEnd);
+		};
+		const compositionStart = (): void => {
+			const start = textGraphemeOffset(textarea.value, textarea.selectionStart);
+			if (this.activeTextInput) this.activeTextInput.compositionRange = { start, end: start };
+		};
+		const compositionEnd = (): void => {
+			if (this.activeTextInput) this.activeTextInput.compositionRange = null;
+		};
+		textarea.addEventListener('beforeinput', beforeInput);
+		textarea.addEventListener('input', input);
+		textarea.addEventListener('compositionstart', compositionStart);
+		textarea.addEventListener('compositionend', compositionEnd);
+		this.activeTextInput = {
+			target,
+			textarea,
+			beforeInput,
+			input,
+			compositionStart,
+			compositionEnd,
+			compositionRange: null
+		};
+	}
+
+	private releaseTextInput(): void {
+		const active = this.activeTextInput;
+		if (active) {
+			active.textarea.removeEventListener('beforeinput', active.beforeInput);
+			active.textarea.removeEventListener('input', active.input);
+			active.textarea.removeEventListener('compositionstart', active.compositionStart);
+			active.textarea.removeEventListener('compositionend', active.compositionEnd);
+		}
+		this.activeTextInput = null;
 	}
 
 	private createAltOriginGhost(target: FabricObject): void {
@@ -1338,7 +1469,11 @@ export class OpenPostFabricAdapter {
 	private emitTextChange(target?: FabricObject): void {
 		const layerID = target?.__imageEditorLayerID;
 		if (!layerID || this.syncing || !target || !isEditableFabricText(target)) return;
-		this.onTextChange(layerID, target.text);
+		const edit = this.activeTextInput?.target === target ? this.activeTextInput.edit : undefined;
+		if (this.activeTextInput) this.activeTextInput.edit = undefined;
+		const value = this.onTextChange(layerID, target.text, edit);
+		if (value) this.applyTextRuns(target, value);
+		this.onTextSelectionChange(layerID, target.selectionStart, target.selectionEnd);
 		const layer = this.page.layers.find((candidate) => candidate.id === layerID);
 		if (layer && (layer.effects?.stroke || layer.effects?.inner_shadow)) {
 			// Canvas-origin edits are accepted without a document render to preserve the caret.
@@ -1346,6 +1481,28 @@ export class OpenPostFabricAdapter {
 			this.syncObjectOrder();
 			this.canvas?.requestRenderAll();
 		}
+	}
+
+	private applyTextRuns(target: EditableFabricText, value: ImageEditorTextValue): void {
+		// Refresh Fabric's unwrapped lines before translating grapheme offsets to style positions.
+		if (value.runs?.length) target.initDimensions();
+		const styles: EditableFabricText['styles'] = {};
+		const graphemes = textGraphemes(value.text);
+		for (const run of value.runs ?? []) {
+			for (let index = run.start; index < run.end && index < graphemes.length; index++) {
+				if (graphemes[index] === '\n' || graphemes[index] === '\r\n') continue;
+				const { lineIndex, charIndex } = target.get2DCursorLocation(index, true);
+				const style = (styles[lineIndex] ??= {});
+				const characterStyle: EditableFabricText['styles'][number][number] = {};
+				if (run.font_weight !== undefined) characterStyle.fontWeight = run.font_weight;
+				if (run.font_style !== undefined) characterStyle.fontStyle = run.font_style;
+				if (run.underline !== undefined) characterStyle.underline = run.underline;
+				if (run.color !== undefined) characterStyle.fill = run.color;
+				style[charIndex] = characterStyle;
+			}
+		}
+		target.styles = styles;
+		target.initDimensions();
 	}
 
 	private snapBypassed(event: Event | undefined): boolean {
@@ -1367,8 +1524,8 @@ export class OpenPostFabricAdapter {
 		const threshold = SNAP_SCREEN_PX / zoom;
 		const width = target.getScaledWidth();
 		const height = target.getScaledHeight();
-		const candidatesX = [0, this.document.width_px / 2, this.document.width_px];
-		const candidatesY = [0, this.document.height_px / 2, this.document.height_px];
+		const candidatesX = [0, this.pageDimensions.width / 2, this.pageDimensions.width];
+		const candidatesY = [0, this.pageDimensions.height / 2, this.pageDimensions.height];
 		this.appendPrecisionCandidates(candidatesX, candidatesY);
 		for (const object of imageEditorFabricObjects(this.canvas.getObjects())) {
 			if (
@@ -1406,10 +1563,10 @@ export class OpenPostFabricAdapter {
 			target.top = candidate - [0, height / 2, height][index];
 		}
 		if (guideX !== null) {
-			this.addGuide([guideX, 0, guideX, this.document.height_px]);
+			this.addGuide([guideX, 0, guideX, this.pageDimensions.height]);
 		}
 		if (guideY !== null) {
-			this.addGuide([0, guideY, this.document.width_px, guideY]);
+			this.addGuide([0, guideY, this.pageDimensions.width, guideY]);
 		}
 	}
 
@@ -1429,8 +1586,8 @@ export class OpenPostFabricAdapter {
 		this.clearGuides();
 		const zoom = this.screenZoom();
 		const threshold = SNAP_SCREEN_PX / zoom;
-		const candidatesX = [0, this.document.width_px / 2, this.document.width_px];
-		const candidatesY = [0, this.document.height_px / 2, this.document.height_px];
+		const candidatesX = [0, this.pageDimensions.width / 2, this.pageDimensions.width];
+		const candidatesY = [0, this.pageDimensions.height / 2, this.pageDimensions.height];
 		this.appendPrecisionCandidates(candidatesX, candidatesY);
 		for (const object of imageEditorFabricObjects(this.canvas.getObjects())) {
 			if (object === target || !object.__imageEditorLayerID || this.guideObjects.includes(object))
@@ -1454,10 +1611,10 @@ export class OpenPostFabricAdapter {
 		target.scaleY = (target.scaleY ?? 1) * (snapped.bounds.height / current.height);
 		target.setCoords();
 		if (snapped.guideX !== null) {
-			this.addGuide([snapped.guideX, 0, snapped.guideX, this.document.height_px]);
+			this.addGuide([snapped.guideX, 0, snapped.guideX, this.pageDimensions.height]);
 		}
 		if (snapped.guideY !== null) {
-			this.addGuide([0, snapped.guideY, this.document.width_px, snapped.guideY]);
+			this.addGuide([0, snapped.guideY, this.pageDimensions.width, snapped.guideY]);
 		}
 	}
 
@@ -1492,8 +1649,8 @@ export class OpenPostFabricAdapter {
 			);
 			return null;
 		}
-		const width = this.document.width_px;
-		const height = this.document.height_px;
+		const width = this.pageDimensions.width;
+		const height = this.pageDimensions.height;
 		if (background.type === 'gradient' && background.gradient) {
 			const gradient = structuredClone(background.gradient);
 			const gradientBitmap =
@@ -1657,6 +1814,7 @@ export class OpenPostFabricAdapter {
 			} else {
 				object = new this.fabric.Textbox(layer.text.text, textOptions);
 			}
+			if (isEditableFabricText(object)) this.applyTextRuns(object, layer.text);
 		}
 		if (layer.type === 'shape' && layer.shape) {
 			const shapeOptions = {
@@ -1892,7 +2050,7 @@ export class OpenPostFabricAdapter {
 				strokeWidth: layer.text.stroke_width,
 				backgroundColor: layer.text.highlight_color
 			});
-			textObject.initDimensions?.();
+			this.applyTextRuns(textObject, layer.text);
 		} else if (layer.type === 'shape' && layer.shape) {
 			object.set({
 				...common,
@@ -2668,7 +2826,12 @@ export class OpenPostFabricAdapter {
 			resized.height = height;
 			const context = resized.getContext('2d');
 			if (!context) return null;
-			const region = sourceBounds ?? { x: 0, y: 0, width: sourceWidth, height: sourceHeight };
+			const region = sourceBounds ?? {
+				x: 0,
+				y: 0,
+				width: sourceWidth,
+				height: sourceHeight
+			};
 			context.drawImage(
 				source,
 				region.x,

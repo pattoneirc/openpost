@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy, tick } from 'svelte';
+	import EditorColorMagnifier from '$lib/components/editor-color-magnifier.svelte';
 	import {
 		SCOPE_CAPTURE_INTERVAL_PAUSED_MS,
 		SCOPE_SAMPLE_SIZE_PAUSED
@@ -22,6 +23,7 @@
 		intersectPixelMasks,
 		normalizeSelectionBounds,
 		pixelMaskContainsPoint,
+		pixelMaskBounds,
 		polygonPixelMask,
 		rectanglePixelMask,
 		type SelectionBounds,
@@ -81,6 +83,7 @@
 		mode: ImageEditorSelectionMode;
 		targetLayerID?: string;
 		originalSelection?: Uint8Array;
+		originalSelectionBounds?: SelectionBounds | null;
 	}
 	interface PolygonalSelection {
 		points: SelectionPoint[];
@@ -115,7 +118,11 @@
 		if (!context) return;
 		context.drawImage(pending.source, 0, 0, width, height);
 		lastScopeAt = performance.now();
-		editor.colorScopeSample = { source: sample, itemId: pending.itemId, image: null };
+		editor.colorScopeSample = {
+			source: sample,
+			itemId: pending.itemId,
+			image: null
+		};
 	}
 	function scheduleScope(source: HTMLCanvasElement, itemId: string) {
 		pendingScope = { source, itemId };
@@ -185,9 +192,11 @@
 	let magicScanProgress = $state(0);
 	let magicScanError = $state('');
 	let magicScanAbort: AbortController | null = null;
-	let magicPreviewMask = $state.raw<{ width: number; height: number; data: Uint8Array } | null>(
-		null
-	);
+	let magicPreviewMask = $state.raw<{
+		width: number;
+		height: number;
+		data: Uint8Array;
+	} | null>(null);
 	type FloatingTransformHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw' | 'rotate';
 	let floatingTransformGesture = $state.raw<{
 		pointerID: number;
@@ -197,7 +206,14 @@
 	let mediaDragDepth = 0;
 	let panStart = { x: 0, y: 0, panX: 0, panY: 0 };
 	const touchPointers = new SvelteMap<number, { x: number; y: number }>();
-	let pinchStart = { distance: 0, zoom: 1, centerX: 0, centerY: 0, panX: 0, panY: 0 };
+	let pinchStart = {
+		distance: 0,
+		zoom: 1,
+		centerX: 0,
+		centerY: 0,
+		panX: 0,
+		panY: 0
+	};
 
 	function attachCanvas(node: HTMLCanvasElement) {
 		canvasElement = node;
@@ -227,11 +243,15 @@
 				onAltDuplicate(entries) {
 					editor.duplicateSelectedAtTransforms(entries);
 				},
-				onTextChange(id, text) {
+				onTextChange(id, text, edit) {
 					const layer = editor.activePage?.layers.find((item) => item.id === id);
-					if (!layer?.text || layer.text.text === text) return;
-					editor.updateLayer(id, { text: { ...layer.text, text } }, `text:${id}`);
+					if (!layer?.text || layer.text.text === text) return layer?.text;
+					const next = editor.updateTextContent(id, text, edit);
 					canvasOriginDocument = editor.document;
+					return next;
+				},
+				onTextSelectionChange(id, start, end) {
+					editor.setTextRange(id, start, end);
 				},
 				onTextEditingChange(editing) {
 					textEditing = editing;
@@ -526,22 +546,22 @@
 		const current = eyedropperKeyboardCursor ??
 			eyedropperPreview?.point ??
 			cursorPoint ?? {
-				x: Math.floor(editor.document.width_px / 2),
-				y: Math.floor(editor.document.height_px / 2)
+				x: Math.floor(editor.activePageDimensions.width / 2),
+				y: Math.floor(editor.activePageDimensions.height / 2)
 			};
 		const step = event.shiftKey ? 10 : 1;
 		const point = {
 			x: Math.max(
 				0,
 				Math.min(
-					editor.document.width_px - 1,
+					editor.activePageDimensions.width - 1,
 					current.x + (event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0)
 				)
 			),
 			y: Math.max(
 				0,
 				Math.min(
-					editor.document.height_px - 1,
+					editor.activePageDimensions.height - 1,
 					current.y + (event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0)
 				)
 			)
@@ -549,20 +569,6 @@
 		eyedropperKeyboardCursor = point;
 		sampleEyedropper(point, false);
 		return true;
-	}
-
-	function eyedropperPixelColor(grid: ImageEditorPixelGrid, index: number): string {
-		const offset = index * 4;
-		return `rgba(${grid.data[offset] ?? 0}, ${grid.data[offset + 1] ?? 0}, ${grid.data[offset + 2] ?? 0}, ${(grid.data[offset + 3] ?? 0) / 255})`;
-	}
-
-	function eyedropperMagnifierOffset(point: SelectionPoint): SelectionPoint {
-		const document = editor.document;
-		if (!document) return { x: 14, y: 14 };
-		return {
-			x: point.x > document.width_px / 2 ? -78 : 14,
-			y: point.y > document.height_px / 2 ? -78 : 14
-		};
 	}
 
 	function pixelContentProjections(): Array<{
@@ -590,8 +596,12 @@
 			.filter(
 				(
 					projection
-				): projection is { id: string; width: number; height: number; data: Uint8Array } =>
-					Boolean(projection)
+				): projection is {
+					id: string;
+					width: number;
+					height: number;
+					data: Uint8Array;
+				} => Boolean(projection)
 			);
 	}
 
@@ -615,7 +625,11 @@
 		const id = editor.selectedLayerIDs.at(-1);
 		const layer = editor.activePage?.layers.find((candidate) => candidate.id === id);
 		if (!document || !id || !layer || layer.locked || !adapter) return false;
-		const mask = adapter.layerAlphaPixelMask(id, document.width_px, document.height_px);
+		const mask = adapter.layerAlphaPixelMask(
+			id,
+			editor.activePageDimensions.width,
+			editor.activePageDimensions.height
+		);
 		if (!mask) return false;
 		editor.applyPixelSelection(mask, [id], 'replace');
 		return true;
@@ -657,7 +671,10 @@
 	): boolean {
 		const bounds = editor.floatingPixelSelectionBounds;
 		if (!bounds) return false;
-		const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+		const center = {
+			x: bounds.x + bounds.width / 2,
+			y: bounds.y + bounds.height / 2
+		};
 		if (handle === 'rotate') {
 			const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
 			const nextAngle = Math.atan2(point.y - center.y, point.x - center.x);
@@ -803,7 +820,7 @@
 		return imageEditorDocumentPoint(
 			{ x: event.clientX, y: event.clientY },
 			bounds,
-			{ width: document.width_px, height: document.height_px },
+			{ width: editor.activePageDimensions.width, height: editor.activePageDimensions.height },
 			outside
 		);
 	}
@@ -832,7 +849,10 @@
 	): number | null {
 		const point = documentPoint(event, 'allow');
 		if (!point || !editor.document) return null;
-		const limit = axis === 'horizontal' ? editor.document.height_px : editor.document.width_px;
+		const limit =
+			axis === 'horizontal'
+				? editor.activePageDimensions.height
+				: editor.activePageDimensions.width;
 		const previous =
 			index === undefined
 				? undefined
@@ -867,7 +887,12 @@
 		event.preventDefault();
 		const document = editor.document;
 		if (!document) return;
-		editor.addGuide(axis, (axis === 'horizontal' ? document.height_px : document.width_px) / 2);
+		editor.addGuide(
+			axis,
+			(axis === 'horizontal'
+				? editor.activePageDimensions.height
+				: editor.activePageDimensions.width) / 2
+		);
 	}
 
 	function moveGuide(event: PointerEvent): void {
@@ -1005,10 +1030,14 @@
 			if (
 				preview &&
 				editor.document &&
-				image.width === editor.document.width_px &&
-				image.height === editor.document.height_px
+				image.width === editor.activePageDimensions.width &&
+				image.height === editor.activePageDimensions.height
 			) {
-				magicPreviewMask = { width: image.width, height: image.height, data: mask };
+				magicPreviewMask = {
+					width: image.width,
+					height: image.height,
+					data: mask
+				};
 				await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 			}
 			onComplete(mask);
@@ -1016,7 +1045,9 @@
 			if (cause instanceof DOMException && cause.name === 'AbortError') return;
 			magicScanError =
 				cause instanceof RangeError
-					? m.image_editor_magic_scan_too_large({ limit: MAXIMUM_MAGIC_SCAN_PIXELS })
+					? m.image_editor_magic_scan_too_large({
+							limit: MAXIMUM_MAGIC_SCAN_PIXELS
+						})
 					: cause instanceof Error
 						? cause.message
 						: m.image_editor_magic_scan_failed();
@@ -1174,7 +1205,12 @@
 				current: point,
 				points: [point],
 				mode,
-				originalSelection: editor.pixelSelection.data.slice()
+				originalSelection: editor.pixelSelection.data.slice(),
+				originalSelectionBounds: pixelMaskBounds(
+					editor.pixelSelection.data,
+					editor.pixelSelection.width,
+					editor.pixelSelection.height
+				)
 			};
 			capturePointer(event.currentTarget, event.pointerId);
 			event.preventDefault();
@@ -1240,7 +1276,9 @@
 			} else if (editor.pixelSelection) {
 				editor.addPaintFill(editor.pixelSelection.data);
 			} else if (editor.document) {
-				const mask = new Uint8Array(editor.document.width_px * editor.document.height_px);
+				const mask = new Uint8Array(
+					editor.activePageDimensions.width * editor.activePageDimensions.height
+				);
 				mask.fill(1);
 				editor.addPaintFill(mask);
 			}
@@ -1316,7 +1354,8 @@
 				editor.movePixelSelection(
 					gesture.originalSelection,
 					point.x - gesture.start.x,
-					point.y - gesture.start.y
+					point.y - gesture.start.y,
+					gesture.originalSelectionBounds
 				);
 			}
 		} else if (['marquee', 'ellipse_marquee'].includes(gesture.tool)) {
@@ -1378,7 +1417,8 @@
 				editor.movePixelSelection(
 					gesture.originalSelection,
 					point.x - gesture.start.x,
-					point.y - gesture.start.y
+					point.y - gesture.start.y,
+					gesture.originalSelectionBounds
 				);
 			}
 			selectionGesture = null;
@@ -1463,12 +1503,16 @@
 			if (document) {
 				const mask =
 					editor.pixelSelection?.data ??
-					rectanglePixelMask(document.width_px, document.height_px, {
-						x: 0,
-						y: 0,
-						width: document.width_px,
-						height: document.height_px
-					});
+					rectanglePixelMask(
+						editor.activePageDimensions.width,
+						editor.activePageDimensions.height,
+						{
+							x: 0,
+							y: 0,
+							width: editor.activePageDimensions.width,
+							height: editor.activePageDimensions.height
+						}
+					);
 				editor.addGradientFill(mask, gesture.start, point);
 			}
 			selectionGesture = null;
@@ -1488,22 +1532,22 @@
 			if (gesture.mode === 'replace') editor.clearPixelSelection();
 		} else if (gesture.tool === 'marquee') {
 			mask = rectanglePixelMask(
-				editor.document?.width_px ?? 1,
-				editor.document?.height_px ?? 1,
+				editor.activePageDimensions.width,
+				editor.activePageDimensions.height,
 				normalizeSelectionBounds(gesture.start, point)
 			);
 		} else if (gesture.tool === 'ellipse_marquee') {
 			mask = ellipsePixelMask(
-				editor.document?.width_px ?? 1,
-				editor.document?.height_px ?? 1,
+				editor.activePageDimensions.width,
+				editor.activePageDimensions.height,
 				normalizeSelectionBounds(gesture.start, point)
 			);
 		} else {
 			const points = [...gesture.points, point];
 			if (points.length >= 3) {
 				mask = polygonPixelMask(
-					editor.document?.width_px ?? 1,
-					editor.document?.height_px ?? 1,
+					editor.activePageDimensions.width,
+					editor.activePageDimensions.height,
 					points
 				);
 			}
@@ -1532,7 +1576,11 @@
 		)
 			return false;
 		editor.applyPixelSelection(
-			polygonPixelMask(document.width_px, document.height_px, selection.points),
+			polygonPixelMask(
+				editor.activePageDimensions.width,
+				editor.activePageDimensions.height,
+				selection.points
+			),
 			selection.targetLayerIDs,
 			selection.mode
 		);
@@ -1647,7 +1695,10 @@
 
 	function startPan(event: PointerEvent): void {
 		if (event.pointerType === 'touch') {
-			touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+			touchPointers.set(event.pointerId, {
+				x: event.clientX,
+				y: event.clientY
+			});
 			if (touchPointers.size === 2) {
 				selectionGesture = null;
 				const [first, second] = [...touchPointers.values()];
@@ -1734,7 +1785,10 @@
 			if (point) queueEyedropperSample(point);
 		}
 		if (event.pointerType === 'touch' && touchPointers.has(event.pointerId)) {
-			touchPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+			touchPointers.set(event.pointerId, {
+				x: event.clientX,
+				y: event.clientY
+			});
 			if (touchPointers.size >= 2) {
 				const [first, second] = [...touchPointers.values()];
 				const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
@@ -1868,8 +1922,8 @@
 					eyedropperPreview?.point ??
 					(editor.document
 						? {
-								x: Math.floor(editor.document.width_px / 2),
-								y: Math.floor(editor.document.height_px / 2)
+								x: Math.floor(editor.activePageDimensions.width / 2),
+								y: Math.floor(editor.activePageDimensions.height / 2)
 							}
 						: null);
 				if (point) {
@@ -2003,10 +2057,22 @@
 					ariaLabel={m.image_editor_eyedropper_target()}
 					onValueChange={(value) => (editor.eyedropperTarget = value as ImageEditorColorTarget)}
 					options={[
-						{ value: 'foreground', label: m.image_editor_eyedropper_foreground() },
-						{ value: 'selected_fill', label: m.image_editor_eyedropper_selected_fill() },
-						{ value: 'selected_stroke', label: m.image_editor_eyedropper_selected_stroke() },
-						{ value: 'page_background', label: m.image_editor_eyedropper_page_background() }
+						{
+							value: 'foreground',
+							label: m.image_editor_eyedropper_foreground()
+						},
+						{
+							value: 'selected_fill',
+							label: m.image_editor_eyedropper_selected_fill()
+						},
+						{
+							value: 'selected_stroke',
+							label: m.image_editor_eyedropper_selected_stroke()
+						},
+						{
+							value: 'page_background',
+							label: m.image_editor_eyedropper_page_background()
+						}
 					]}
 					class="h-7 w-40 border-[var(--editor-border)] bg-[var(--editor-control)] text-[var(--editor-text)]"
 				/>
@@ -2058,7 +2124,9 @@
 			>
 				<span>
 					{magicScanError ||
-						m.image_editor_magic_scanning({ value: Math.round(magicScanProgress * 100) })}
+						m.image_editor_magic_scanning({
+							value: Math.round(magicScanProgress * 100)
+						})}
 				</span>
 				{#if magicScanBusy}
 					<Button variant="ghost" size="xs" onclick={cancelMagicScan}>{m.common_cancel()}</Button>
@@ -2349,7 +2417,10 @@
 								{ value: 'linear', label: m.image_editor_gradient_linear() },
 								{ value: 'radial', label: m.image_editor_gradient_radial() },
 								{ value: 'angle', label: m.image_editor_gradient_angle() },
-								{ value: 'reflected', label: m.image_editor_gradient_reflected() },
+								{
+									value: 'reflected',
+									label: m.image_editor_gradient_reflected()
+								},
 								{ value: 'diamond', label: m.image_editor_gradient_diamond() }
 							]}
 							class="h-7 w-36 border-[var(--editor-border)] bg-[var(--editor-control)] text-[var(--editor-text)]"
@@ -2409,7 +2480,9 @@
 					</label>
 					<label class="flex min-w-32 items-center gap-2 px-1 text-xs">
 						<span class="whitespace-nowrap">
-							{m.image_editor_smoothing({ value: Math.round(editor.pencilSmoothing * 100) })}
+							{m.image_editor_smoothing({
+								value: Math.round(editor.pencilSmoothing * 100)
+							})}
 						</span>
 						<Slider
 							value={Math.round(editor.pencilSmoothing * 100)}
@@ -2439,7 +2512,9 @@
 							class="whitespace-nowrap"
 							class:text-warning-foreground={editor.paintOpacity < 0.25}
 						>
-							{m.image_editor_opacity({ value: Math.round(editor.paintOpacity * 100) })}
+							{m.image_editor_opacity({
+								value: Math.round(editor.paintOpacity * 100)
+							})}
 						</span>
 						<Slider
 							value={Math.round(editor.paintOpacity * 100)}
@@ -2532,8 +2607,8 @@
 				role="region"
 				aria-label={m.image_editor_design_canvas()}
 				data-testid="image-editor-stage"
-				style:width={`${editor.document.width_px * editor.zoom}px`}
-				style:height={`${editor.document.height_px * editor.zoom}px`}
+				style:width={`${editor.activePageDimensions.width * editor.zoom}px`}
+				style:height={`${editor.activePageDimensions.height * editor.zoom}px`}
 				style:--image-editor-zoom={editor.zoom}
 				style:--image-editor-pencil-color={editor.paintColor}
 				onpointerdown={(event) => layerPickerRef?.cycleStart(event)}
@@ -2553,7 +2628,7 @@
 						onpointercancel={cancelGuide}
 						onkeydown={(event) => addCenteredGuideFromKeyboard(event, 'vertical')}
 					>
-						{#each rulerTicks(editor.document.width_px) as tick (tick.value)}
+						{#each rulerTicks(editor.activePageDimensions.width) as tick (tick.value)}
 							<span
 								class="absolute bottom-0 border-l border-[var(--editor-muted)]"
 								class:h-3={tick.major}
@@ -2579,7 +2654,7 @@
 						onpointercancel={cancelGuide}
 						onkeydown={(event) => addCenteredGuideFromKeyboard(event, 'horizontal')}
 					>
-						{#each rulerTicks(editor.document.height_px) as tick (tick.value)}
+						{#each rulerTicks(editor.activePageDimensions.height) as tick (tick.value)}
 							<span
 								class="absolute right-0 border-t border-[var(--editor-muted)]"
 								class:w-3={tick.major}
@@ -2606,7 +2681,9 @@
 							type="button"
 							class="group absolute top-0 z-35 h-full w-3 -translate-x-1/2 cursor-ew-resize touch-none border-0 bg-transparent p-0"
 							style:left={`${value * editor.zoom}px`}
-							aria-label={m.image_editor_vertical_guide_at({ value: Math.round(value) })}
+							aria-label={m.image_editor_vertical_guide_at({
+								value: Math.round(value)
+							})}
 							onpointerdown={(event) => startGuide(event, 'vertical', index)}
 							onpointermove={moveGuide}
 							onpointerup={finishGuide}
@@ -2623,7 +2700,9 @@
 							type="button"
 							class="group absolute left-0 z-35 h-3 w-full -translate-y-1/2 cursor-ns-resize touch-none border-0 bg-transparent p-0"
 							style:top={`${value * editor.zoom}px`}
-							aria-label={m.image_editor_horizontal_guide_at({ value: Math.round(value) })}
+							aria-label={m.image_editor_horizontal_guide_at({
+								value: Math.round(value)
+							})}
 							onpointerdown={(event) => startGuide(event, 'horizontal', index)}
 							onpointermove={moveGuide}
 							onpointerup={finishGuide}
@@ -2674,8 +2753,8 @@
 				{/if}
 				<canvas
 					{@attach attachSelectionOverlay}
-					width={editor.document.width_px}
-					height={editor.document.height_px}
+					width={editor.activePageDimensions.width}
+					height={editor.activePageDimensions.height}
 					class="pointer-events-none absolute inset-0 z-15 size-full"
 					data-testid="image-editor-pixel-selection"
 					data-active={editor.pixelSelection ? 'true' : 'false'}
@@ -2707,7 +2786,9 @@
 							<button
 								type="button"
 								class={`pointer-events-auto absolute size-11 touch-none border-0 bg-transparent ${item.class}`}
-								aria-label={m.image_editor_resize_floating_pixels({ handle: item.handle })}
+								aria-label={m.image_editor_resize_floating_pixels({
+									handle: item.handle
+								})}
 								onpointerdown={(event) =>
 									startFloatingTransform(event, item.handle as FloatingTransformHandle)}
 								onpointermove={moveFloatingTransform}
@@ -2800,38 +2881,7 @@
 						</div>
 					</div>
 				{/if}
-				{#if editor.activeTool === 'eyedropper' && eyedropperPreview}
-					{@const magnifierOffset = eyedropperMagnifierOffset(eyedropperPreview.point)}
-					<div
-						class="pointer-events-none absolute z-30 grid place-items-center gap-1 rounded-lg border-2 border-[var(--canvas-handle)] bg-[var(--editor-canvas)] p-1.5 text-[9px] font-semibold text-[var(--editor-text)] shadow-xl"
-						style:left={`${eyedropperPreview.point.x * editor.zoom + magnifierOffset.x}px`}
-						style:top={`${eyedropperPreview.point.y * editor.zoom + magnifierOffset.y}px`}
-						data-testid="image-editor-eyedropper-magnifier"
-						aria-hidden="true"
-					>
-						<div
-							class="eyedropper-grid grid overflow-hidden rounded-sm border border-white/40"
-							style:grid-template-columns={`repeat(${eyedropperPreview.grid.width}, 0.375rem)`}
-						>
-							{#each Array.from( { length: eyedropperPreview.grid.width * eyedropperPreview.grid.height } ) as _, index (index)}
-								<span
-									class="size-1.5"
-									class:ring-2={index ===
-										Math.floor(eyedropperPreview.grid.width / 2) * eyedropperPreview.grid.width +
-											Math.floor(eyedropperPreview.grid.width / 2)}
-									class:ring-white={index ===
-										Math.floor(eyedropperPreview.grid.width / 2) * eyedropperPreview.grid.width +
-											Math.floor(eyedropperPreview.grid.width / 2)}
-									class:ring-inset={index ===
-										Math.floor(eyedropperPreview.grid.width / 2) * eyedropperPreview.grid.width +
-											Math.floor(eyedropperPreview.grid.width / 2)}
-									style:background-color={eyedropperPixelColor(eyedropperPreview.grid, index)}
-								></span>
-							{/each}
-						</div>
-						<span>{eyedropperPreview.color.toUpperCase()}</span>
-					</div>
-				{/if}
+
 				{#if (editor.activeTool === 'pencil' || editor.activeTool === 'eraser') && brushPreview}
 					<div
 						class="pointer-events-none absolute z-30 rounded-full border border-white shadow-[0_0_0_1px_rgb(0_0_0/0.8)]"
@@ -2845,7 +2895,7 @@
 				{#if selectionGesture && !selectionGesture.originalSelection}
 					<svg
 						class="pointer-events-none absolute inset-0 z-20 size-full overflow-visible"
-						viewBox={`0 0 ${editor.document.width_px} ${editor.document.height_px}`}
+						viewBox={`0 0 ${editor.activePageDimensions.width} ${editor.activePageDimensions.height}`}
 						aria-hidden="true"
 					>
 						{#if selectionGesture.tool === 'select' || selectionGesture.tool === 'marquee'}
@@ -2910,7 +2960,7 @@
 				{#if polygonalSelection}
 					<svg
 						class="pointer-events-none absolute inset-0 z-20 size-full overflow-visible"
-						viewBox={`0 0 ${editor.document.width_px} ${editor.document.height_px}`}
+						viewBox={`0 0 ${editor.activePageDimensions.width} ${editor.activePageDimensions.height}`}
 						data-testid="image-editor-polygonal-lasso-preview"
 						aria-hidden="true"
 					>
@@ -2934,7 +2984,7 @@
 				{#if magicPulse}
 					<svg
 						class="pointer-events-none absolute inset-0 z-20 size-full overflow-visible"
-						viewBox={`0 0 ${editor.document.width_px} ${editor.document.height_px}`}
+						viewBox={`0 0 ${editor.activePageDimensions.width} ${editor.activePageDimensions.height}`}
 						aria-hidden="true"
 					>
 						<circle
@@ -2982,21 +3032,25 @@
 	{/if}
 </div>
 
+{#if editor.activeTool === 'eyedropper' && eyedropperPreview && stageElement}
+	{@const bounds = stageElement.getBoundingClientRect()}
+	<EditorColorMagnifier
+		image={eyedropperPreview.grid}
+		pixelX={Math.floor(eyedropperPreview.grid.width / 2)}
+		pixelY={Math.floor(eyedropperPreview.grid.height / 2)}
+		clientX={bounds.left + eyedropperPreview.point.x * editor.zoom}
+		clientY={bounds.top + eyedropperPreview.point.y * editor.zoom}
+		color={eyedropperPreview.alpha === 255
+			? eyedropperPreview.color
+			: `${eyedropperPreview.color}${eyedropperPreview.alpha.toString(16).padStart(2, '0')}`}
+		testId="image-editor-eyedropper-magnifier"
+	/>
+{/if}
+
 <style>
 	.fabric-stage :global(.canvas-container) {
 		transform: scale(var(--image-editor-zoom));
 		transform-origin: top left;
-	}
-
-	.eyedropper-grid {
-		background-color: var(--canvas-handle);
-		background-image: conic-gradient(
-			var(--canvas-grid) 25%,
-			var(--canvas-handle) 0 50%,
-			var(--canvas-grid) 0 75%,
-			var(--canvas-handle) 0
-		);
-		background-size: 0.75rem 0.75rem;
 	}
 
 	.image-editor-selection-outline {

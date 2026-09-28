@@ -36,6 +36,7 @@ import (
 	repostservice "github.com/openpost/backend/internal/services/reposts"
 	"github.com/openpost/backend/internal/services/tokenmanager"
 	"github.com/openpost/backend/internal/services/videoprocessing"
+	"github.com/openpost/backend/internal/services/workflows"
 	"github.com/openpost/backend/internal/telemetry"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
@@ -594,17 +595,23 @@ func (w *BackgroundWorker) failAmbiguousStaleJobs(ctx context.Context, cutoff ti
 			return err
 		}
 		for _, job := range jobs {
-			if definition.Execution == jobregistry.ExecuteRepost && w.reposts != nil {
-				w.reposts.MarkAmbiguousWrite(ctx, job.Payload)
-			}
-			if _, err := w.db.NewUpdate().Model((*models.Job)(nil)).
+			result, err := w.db.NewUpdate().Model((*models.Job)(nil)).
 				Set("status = ?", jobStatusFailed).
 				Set("last_error = ?", definition.RecoveryMessage).
 				Set("locked_at = NULL").
 				Set("locked_by = ''").
-				Where("id = ? AND status = ?", job.ID, jobStatusProcessing).
-				Exec(ctx); err != nil {
+				Where("id = ? AND status = ? AND locked_by = ?", job.ID, jobStatusProcessing, job.LockedBy).
+				Where("locked_at IS NOT NULL AND locked_at <= ?", cutoff).
+				Exec(ctx)
+			if err != nil {
 				return err
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if affected > 0 && definition.Execution == jobregistry.ExecuteRepost && w.reposts != nil {
+				w.reposts.MarkAmbiguousWrite(ctx, job.Payload)
 			}
 		}
 	}
@@ -1107,5 +1114,14 @@ func (w *BackgroundWorker) ensureMediaLifecycleJobs(ctx context.Context) {
 func (w *BackgroundWorker) ensureQueueReminderSweepJob(ctx context.Context) {
 	if _, _, err := jobregistry.EnqueueQueueReminderSweep(ctx, w.db, time.Time{}); err != nil {
 		log.Printf("Failed to schedule queue reminder sweep: %v", err)
+	}
+}
+
+func (w *BackgroundWorker) SetWorkflowService(service *workflows.Service) {
+	w.executors[jobregistry.ExecuteWorkflow] = func(ctx context.Context, job *models.Job) error {
+		if service == nil {
+			return fmt.Errorf("workflows are unavailable")
+		}
+		return service.HandleJob(ctx, job.Type, job.Payload)
 	}
 }

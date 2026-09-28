@@ -11,7 +11,11 @@
 	import { auth } from '$lib/stores/auth';
 	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import ProjectStorageStatus from '$lib/components/project-storage-status.svelte';
-	import { createImageEditorDesign, instantiateImageEditorTemplate } from '$lib/image-editor/api';
+	import {
+		createImageEditorDesign,
+		deleteImageEditorDesign,
+		instantiateImageEditorTemplate
+	} from '$lib/image-editor/api';
 	import { migrateGuestImageEditorDesign } from '$lib/image-editor/guest-migration';
 	import { getAuthenticatedMediaURL } from '$lib/media-url';
 	import { Button } from '$lib/components/ui/button';
@@ -31,9 +35,15 @@
 		deleteGuestImageEditorDesign,
 		listGuestImageEditorDesigns,
 		requestGuestImageEditorPersistence,
+		warmGuestImageEditorDesignMedia,
 		type LocalImageEditorDesign
 	} from '$lib/image-editor/local-persistence';
 	import { trackPublicImageEditorEvent } from '$lib/image-editor/public-telemetry';
+	import {
+		releaseLocalImageEditorMediaForDesign,
+		releaseUnretainedLocalImageEditorMediaForDesign,
+		retainLocalImageEditorMediaForDesign
+	} from '$lib/image-editor/local-media-url';
 	import type { ImageEditorPreset, ImageEditorTemplate } from '$lib/image-editor/types';
 	import { m } from '$lib/paraglide/messages';
 	import { showToast } from '$lib/toast';
@@ -65,7 +75,7 @@
 	let customWidth = $state(1080);
 	let customHeight = $state(1080);
 	let fileInput = $state<HTMLInputElement | null>(null);
-	let pendingDelete = $state<LocalImageEditorDesign | null>(null);
+	let pendingDelete = $state<{ id: string; workspaceID: string } | null>(null);
 	let deleteDialogOpen = $state(false);
 	let pageHeading = $state<HTMLHeadingElement | null>(null);
 	let recentHeading = $state<HTMLHeadingElement | null>(null);
@@ -109,23 +119,56 @@
 				: '')
 	);
 
+	let localDesignListMounted = false;
+	let localDesignLoadSequence = 0;
+	const heldLocalDesignIDs = new Set<string>();
 	onMount(() => {
+		localDesignListMounted = true;
 		void loadLocalDesigns();
+		return () => {
+			localDesignListMounted = false;
+			for (const id of heldLocalDesignIDs) releaseLocalImageEditorMediaForDesign(id);
+			heldLocalDesignIDs.clear();
+		};
 	});
 
 	async function loadLocalDesigns(): Promise<void> {
+		const sequence = ++localDesignLoadSequence;
 		localLoading = true;
 		localLoadError = '';
 		try {
 			const localDesigns = await listGuestImageEditorDesigns(localLimit);
+			if (!localDesignListMounted || sequence !== localDesignLoadSequence) {
+				for (const design of localDesigns)
+					releaseUnretainedLocalImageEditorMediaForDesign(design.id);
+				return;
+			}
+			const nextIDs = new Set(localDesigns.map((design) => design.id));
+			for (const id of heldLocalDesignIDs) {
+				if (!nextIDs.has(id)) {
+					releaseLocalImageEditorMediaForDesign(id);
+					heldLocalDesignIDs.delete(id);
+				}
+			}
+			for (const id of nextIDs) {
+				if (heldLocalDesignIDs.has(id)) continue;
+				retainLocalImageEditorMediaForDesign(id);
+				heldLocalDesignIDs.add(id);
+			}
+			await Promise.all(
+				localDesigns.map((record) => warmGuestImageEditorDesignMedia(record.document))
+			);
+			if (!localDesignListMounted || sequence !== localDesignLoadSequence) return;
 			recentDesigns = localDesigns;
 			trackPublicImageEditorEvent('image_editor_public_view', {
 				returning_guest: localDesigns.length > 0
 			});
 		} catch (cause) {
-			localLoadError = cause instanceof Error ? cause.message : m.image_editor_public_load_failed();
+			if (sequence === localDesignLoadSequence)
+				localLoadError =
+					cause instanceof Error ? cause.message : m.image_editor_public_load_failed();
 		} finally {
-			localLoading = false;
+			if (sequence === localDesignLoadSequence) localLoading = false;
 		}
 	}
 
@@ -233,18 +276,26 @@
 		}
 	}
 
-	function requestDelete(design: LocalImageEditorDesign): void {
-		pendingDelete = design;
+	function requestDelete(design: { id: string }, designWorkspaceID = ''): void {
+		pendingDelete = { id: design.id, workspaceID: designWorkspaceID };
 		deleteReturnFocus = recentDesigns.length > 1 ? recentHeading : pageHeading;
 		deleteDialogOpen = true;
 	}
 
 	async function deleteDesign(): Promise<DestructiveActionOutcome> {
 		if (!pendingDelete) return { ok: false };
-		await deleteGuestImageEditorDesign(pendingDelete.id);
-		recentDesigns = recentDesigns.filter((design) => design.id !== pendingDelete?.id);
+		const target = pendingDelete;
+		if (target.workspaceID) {
+			await deleteImageEditorDesign(target.workspaceID, target.id);
+		} else {
+			await deleteGuestImageEditorDesign(target.id);
+			recentDesigns = recentDesigns.filter((design) => design.id !== target.id);
+		}
 		pendingDelete = null;
-		showToast(m.image_editor_public_deleted(), 'success');
+		showToast(
+			target.workspaceID ? m.image_editor_design_deleted() : m.image_editor_public_deleted(),
+			'success'
+		);
 		return { ok: true };
 	}
 
@@ -402,23 +453,36 @@
 					</p>{/if}
 				<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
 					{#each cloudDesigns as design (design.id)}
-						<a
-							href={resolveAppPath(`/image-editor/${design.id}`)}
-							class="overflow-hidden rounded-xl border bg-card focus-visible:outline-2 focus-visible:outline-ring"
-						>
-							<div class="flex aspect-[4/3] items-center justify-center bg-muted">
-								{#if design.cover_preview_media_id}<img
-										src={getAuthenticatedMediaURL(`/media/${design.cover_preview_media_id}`)}
-										alt={design.title}
-										class="size-full object-contain"
-										loading="lazy"
-									/>{:else}<ThemeIcon role="image" class="size-8 text-muted-foreground" />{/if}
-							</div>
-							<div class="border-t px-3 py-2.5">
-								<p class="mb-1 truncate text-sm font-medium">{design.title}</p>
-								<ProjectStorageStatus storage="cloud" />
-							</div>
-						</a>
+						<div class="group relative overflow-hidden rounded-xl border bg-card">
+							<a
+								href={resolveAppPath(`/image-editor/${design.id}`)}
+								class="block focus-visible:outline-2 focus-visible:outline-ring"
+							>
+								<div class="flex aspect-[4/3] items-center justify-center bg-muted">
+									{#if design.cover_preview_media_id}<img
+											src={getAuthenticatedMediaURL(`/media/${design.cover_preview_media_id}`)}
+											alt={design.title}
+											class="size-full object-contain"
+											loading="lazy"
+										/>{:else}<ThemeIcon role="image" class="size-8 text-muted-foreground" />{/if}
+								</div>
+								<div class="border-t px-3 py-2.5">
+									<p class="mb-1 truncate text-sm font-medium">{design.title}</p>
+									<ProjectStorageStatus storage="cloud" />
+								</div>
+							</a>
+							{#if workspaceCtx.currentWorkspace?.can_edit}
+								<Button
+									variant="ghost"
+									size="icon-sm"
+									class="absolute top-2 right-2 bg-background/90"
+									onclick={() => requestDelete(design, workspaceID)}
+									aria-label={m.image_editor_public_delete_design({ title: design.title })}
+								>
+									<ThemeIcon role="delete" />
+								</Button>
+							{/if}
+						</div>
 					{/each}
 
 					{#each recentDesigns as design (design.id)}
@@ -609,8 +673,12 @@
 
 <DestructiveConfirmDialog
 	bind:open={deleteDialogOpen}
-	title={m.image_editor_public_delete_title()}
-	description={m.image_editor_public_delete_description()}
+	title={pendingDelete?.workspaceID
+		? m.image_editor_design_delete_title()
+		: m.image_editor_public_delete_title()}
+	description={pendingDelete?.workspaceID
+		? m.image_editor_design_delete_body()
+		: m.image_editor_public_delete_description()}
 	onConfirm={deleteDesign}
 	returnFocus={deleteReturnFocus}
 />

@@ -1,3 +1,4 @@
+import { timerToneSample } from '../timers/audio';
 /* oxlint-disable anti-slop/no-conditional-empty-object-spread, anti-slop/require-safety-comment-for-type-assertion */
 import type { MixEntry } from '../media/render-plan';
 import { collectMixEntryDuckWindows, type MixEntryDuckWindow } from './audio-ducking';
@@ -20,6 +21,16 @@ export const MIX_WINDOW_SAMPLES = MIX_WINDOW_SECONDS * MIX_SAMPLE_RATE;
 const SOURCE_WINDOW_SECONDS = 5;
 const SOURCE_GUARD_SECONDS = 0;
 const ACTIVE_EPSILON = 0.0001;
+const SAMPLE_POSITION_TOLERANCE = 1e-7;
+
+// Frame-to-second subtraction can put an exact sample boundary a few ULPs past an integer.
+// Preserve floor/ceil semantics for fractional samples without inventing a sample at EOF.
+function samplePosition(seconds: number, sampleRate: number): number {
+	const position = seconds * sampleRate;
+	const nearest = Math.round(position);
+	const tolerance = Math.max(SAMPLE_POSITION_TOLERANCE, Math.abs(position) * Number.EPSILON * 4);
+	return Math.abs(position - nearest) <= tolerance ? nearest : position;
+}
 
 export class CompiledTargetDuck {
 	private readonly sorted: MixEntryDuckWindow[];
@@ -141,14 +152,14 @@ async function decodeSourceSlice(
 					0,
 					Math.min(
 						sample.numberOfFrames,
-						Math.ceil((overlapStart - sample.timestamp) * sampleRate - 1e-7)
+						Math.ceil(samplePosition(overlapStart - sample.timestamp, sampleRate))
 					)
 				);
 				const frameEnd = Math.max(
 					frameOffset,
 					Math.min(
 						sample.numberOfFrames,
-						Math.ceil((overlapEnd - sample.timestamp) * sampleRate - 1e-7)
+						Math.ceil(samplePosition(overlapEnd - sample.timestamp, sampleRate))
 					)
 				);
 				const frames = frameEnd - frameOffset;
@@ -282,17 +293,24 @@ async function* streamEntryAudio(
 	signal?: AbortSignal,
 	diagnostics?: AudioMixDiagnostics
 ): AsyncGenerator<Float32Array[]> {
-	const media = mediaPool.get(entry.mediaId);
-	if (!media) throw new Error("A timeline clip's media is unavailable.");
-	let blob: Blob;
-	try {
-		blob = await resolveMediaBlob(media);
-	} catch (error) {
-		if (isAbortError(error)) throw error;
-		throw new Error("A timeline clip's media could not be opened.", { cause: error });
+	let blob: Blob | undefined;
+	if (!entry.toneFrequency) {
+		const media = mediaPool.get(entry.mediaId);
+		if (!media) throw new Error("A timeline clip's media is unavailable.");
+		try {
+			blob = await resolveMediaBlob(media);
+		} catch (error) {
+			if (isAbortError(error)) throw error;
+			throw new Error("A timeline clip's media could not be opened.", {
+				cause: error
+			});
+		}
 	}
 
-	const targetFrames = Math.max(0, Math.ceil(entry.durationSeconds * MIX_SAMPLE_RATE));
+	const targetFrames = Math.max(
+		0,
+		Math.ceil(samplePosition(entry.durationSeconds, MIX_SAMPLE_RATE))
+	);
 	const hasVariableSpeed = (entry.playbackRateCurve?.length ?? 0) > 0;
 	const sourceDuration = entry.durationSeconds * entry.playbackRate + SOURCE_GUARD_SECONDS;
 	const sourceStart = hasVariableSpeed
@@ -333,7 +351,12 @@ async function* streamEntryAudio(
 		if (chunkEnd <= chunkStart) break;
 		let decoded: DecodedAudioChunk;
 		try {
-			decoded = await decodeSourceSlice(blob, chunkStart, chunkEnd, signal);
+			if (entry.toneFrequency) {
+				const samples = new Float32Array(Math.ceil((chunkEnd - chunkStart) * MIX_SAMPLE_RATE));
+				for (let i = 0; i < samples.length; i++)
+					samples[i] = timerToneSample(chunkStart + i / MIX_SAMPLE_RATE, entry.toneFrequency);
+				decoded = { channels: [samples], sampleRate: MIX_SAMPLE_RATE };
+			} else decoded = await decodeSourceSlice(blob!, chunkStart, chunkEnd, signal);
 		} catch (error) {
 			if (isAbortError(error)) throw error;
 			throw new Error('A timeline clip could not be decoded.', { cause: error });
@@ -386,7 +409,7 @@ async function* streamEntryAudio(
 			channels = timeStretch.process(
 				channels,
 				sourceFinished,
-				Math.ceil(entry.durationSeconds * sampleRate)
+				Math.ceil(samplePosition(entry.durationSeconds, sampleRate))
 			);
 		}
 		if (channels[0]?.length === 0) continue;
@@ -411,7 +434,7 @@ async function* streamEntryAudio(
 	}
 	const tailSeconds = getAudioEffectTailSeconds(entry.audioEffects);
 	if (tailSeconds > 0.001 && effectChain && !effectChain.isEmpty() && sampleRate !== 0) {
-		const tailSamplesMix = Math.ceil(tailSeconds * MIX_SAMPLE_RATE);
+		const tailSamplesMix = Math.ceil(samplePosition(tailSeconds, MIX_SAMPLE_RATE));
 		let remainingMix = tailSamplesMix;
 		const drainChunkMix = 2048;
 		while (remainingMix > 0) {
@@ -510,17 +533,21 @@ export async function* mixAudioWindows(
 ): AsyncGenerator<{ samples: Float32Array[]; sampleRate: number; channels: number }> {
 	throwIfAborted(signal);
 	if (entries.length === 0 || durationSeconds <= 0) return;
-	const totalSamples = Math.ceil(durationSeconds * MIX_SAMPLE_RATE);
+	const totalSamples = Math.ceil(samplePosition(durationSeconds, MIX_SAMPLE_RATE));
 	const duckSources = collectMixEntryDuckWindows(entries);
 	const prepared: PreparedEntry[] = entries.map((entry) => {
-		const startSample = Math.floor(entry.whenSeconds * MIX_SAMPLE_RATE);
-		const tailSamples = Math.ceil(getAudioEffectTailSeconds(entry.audioEffects) * MIX_SAMPLE_RATE);
+		const startSample = Math.floor(samplePosition(entry.whenSeconds, MIX_SAMPLE_RATE));
+		const tailSamples = Math.ceil(
+			samplePosition(getAudioEffectTailSeconds(entry.audioEffects), MIX_SAMPLE_RATE)
+		);
 		return {
 			entry,
 			startSample,
 			endSample: Math.min(
 				totalSamples,
-				startSample + Math.ceil(entry.durationSeconds * MIX_SAMPLE_RATE) + tailSamples
+				startSample +
+					Math.ceil(samplePosition(entry.durationSeconds, MIX_SAMPLE_RATE)) +
+					tailSamples
 			),
 			automation: new EntryAutomation(entry, diagnostics),
 			reader: null
