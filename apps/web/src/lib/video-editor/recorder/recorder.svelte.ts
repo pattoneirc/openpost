@@ -1,9 +1,9 @@
 /**
- * Screen capture recorder: separate screen / camera / microphone artifacts
+ * Screen capture recorder: screen and camera artifacts with embedded microphone audio
  * with monotonic shared-timebase alignment, measured start offsets,
  * visible preflight/countdown/progress, and robust lifecycle.
  *
- * Each selected source records into its own MediaRecorder backed by an
+ * Each video, or a standalone microphone, records into a MediaRecorder backed by an
  * ordered durable OPFS scratch sink (one file per recorder). Falls back
  * to a small bounded-memory sink when OPFS is unavailable. No unbounded
  * Blob[] accumulation.
@@ -36,6 +36,7 @@ import {
 	type ScratchSink
 } from './recorder-scratch';
 import { microphoneConstraints, startMicLevelMeter } from './mic-recorder';
+import { createRecordingStreams } from './recording-streams';
 import {
 	deriveSystemAudioStatus,
 	detectRecordingCapabilities,
@@ -257,10 +258,14 @@ function preferredVideoConstraints(
 	const result: Pick<MediaTrackConstraints, 'width' | 'height' | 'frameRate'> = {};
 	if (resolution) {
 		const size = VIDEO_RESOLUTION_SIZE[resolution];
-		result.width = { ideal: size.width };
-		result.height = { ideal: size.height };
+		result.width = { ideal: size.width, max: size.width };
+		result.height = { ideal: size.height, max: size.height };
 	}
-	if (options.videoFrameRate) result.frameRate = { ideal: options.videoFrameRate };
+	if (options.videoFrameRate)
+		result.frameRate = {
+			ideal: options.videoFrameRate,
+			max: options.videoFrameRate
+		};
 	return result;
 }
 
@@ -301,6 +306,7 @@ export class ScreenCaptureRecorder {
 
 	private internal: InternalRecorder[] = [];
 	private acquiredStreams: MediaStream[] = [];
+	private releaseRecordingAudio: (() => void) | null = null;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private countdownTimer: ReturnType<typeof setInterval> | null = null;
 	private countdownReject: ((error: Error) => void) | null = null;
@@ -314,7 +320,6 @@ export class ScreenCaptureRecorder {
 	private recoveryManifestQueue: Promise<void> = Promise.resolve();
 	private releaseRecoveryLock: (() => void) | null = null;
 	private stopMicMeter: (() => void) | null = null;
-	private lastMicLevelUpdate = Number.NEGATIVE_INFINITY;
 	private activeCaptureTruth: ScreenCaptureTruth | null = null;
 	capabilities = $state<RecordingCapabilities>(detectRecordingCapabilities());
 	captureTruth = $state<ScreenCaptureTruth | null>(null);
@@ -350,6 +355,7 @@ export class ScreenCaptureRecorder {
 		this.elapsedMs = 0;
 		this.countdownRemaining = null;
 		const acquiredStreams: MediaStream[] = [];
+		let releaseRecordingAudio: (() => void) | null = null;
 		this.acquiredStreams = acquiredStreams;
 		this.stopPromise = null;
 		this.pendingWriteBytes = 0;
@@ -369,6 +375,8 @@ export class ScreenCaptureRecorder {
 			if (stream) acquiredStreams.push(stream);
 		};
 		const cleanupStartStreams = () => {
+			releaseRecordingAudio?.();
+			if (this.releaseRecordingAudio === releaseRecordingAudio) this.releaseRecordingAudio = null;
 			stopMediaStreams(acquiredStreams);
 			if (this.acquiredStreams === acquiredStreams) this.acquiredStreams = [];
 		};
@@ -513,10 +521,7 @@ export class ScreenCaptureRecorder {
 
 		if (micStream) {
 			this.stopMicMeter = startMicLevelMeter(micStream, (level) => {
-				const now = performance.now();
-				if (now - this.lastMicLevelUpdate < 40) return;
-				this.lastMicLevelUpdate = now;
-				this.micLevel = Math.max(0, Math.min(1, level));
+				this.micLevel = Math.round(Math.max(0, Math.min(1, level)) * 100) / 100;
 			});
 		}
 		this.screenStream = screenStream;
@@ -560,33 +565,19 @@ export class ScreenCaptureRecorder {
 		this.activeRecoveryCreatedAt = recoveryCreatedAt;
 		this.recoveryManifestQueue = Promise.resolve();
 		this.releaseRecoveryLock = releaseRecoveryLock;
-		const toCreate: Array<{
-			kind: ScratchKind;
-			stream: MediaStream;
-			mime: string;
-		}> = [];
-		if (screenStream)
-			toCreate.push({
-				kind: 'screen',
-				stream: screenStream,
-				mime: pickVideoMimeType()
-			});
-		if (cameraStream)
-			toCreate.push({
-				kind: 'camera',
-				stream: cameraStream,
-				mime: pickVideoMimeType()
-			});
-		if (micStream)
-			toCreate.push({
-				kind: 'microphone',
-				stream: micStream,
-				mime: pickAudioMimeType()
-			});
-
 		const newInternal: InternalRecorder[] = [];
 		try {
-			for (const { kind, stream, mime } of toCreate) {
+			const recording = createRecordingStreams({
+				screen: screenStream,
+				camera: cameraStream,
+				microphone: micStream
+			});
+			releaseRecordingAudio = recording.dispose;
+			this.releaseRecordingAudio = releaseRecordingAudio;
+			await recording.resume();
+			if (generation !== this.generation) throw new Error('Cancelled');
+			for (const { kind, stream } of recording.sources) {
+				const mime = kind === 'microphone' ? pickAudioMimeType() : pickVideoMimeType();
 				const sink = await createScratchSink(kind, mime, recoverySessionId);
 				let recorder: MediaRecorder;
 				try {
@@ -800,7 +791,7 @@ export class ScreenCaptureRecorder {
 			throw error;
 		}
 		if (generation !== this.generation) return;
-		this.startElapsedTimer();
+		if (this.status === 'recording') this.startElapsedTimer();
 	}
 
 	private buildRecoveryManifest(
@@ -893,7 +884,7 @@ export class ScreenCaptureRecorder {
 			if (this.startMonotonic !== null) {
 				this.elapsedMs = Math.max(0, Math.round(performance.now() - this.startMonotonic));
 			}
-		}, 100);
+		}, 250);
 	}
 
 	private stopElapsedTimer(): void {
@@ -926,7 +917,6 @@ export class ScreenCaptureRecorder {
 	private clearPreview(): void {
 		this.stopMicMeter?.();
 		this.stopMicMeter = null;
-		this.lastMicLevelUpdate = Number.NEGATIVE_INFINITY;
 		this.micLevel = 0;
 		this.screenStream = null;
 		this.cameraStream = null;
@@ -934,6 +924,8 @@ export class ScreenCaptureRecorder {
 	}
 
 	private cleanupAcquiredStreams(): void {
+		this.releaseRecordingAudio?.();
+		this.releaseRecordingAudio = null;
 		const streams = this.acquiredStreams;
 		this.acquiredStreams = [];
 		stopMediaStreams(streams);
@@ -988,6 +980,10 @@ export class ScreenCaptureRecorder {
 			return [];
 		}
 		const generation = ++this.stopGeneration;
+		const elapsedAtStop =
+			this.startMonotonic !== null
+				? Math.max(0, Math.round(performance.now() - this.startMonotonic))
+				: this.elapsedMs;
 		this.status = 'stopping';
 		this.stopElapsedTimer();
 		this.stopCountdownTimer();
@@ -1029,11 +1025,7 @@ export class ScreenCaptureRecorder {
 							resolve();
 						}, STOP_TIMEOUT_MS);
 						try {
-							try {
-								entry.recorder.requestData();
-							} catch {
-								// requestData may not be supported
-							}
+							// stop() emits the final chunk before its stop event.
 							entry.recorder.stop();
 						} catch (error) {
 							if (timeout) clearTimeout(timeout);
@@ -1050,21 +1042,23 @@ export class ScreenCaptureRecorder {
 			if (generation !== this.stopGeneration) {
 				return [];
 			}
+			this.cleanupAcquiredStreams();
+			this.clearPreview();
 
 			// Await ordered durable writes and close sinks
-			for (const entry of internal) {
-				try {
-					await entry.sink.close();
-				} catch (error) {
-					logger.warn('sink close failed', error);
-					const code = mapRecorderError(error);
-					this.setError(code);
-				}
-			}
-
-			const elapsedAtStop = this.startMonotonic
-				? Math.max(0, Math.round(performance.now() - this.startMonotonic))
-				: this.elapsedMs;
+			await Promise.all(
+				internal.map(async (entry) => {
+					try {
+						await entry.sink.close();
+					} catch (error) {
+						if (generation !== this.stopGeneration) return;
+						logger.warn('sink close failed', error);
+						const code = mapRecorderError(error);
+						this.setError(code);
+					}
+				})
+			);
+			if (generation !== this.stopGeneration) return [];
 
 			const startTimes = internal
 				.map((e) => e.startTimeMs)
@@ -1077,11 +1071,13 @@ export class ScreenCaptureRecorder {
 				try {
 					file = await entry.sink.getFile();
 				} catch (error) {
+					if (generation !== this.stopGeneration) return [];
 					logger.warn('getFile failed, keeping partial', error);
 					const code = mapRecorderError(error);
 					this.setError(code);
 					continue;
 				}
+				if (generation !== this.stopGeneration) return [];
 				const sizeBytes = file.size;
 				const startOffsetMs =
 					entry.startTimeMs !== null && Number.isFinite(entry.startTimeMs)
@@ -1109,10 +1105,8 @@ export class ScreenCaptureRecorder {
 					logger.warn('Could not finalize recorder recovery manifest', error);
 				}
 			}
+			if (generation !== this.stopGeneration) return [];
 
-			for (const entry of internal) {
-				for (const track of entry.stream.getTracks()) track.stop();
-			}
 			this.internal = [];
 			this.acquiredStreams = [];
 			this.clearPreview();

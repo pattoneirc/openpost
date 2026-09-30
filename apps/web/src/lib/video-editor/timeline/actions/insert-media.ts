@@ -33,9 +33,13 @@ function collides(trackId: string, from: number, end: number): boolean {
 
 function newTrack(kind: 'video' | 'audio', label: string): TimelineTrack {
 	const orders = timelineStore.tracks.map((track) => track.order);
+	const names = new Set(timelineStore.tracks.map((track) => track.name));
+	let suffix = 1;
+	let name = label;
+	while (names.has(name)) name = `${label} ${++suffix}`;
 	return {
 		id: crypto.randomUUID(),
-		name: label,
+		name,
 		kind,
 		height: kind === 'video' ? 96 : 72,
 		locked: false,
@@ -162,4 +166,14 @@ export function insertMediaAtPlayhead(
 	options: InsertMediaOptions = {}
 ): string {
 	return insertMediaAtFrame(media, timelineStore.currentFrame, options);
+}
+
+export function insertMediaAtSequenceEnd(media: MediaMetadata): string {
+	const kind = mediaTimelineKind(media);
+	const track = effectiveMediaTracks(timelineStore.tracks)
+		.filter((candidate) => candidate.kind === kind && !candidate.locked)
+		.toSorted((left, right) => left.order - right.order);
+	return insertMediaAtFrame(media, timelineStore.maxItemEndFrame, {
+		preferredTrackId: kind === 'video' ? track.at(-1)?.id : track[0]?.id
+	});
 }

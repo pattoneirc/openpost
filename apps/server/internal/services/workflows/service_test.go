@@ -149,9 +149,9 @@ func TestApprovalResumesExactlyOnceWithReviewedRevision(t *testing.T) {
 			return EffectResult{Output: map[string]any{"publication_id": "post-1", "revision": 3, "text": "review me"}}, nil
 		}
 		scheduled = append(scheduled, input)
-		return EffectResult{Output: map[string]any{"job_id": "job-1"}}, nil
+		return EffectResult{Output: map[string]any{"job_id": "job-1", "renditions": []any{map[string]any{"id": "variant-1", "status": "scheduled"}}}}, nil
 	}))
-	workflow := saveTestWorkflow(t, s, actor, []Step{{ID: "review", Kind: KindApproval, Inputs: map[string]Value{"publication_id": literal("post-1")}}, {ID: "schedule", Kind: KindSchedule, Inputs: map[string]Value{"publication_id": reference("review.publication_id"), "revision": reference("review.revision"), "minutes": literal(60)}}})
+	workflow := saveTestWorkflow(t, s, actor, []Step{{ID: "review", Kind: KindApproval, Inputs: map[string]Value{"publication_id": literal("post-1")}}, {ID: "schedule", Kind: KindSchedule, Inputs: map[string]Value{"publication_id": reference("review.publication_id"), "revision": reference("review.revision"), "minutes": literal(60)}}, {ID: "outcomes", Kind: KindFields, Inputs: map[string]Value{"fields": reference("schedule.renditions.0")}}})
 	run, err := s.Start(t.Context(), actor, "ws", workflow.ID, ModeLive, map[string]any{}, workflow.Revision)
 	require.NoError(t, err)
 	runJob(t, s, run.ID)
@@ -169,7 +169,8 @@ func TestApprovalResumesExactlyOnceWithReviewedRevision(t *testing.T) {
 	require.EqualValues(t, 3, scheduled[0].Inputs["revision"])
 	final, err := s.GetRun(t.Context(), actor, "ws", run.ID)
 	require.NoError(t, err)
-	require.Equal(t, StateSucceeded, final.State)
+	require.Equal(t, StateSucceeded, final.State, final.Error)
+	require.Equal(t, map[string]any{"id": "variant-1", "status": "scheduled"}, final.Steps[2].Output)
 }
 
 func TestSourceBaselineDeduplicationAndSampleDoNotAdmitOldItems(t *testing.T) {
@@ -472,4 +473,32 @@ func TestExpiredWaitResumesOnceAfterRestart(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StateSucceeded, final.State)
 	require.Equal(t, 1, calls)
+}
+
+func TestWorkflowRejectsBrokenTokensBeforeStarting(t *testing.T) {
+	s, actor := workflowTestService(t, nil)
+	for _, text := range []string{"Hello {{source.title", "Hello {{source.title + 1}}"} {
+		item := saveTestWorkflow(t, s, actor, []Step{{ID: "draft", Kind: KindDraft, Inputs: map[string]Value{"text": literal(text)}}})
+		_, err := s.Start(t.Context(), actor, "ws", item.ID, ModePreview, map[string]any{"title": "Release"}, item.Revision)
+		require.ErrorIs(t, err, ErrInvalid)
+	}
+}
+
+func TestWorkflowTransformsFeedItemsBeforeCreatingContent(t *testing.T) {
+	s, actor := workflowTestService(t, nil)
+	item := saveTestWorkflow(t, s, actor, []Step{
+		{ID: "parse", Kind: "parse_json", Inputs: map[string]Value{"text": reference("source.body")}},
+		{ID: "limit", Kind: "list_limit", Inputs: map[string]Value{"items": reference("parse.data"), "limit": literal(2)}},
+		{ID: "code", Kind: "code", Inputs: map[string]Value{"data": reference("limit.items"), "code": literal("return { text: input.map(item => item.title).join(' | ') };")}},
+		{ID: "draft", Kind: KindDraft, Inputs: map[string]Value{"text": reference("code.data.text")}},
+	})
+	run, err := s.Start(t.Context(), actor, "ws", item.ID, ModePreview, map[string]any{"body": `[{"title":"Release"},{"title":"Behind the scenes"},{"title":"Later"}]`}, item.Revision)
+	require.NoError(t, err)
+	for range 4 {
+		runJob(t, s, run.ID)
+	}
+	result, err := s.GetRun(t.Context(), actor, "ws", run.ID)
+	require.NoError(t, err)
+	require.Equal(t, StateSucceeded, result.State, result.Error)
+	require.Equal(t, "Release | Behind the scenes", result.Steps[3].Inputs["text"])
 }

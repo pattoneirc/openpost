@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
+	import { MediaQuery } from 'svelte/reactivity';
+	import { replaceEqualDeep } from '@tanstack/svelte-query';
 	import { captureTelemetryEvent } from '@openpost/telemetry';
 	import { goto } from '$app/navigation';
 	import { resolveAppPath } from '$lib/app-path';
@@ -82,6 +84,7 @@
 		trackPublicImageEditorEvent
 	} from '../public-telemetry';
 	import {
+		cloneImageEditorDocument,
 		cloneImageEditorLayer,
 		imageEditorPageHasTransparency,
 		validateImageEditorDocument
@@ -366,6 +369,9 @@
 		assetOverlayTrigger?.focus();
 	}
 	let activeEditorWorkspace = $state<'edit' | 'color'>('edit');
+	const shortViewport = new MediaQuery('(max-width: 1023px) and (max-height: 520px)');
+	const compactPages = $derived(activeEditorWorkspace === 'color' && shortViewport.current);
+	const pagesExpanded = $derived(editor.pagesExpanded && !compactPages);
 	let focusedCanvas = $state(false);
 	let copiedLayers = $state.raw<ImageEditorLayer[]>([]);
 	let pixelSelectionActions = $state.raw<PixelSelectionActions | null>(null);
@@ -1307,11 +1313,12 @@
 			}
 			coverPreviewMediaID = response.cover_preview_media_id ?? '';
 			if (editor.document === submittedDocument) {
-				// Keep the current identity when the server accepted it unchanged. Replacing
-				// it resets every document consumer, including the page-strip previews.
-				if (JSON.stringify(response.document) !== JSON.stringify(submittedDocument)) {
-					editor.document = response.document;
-				}
+				// The server omits default fields and reorders JSON keys. Normalize its
+				// reply and retain unchanged layers so autosave cannot end canvas typing.
+				editor.document = replaceEqualDeep(
+					submittedDocument,
+					cloneImageEditorDocument(response.document)
+				);
 				editor.saveState = 'saved';
 				editor.saveMessage = guestMode
 					? m.image_editor_public_saved_device()
@@ -1398,10 +1405,12 @@
 			) {
 				return;
 			}
-			const nextDocument = structuredClone(editor.document);
-			const nextPage = nextDocument.pages.find((item) => item.id === page.id);
-			if (!nextPage) return;
-			nextPage.preview_media_id = uploaded.id;
+			const nextDocument = {
+				...editor.document,
+				pages: editor.document.pages.map((item) =>
+					item.id === page.id ? { ...item, preview_media_id: uploaded.id } : item
+				)
+			};
 			editor.document = nextDocument;
 			previewPending = false;
 			lastPreviewAt = Date.now();
@@ -3581,6 +3590,7 @@
 		data-inspector={editor.rightPanelVisible}
 		data-workspace={activeEditorWorkspace}
 		style:--image-editor-inspector-width={`${inspectorPanelWidth}px`}
+		style:--image-editor-mobile-pages-height={pagesExpanded ? '8.75rem' : '2.75rem'}
 	>
 		<nav
 			class="no-scrollbar hidden min-h-0 flex-col items-center gap-1 overflow-y-auto border-r bg-card py-2 lg:flex"
@@ -3813,7 +3823,7 @@
 			<div
 				class="absolute inset-0 {focusedCanvas
 					? 'bottom-0'
-					: editor.pagesExpanded
+					: pagesExpanded
 						? 'bottom-[8.75rem] lg:bottom-[var(--image-editor-pages-height)]'
 						: 'bottom-11 lg:bottom-9'}"
 			>
@@ -3826,7 +3836,7 @@
 			<div
 				class="absolute right-3 {focusedCanvas
 					? 'bottom-3'
-					: editor.pagesExpanded
+					: pagesExpanded
 						? 'bottom-[9.5rem] lg:bottom-[calc(var(--image-editor-pages-height)_+_0.75rem)]'
 						: 'bottom-14 lg:bottom-12'} z-10 flex items-center gap-1 rounded-lg bg-background/90 p-1 shadow ring-1 ring-black/10"
 			>
@@ -3855,11 +3865,11 @@
 			</div>
 			{#if !focusedCanvas}
 				<div
-					class="absolute inset-x-0 bottom-0 {editor.pagesExpanded
+					class="absolute inset-x-0 bottom-0 {pagesExpanded
 						? 'h-[8.75rem] lg:h-[var(--image-editor-pages-height)]'
 						: 'h-11 lg:h-9'}"
 				>
-					<PageStrip onExternalFiles={placeExternalFiles} />
+					<PageStrip onExternalFiles={placeExternalFiles} compact={compactPages} />
 				</div>
 			{/if}
 		</main>
@@ -5023,7 +5033,9 @@
 
 	@media (max-width: 63.999rem) {
 		.image-editor-workspace[data-workspace='color'] {
-			grid-template-rows: minmax(10rem, 42%) minmax(0, 1fr);
+			grid-template-rows:
+				minmax(0, min(60%, calc(42% + var(--image-editor-mobile-pages-height))))
+				minmax(0, 1fr);
 		}
 
 		.image-editor-theme :global(button) {

@@ -15,9 +15,11 @@ import { cloneAnimationPreset, normalizeAnimationPresets } from './project/anima
 import { timelineStore } from './timeline/stores/timeline-store.svelte';
 import { commandHistory } from './timeline/commands/command-store.svelte';
 import { Clock } from './preview/clock';
+import { resumeAudioMixer } from './audio/audio-mixer';
 import { mediaPool } from './media/pool.svelte';
 import { sceneBrowser } from './media/scene-search/scene-browser.svelte';
 import { sequenceStore } from './sequences/sequence-store.svelte';
+import { readSequenceView, writeSequenceView } from './sequences/sequence-view-storage';
 import { editorSettings } from './settings/editor-settings.svelte';
 import { mediaRecovery } from './media/media-recovery.svelte';
 import { PeriodicAutosaveController } from './settings/periodic-autosave';
@@ -57,6 +59,7 @@ class EditorSession {
 	});
 
 	private projectId: string | null = null;
+	private cloudWorkspaceId = '';
 	private cloudProject: CloudVideoProject<Project> | null = null;
 	private cloudRepository: CloudVideoProjectRepository<Project> | null = null;
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -126,6 +129,7 @@ class EditorSession {
 		this.stopAutosaveTimers();
 		this.project = null;
 		this.projectId = projectId;
+		this.cloudWorkspaceId = cloudWorkspaceId;
 		this.cloudRepository = cloudWorkspaceId
 			? new CloudVideoProjectRepository<Project>(cloudWorkspaceId)
 			: null;
@@ -162,9 +166,21 @@ class EditorSession {
 			this.cloudProject = cloudProject;
 			commandHistory.clearHistory();
 			sequenceStore.load(project.timeline ?? { tracks: [], items: [] }, project.metadata);
+			const savedView = readSequenceView(projectId, cloudWorkspaceId);
+			const editSequence = savedView?.editSequenceId
+				? sequenceStore.compositionById.get(savedView.editSequenceId)
+				: null;
+			this.editSequenceId =
+				editSequence && editSequence.editorKind !== 'composite-2d' ? editSequence.id : null;
+			sequenceStore.switchTo(savedView?.activeSequenceId ?? null);
+			if (savedView?.currentFrame !== undefined)
+				timelineStore._setCurrentFrame(savedView.currentFrame);
+			if (savedView?.zoomLevel !== undefined) timelineStore._setZoomLevel(savedView.zoomLevel);
+			if (savedView?.scrollPosition !== undefined)
+				timelineStore._setScrollPosition(savedView.scrollPosition);
+			this.restoredLeftPanel = savedView?.leftPanel;
 			timelineStore._setSnapEnabled(editorSettings.snapByDefault);
 			timelineStore._setMaxUndoHistory(editorSettings.maxUndoHistory);
-			this.clock.setFps(project.metadata.fps);
 			this.syncTimelineClock();
 			const media =
 				this.cloudProject && this.cloudRepository
@@ -184,12 +200,30 @@ class EditorSession {
 		}
 	}
 
+	editSequenceId: string | null = null;
+	restoredLeftPanel: string | undefined;
+
+	rememberActiveSequence(sequenceId: string | null, leftPanel?: string): void {
+		if (!this.projectId || this.loading || this.loadError || this.isPlaying) return;
+		if (sequenceStore.activeSequence?.editorKind !== 'composite-2d')
+			this.editSequenceId = sequenceId;
+		writeSequenceView(this.projectId, this.cloudWorkspaceId, {
+			activeSequenceId: sequenceId,
+			editSequenceId: this.editSequenceId,
+			currentFrame: timelineStore.currentFrame,
+			zoomLevel: timelineStore.zoomLevel,
+			scrollPosition: timelineStore.scrollPosition,
+			leftPanel
+		});
+	}
+
 	syncTimelineClock(): void {
 		this.clock.setFps(this.fps);
 		this.clock.seek(timelineStore.currentFrame);
 	}
 
 	startPlayback(range?: { start: number; end: number; loop?: boolean }): void {
+		resumeAudioMixer();
 		this.transport.mode = 'normal';
 		this.clock.setRate(1);
 		this.clock.play(
@@ -201,6 +235,7 @@ class EditorSession {
 		direction: ShuttleDirection,
 		range: { start: number; end: number; loop?: boolean }
 	): void {
+		resumeAudioMixer();
 		const nextRate = this.clock.isPlaying
 			? getNextShuttleRate(this.clock.playbackRate, direction)
 			: direction;

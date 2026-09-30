@@ -944,6 +944,141 @@ test.describe("product screenshot capture", () => {
   });
 
   for (const captureScheme of ["dark", "light"] as const) {
+    test(`captures workflow authoring in ${captureScheme} mode`, async ({ page }) => {
+      await mkdir(screenshotDirectory, { recursive: true });
+      await authenticatePage(page, auth.token);
+      await page.addInitScript((scheme) => {
+        localStorage.setItem("mode-watcher-mode", scheme);
+      }, captureScheme);
+      await page.emulateMedia({ colorScheme: captureScheme, reducedMotion: "reduce" });
+      await page.clock.setFixedTime(new Date(fixedNow));
+      await page.goto("/workflows");
+      await page
+        .getByRole("button", { name: "Start from a template", exact: true })
+        .first()
+        .click();
+      await page
+        .getByRole("heading", { name: "Announce a GitHub release", exact: true })
+        .locator("../..")
+        .getByRole("button", { name: "Use template", exact: true })
+        .click();
+      await page.getByLabel("Workflow name", { exact: true }).fill("Release announcements");
+      await page.getByRole("button", { name: /^Needs attention/ }).click();
+      await page.getByLabel("GitHub repository", { exact: true }).fill("getopenpost/openpost");
+      await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "Back to canvas", exact: true }).click();
+      const nodes = page.locator(".svelte-flow__node");
+      await expect(nodes).toHaveCount(3);
+      const bounds = await nodes.evaluateAll((elements) => {
+        const boxes = elements.map((element) => element.getBoundingClientRect());
+        const x = Math.min(...boxes.map((box) => box.left)) - 36;
+        const y = Math.min(...boxes.map((box) => box.top)) - 64;
+        return {
+          x,
+          y,
+          width: Math.max(...boxes.map((box) => box.right)) - x + 88,
+          height: Math.max(...boxes.map((box) => box.bottom)) - y + 64,
+        };
+      });
+      await page.screenshot({
+        path: join(screenshotDirectory, `workflows-detail-${captureScheme}.png`),
+        clip: bounds,
+        animations: "disabled",
+        caret: "hide",
+        scale: "device",
+      });
+      await page.getByRole("button", { name: "Create draft Create draft", exact: true }).click();
+      await expect(page.getByLabel("Post text", { exact: true })).toBeVisible();
+      await captureDetail(page.getByRole("dialog"), `workflows-node-${captureScheme}.png`, 0);
+
+      const branch = (id: string, title: string, instructions: string) => [
+        {
+          id: `${id}_write`,
+          kind: "ai_text",
+          name: title,
+          inputs: { text: { reference: "source.body" }, instructions: { literal: instructions } },
+        },
+        {
+          id: `${id}_draft`,
+          kind: "create_draft",
+          name: id === "launch" ? "Draft announcement" : "Draft update",
+          inputs: {
+            text: { reference: `${id}_write.text` },
+            title: { reference: "source.title" },
+            account_ids: { literal: [] },
+          },
+        },
+        {
+          id: `${id}_review`,
+          kind: "approval",
+          name: "Review post",
+          inputs: { publication_id: { reference: `${id}_draft.id` } },
+        },
+      ];
+      const created = await page.request.post(`/api/v1/workflows?workspace_id=${workspace.id}`, {
+        headers: { Authorization: `Bearer ${auth.token}` },
+        data: {
+          name: "Release announcements",
+          description: "Shape each release into a draft for review.",
+          expected_revision: 0,
+          definition: {
+            schema: 1,
+            source: { kind: "github_release", repository: "getopenpost/openpost" },
+            steps: [
+              {
+                id: "major",
+                kind: "condition",
+                name: "Breaking change?",
+                inputs: {
+                  left: { reference: "source.body" },
+                  operator: { literal: "contains" },
+                  right: { literal: "Breaking" },
+                },
+                then: branch(
+                  "launch",
+                  "Explain changes",
+                  "Explain the breaking changes and migration steps in a short release announcement. Use only the supplied release notes.",
+                ),
+                else: branch(
+                  "update",
+                  "Write a short update",
+                  "Write a concise product update from these release notes. Use only the supplied facts.",
+                ),
+              },
+            ],
+          },
+        },
+      });
+      expect(created.ok(), await created.text()).toBeTruthy();
+      const workflow = await created.json();
+      await page.goto(`/workflows/${workflow.id}`);
+      await page.getByRole("button", { name: "Organize", exact: true }).click();
+      await expect(nodes).toHaveCount(8);
+      await expect(page.getByText("Yes", { exact: true })).toHaveCount(1);
+      await expect(page.getByText("No", { exact: true })).toHaveCount(1);
+      // Space the two paths using the same drag gesture as the editor.
+      for (const [prefix, offset] of [
+        ["launch", -120],
+        ["update", 120],
+      ] as const) {
+        for (const suffix of ["write", "draft", "review"]) {
+          const target = page.locator(`.svelte-flow__node[data-id="${prefix}_${suffix}"]`);
+          const box = await target.boundingBox();
+          if (!box) throw new Error("Workflow node is not visible");
+          await page.mouse.move(box.x + 80, box.y + 24);
+          await page.mouse.down();
+          await page.mouse.move(box.x + 80, box.y + 24 + offset, { steps: 12 });
+          await page.mouse.up();
+        }
+      }
+      await page.getByRole("button", { name: "Fit canvas", exact: true }).click();
+      await capture(page, `workflows-${captureScheme}.png`, [
+        page.getByRole("button", { name: "Breaking change? Condition", exact: true }),
+        page.getByRole("button", { name: "Explain changes AI text", exact: true }),
+        page.getByRole("button", { name: "Write a short update AI text", exact: true }),
+      ]);
+    });
+
     test(`captures current product surfaces in ${captureScheme} mode`, async ({
       page,
       request,

@@ -26,6 +26,12 @@ export type {
 	WipeDirection as TransitionDirection
 } from '../transitions/types';
 
+/** Portions of each original fade outside a split clip, in seconds. */
+export interface ClipFadeOffsets {
+	in: number;
+	out: number;
+}
+
 export interface AudioDuckingSettings {
 	duckOthersDb: number;
 	attackSec?: number;
@@ -818,7 +824,10 @@ export interface TimelineItem
 	cornerPin?: TimelineItemCornerPin;
 
 	// Audio properties
+	/** Audio was moved to a separate clip; unlinking or deleting it must not restore this source. */
+	audioDetached?: boolean;
 	volume?: number;
+	audioFadeOffsets?: ClipFadeOffsets;
 	audioFadeIn?: number;
 	audioFadeOut?: number;
 	audioFadeInCurve?: number;
@@ -828,6 +837,7 @@ export interface TimelineItem
 	audioDucking?: AudioDuckingSettings;
 
 	// Video properties
+	videoFadeOffsets?: ClipFadeOffsets;
 	fadeIn?: number;
 	fadeOut?: number;
 

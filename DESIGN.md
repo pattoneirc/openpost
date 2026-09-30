@@ -212,9 +212,13 @@ The DOM-based Layers tree and Properties controls are the accessible equivalents
 
 OpenPost Video Editor uses a four-zone editing model: compact project controls at the top, a fixed tool rail with one full-height content pane on the left, one dominant preview in the center, and selection-specific inspector tabs on the right. The timeline begins beside the left content pane and owns playback position; its ruler is the seek control, so a second progress slider must not compete with it. Each persistent side or bottom pane has an accessible resize seam and a stable reset size. Semantic selection and focal roles mark the active family, property tab, playhead, and Export action. Waveforms, timeline state, canvas bounds, and media keep protected editor roles.
 
-Keep inspector settings contextual. Clip selection exposes Video, Audio, Speed, Animation, and Adjustments; overlays, captions, and audio items expose only their relevant tabs. Phones replace both side panels with one bottom tool dock and one contextual sheet while preserving the same timeline and project document. Quick Cut remains the explicit stream-copy path and Full Editor remains the composed edit path.
+Keep inspector settings contextual. Selection exposes Properties, Animation, Effects, and Transcript only where applicable. Properties leads with content, geometry, and audio gain; anchor, appearance, crop, playback, pitch, and advanced audio settings use named disclosures. Mark modified appearance, crop, and playback groups so their state remains visible when closed. Scene detection belongs in selected-clip actions. Phones replace both side panels with one bottom tool dock and one contextual sheet while preserving the same timeline and project document. Quick Cut remains the explicit stream-copy path and Full Editor remains the composed edit path.
+
+Video Editor property diamonds add or remove a key at the playhead. Fill the diamond only at an authored key, and keep animated properties accented between keys. Auto-key is a separate mode. Capture values before expressions and additive motion, in the property lane's units; inspectors display the current animated value and edit through the timeline actions.
 
 Color gives its viewer and one active grading palette priority. Primaries, Curves, Qualifier, Windows, LUT, and Effects share the same named Clip or Sequence target. Keyframes replaces the active palette until closed. Scopes are optional; specialized effect filters only change which controls are shown. Keep comparison and auto-key controls available across palettes. Compact controls must remain complete at laptop sizes, with secondary settings disclosed or internally scrollable. Palette, scopes and Keyframes visibility persist per device as view state, never authored project data. Hidden scopes stop sampling; explicit color picking and Auto Balance can still capture a frame.
+
+Playback stays direct in the preview bar; frame capture and in/out commands live in its always-available actions menu. Transcript setup leads with language and the captions action, keeps download size visible, and discloses engine settings and model storage. Existing transcripts keep generation setup collapsed; running jobs and errors stay visible. Canvas format presets change dimensions together through the existing undo owner, preserving frame rate and authored layer geometry.
 
 Selected-object inspectors lead with the editable content. Text starts with words and font, while geometry and advanced settings follow. Corner pin stays closed unless active. Motion puts selected-layer controls before composition setup and applied animation before preset browsing. Text styles can apply to the selected text without inserting another item; the browser must show which operation its controls perform.
 
@@ -222,11 +226,19 @@ Shader backgrounds and image or logo effects use the existing searchable galleri
 
 Keep editor copy quiet. Use short labels, values, and direct actions in the default workspace; do not repeat the active tool as a panel heading or add routine reassurance below self-explanatory controls. Reserve inline prose for errors, permissions, destructive consequences, required attribution, and limitations that change what the creator can do. Put optional technical detail in a tooltip or disclosure.
 
+Editor panes must shrink within the window and scroll their own content. On phones, Assets uses the full area above the timeline; Program restores the preview. Timeline marker details, mixer, and beat controls share a bounded scrolling area that leaves the tracks and overview reachable.
+
+Fade handles appear only on selected, editable clips. New generated captions and imported subtitles start above video in compact rows. Track names expose a drag grip; reordering previews locally, commits once on drop, and cancels with Escape. Keyboard reordering remains available.
+
+Video clips retain embedded audio by default. Detach audio in the clip menu creates a linked audio row and silences the video's embedded audio. Link and unlink control editing together, independently of which clip plays the sound. Recordings keep microphone audio with the camera, or with the screen when the camera is off.
+
 The timeline uses a hybrid track model. The ordered primary sequence and project-wide markers remain semantic rails. Visual, audio, and caption rows render from the document's actual track arrays, so multiple tracks stay distinct and empty categories do not consume permanent lanes. Items on one track cannot overlap unless an explicit transition owns the shared interval; use another track for intentional compositing.
 
 ## Elevation & Depth
 
 Workshop is flat by default. Its surfaces separate through warm tonal changes, hairline borders, and restrained rings. Other families may select a bounded elevation recipe, but resting hierarchy must remain clear and temporary layers must remain distinguishable.
+
+Modal backdrops darken the page in both schemes. Keep the scrim independent of text colors so dark mode never turns it white.
 
 ### Shadow Vocabulary
 

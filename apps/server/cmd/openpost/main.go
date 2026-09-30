@@ -87,6 +87,7 @@ import (
 	"github.com/openpost/backend/internal/services/updatestatus"
 	"github.com/openpost/backend/internal/services/usage"
 	"github.com/openpost/backend/internal/services/videoprocessing"
+	"github.com/openpost/backend/internal/services/waitlist"
 	"github.com/openpost/backend/internal/services/workflows"
 	"github.com/openpost/backend/internal/services/workspaceteam"
 	"github.com/openpost/backend/internal/telemetry"
@@ -282,6 +283,7 @@ func main() {
 		NativeCallbackURL:     cfg.OIDCNativeCallbackURL,
 		RegistrationsDisabled: cfg.DisableRegistrations,
 		RequireExplicitSignup: cfg.Edition == config.EditionCloud,
+		WaitlistEnabled:       cfg.HostedWaitlistEnabled,
 		Environment: identity.EnvironmentProviderConfig{
 			Issuer:            cfg.OIDCIssuer,
 			ClientID:          cfg.OIDCClientID,
@@ -301,6 +303,7 @@ func main() {
 	}
 	apiTokenService := apitokens.NewService(db)
 	sessionService := sessions.NewService(db)
+	waitlistService := waitlist.NewService(db, cfg.BillingDiscordWebhookURL)
 	billingService := billing.NewService(db, cfg.PaddleWebhookSecret, billing.PaddleConfig{
 		APIKey:               cfg.PaddleAPIKey,
 		APIBaseURL:           cfg.PaddleAPIBaseURL,
@@ -605,6 +608,7 @@ func main() {
 	profileHandler := handlers.NewProfileHandler(db, authenticator, storage)
 
 	var imageGenerator ai.Generator
+	var decisionGenerator ai.Decider
 	var contentGenerator ai.Generator
 	if cfg.OpenRouterAPIKey != "" {
 		imageConfig, contentConfig := openRouterConfigs(cfg)
@@ -615,6 +619,12 @@ func main() {
 		contentGenerator, err = ai.NewOpenRouter(contentConfig)
 		if err != nil {
 			fatalfWithDiagnostics(diagnosticsReporter, "failed to initialize OpenRouter text generator: %v", err)
+		}
+		decisionConfig := contentConfig
+		decisionConfig.Provider = "typesafe"
+		decisionGenerator, err = ai.NewOpenRouter(decisionConfig)
+		if err != nil {
+			fatalfWithDiagnostics(diagnosticsReporter, "failed to initialize workflow decisions: %v", err)
 		}
 	}
 
@@ -715,6 +725,8 @@ func main() {
 
 	organizationOwnershipService := organizationownership.NewService(db, notificationService, identityService)
 	workflowService := workflows.NewService(db, nil, tokenEncryptor)
+	workflowService.SetAI(contentGenerator, cfg.TextGenerationModel)
+	workflowService.SetDecisionAI(decisionGenerator, cfg.WorkflowDecisionModel)
 	var worker *queue.BackgroundWorker
 	var discordPresenceService *discordpresence.Service
 	if command.role.runsWorker() {
@@ -736,6 +748,7 @@ func main() {
 		worker.SetFeedbackService(feedbackService)
 		worker.SetAnalyticsService(analyticsService)
 		worker.SetBillingService(billingService)
+		worker.SetWaitlistService(waitlistService)
 		worker.SetBotIngressService(botIngressService)
 		worker.SetEngagementService(engagementService)
 		worker.SetMessagingService(messagingService)
@@ -834,7 +847,12 @@ func main() {
 		RunningBuild:   runningBuildRevision(),
 	})
 	githubStarsService := githubstars.NewService(githubstars.Options{})
+	var registrationWaitlist *waitlist.Service
+	if cfg.HostedWaitlistEnabled {
+		registrationWaitlist = waitlistService
+	}
 	apiroutes.RegisterHumaRoutes(api, apiroutes.RouteDeps{
+		WaitlistService:           registrationWaitlist,
 		DB:                        db,
 		WorkflowService:           workflowService,
 		Readiness:                 readiness,

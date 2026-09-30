@@ -168,8 +168,20 @@
 		liveItem.type === 'video' || liveItem.type === 'composition' ? (liveItem.fadeOut ?? 0) : 0
 	);
 
-	const fadeIn = $derived(isAudio ? audioFadeIn : visualFadeIn);
-	const fadeOut = $derived(isAudio ? audioFadeOut : visualFadeOut);
+	const fadeIn = $derived(
+		Math.max(
+			0,
+			(isAudio ? audioFadeIn : visualFadeIn) -
+				(isAudio ? (liveItem.audioFadeOffsets?.in ?? 0) : (liveItem.videoFadeOffsets?.in ?? 0))
+		)
+	);
+	const fadeOut = $derived(
+		Math.max(
+			0,
+			(isAudio ? audioFadeOut : visualFadeOut) -
+				(isAudio ? (liveItem.audioFadeOffsets?.out ?? 0) : (liveItem.videoFadeOffsets?.out ?? 0))
+		)
+	);
 
 	const fadeInRatio = $derived(fadeRatio(fadeIn, fps, duration));
 	const fadeOutRatio = $derived(fadeRatio(fadeOut, fps, duration));
@@ -189,6 +201,12 @@
 		isAudio
 			? getAudioFadeCurvePath({
 					handle: 'in',
+					progressStart: audioFadeIn > 0 ? (liveItem.audioFadeOffsets?.in ?? 0) / audioFadeIn : 0,
+					progressEnd:
+						audioFadeIn > 0
+							? Math.min(1, ((liveItem.audioFadeOffsets?.in ?? 0) + duration / fps) / audioFadeIn)
+							: 1,
+
 					fadePixels: audioFadeInViewboxWidth,
 					clipWidthPixels: FADE_VIEWBOX_WIDTH,
 					curve: audioFadeInCurve,
@@ -200,6 +218,16 @@
 		isAudio
 			? getAudioFadeCurvePath({
 					handle: 'out',
+					progressStart:
+						audioFadeOut > 0
+							? Math.max(
+									0,
+									1 - ((liveItem.audioFadeOffsets?.out ?? 0) + duration / fps) / audioFadeOut
+								)
+							: 0,
+					progressEnd:
+						audioFadeOut > 0 ? 1 - (liveItem.audioFadeOffsets?.out ?? 0) / audioFadeOut : 1,
+
 					fadePixels: audioFadeOutViewboxWidth,
 					clipWidthPixels: FADE_VIEWBOX_WIDTH,
 					curve: audioFadeOutCurve,
@@ -211,6 +239,12 @@
 		isVisual
 			? getAudioFadeCurvePath({
 					handle: 'in',
+					progressStart: visualFadeIn > 0 ? (liveItem.videoFadeOffsets?.in ?? 0) / visualFadeIn : 0,
+					progressEnd:
+						visualFadeIn > 0
+							? Math.min(1, ((liveItem.videoFadeOffsets?.in ?? 0) + duration / fps) / visualFadeIn)
+							: 1,
+
 					fadePixels: videoFadeInViewboxWidth,
 					clipWidthPixels: FADE_VIEWBOX_WIDTH,
 					curve: 0,
@@ -222,6 +256,16 @@
 		isVisual
 			? getAudioFadeCurvePath({
 					handle: 'out',
+					progressStart:
+						visualFadeOut > 0
+							? Math.max(
+									0,
+									1 - ((liveItem.videoFadeOffsets?.out ?? 0) + duration / fps) / visualFadeOut
+								)
+							: 0,
+					progressEnd:
+						visualFadeOut > 0 ? 1 - (liveItem.videoFadeOffsets?.out ?? 0) / visualFadeOut : 1,
+
 					fadePixels: videoFadeOutViewboxWidth,
 					clipWidthPixels: FADE_VIEWBOX_WIDTH,
 					curve: 0,
@@ -237,7 +281,12 @@
 					fadePixels: audioFadeInViewboxWidth,
 					clipWidthPixels: FADE_VIEWBOX_WIDTH,
 					curve: audioFadeInCurve,
-					curveX: audioFadeInCurveX
+					curveX: audioFadeInCurveX,
+					progressStart: audioFadeIn > 0 ? (liveItem.audioFadeOffsets?.in ?? 0) / audioFadeIn : 0,
+					progressEnd:
+						audioFadeIn > 0
+							? Math.min(1, ((liveItem.audioFadeOffsets?.in ?? 0) + duration / fps) / audioFadeIn)
+							: 1
 				})
 			: null
 	);
@@ -248,26 +297,28 @@
 					fadePixels: audioFadeOutViewboxWidth,
 					clipWidthPixels: FADE_VIEWBOX_WIDTH,
 					curve: audioFadeOutCurve,
-					curveX: audioFadeOutCurveX
+					curveX: audioFadeOutCurveX,
+					progressStart:
+						audioFadeOut > 0
+							? Math.max(
+									0,
+									1 - ((liveItem.audioFadeOffsets?.out ?? 0) + duration / fps) / audioFadeOut
+								)
+							: 0,
+					progressEnd:
+						audioFadeOut > 0 ? 1 - (liveItem.audioFadeOffsets?.out ?? 0) / audioFadeOut : 1
 				})
 			: null
 	);
 
-	const canInteract = $derived(!trackLocked && activeEditTool === null);
+	const canInteract = $derived(selected && !trackLocked && activeEditTool === null);
 	const isAnyEditing = $derived(editing !== null || curveEditing !== null);
-	const handleVisibilityClass = $derived(
-		editing !== null || curveEditing !== null || selected
-			? 'opacity-100'
-			: 'opacity-0 group-hover/timeline-item:opacity-100'
-	);
 	const densityVisibilityClass = $derived(
 		isAnyEditing
 			? 'opacity-100'
 			: 'opacity-0 @min-[44px]:opacity-40 @min-[64px]:opacity-100 group-focus-within/timeline-item:opacity-100'
 	);
-	const densityPointerClass = $derived(
-		isAnyEditing ? 'pointer-events-auto' : 'pointer-events-none @min-[44px]:pointer-events-auto'
-	);
+	const densityPointerClass = $derived(canInteract ? 'pointer-events-auto' : 'pointer-events-none');
 
 	const keyboardHelp = $derived(m.video_editor_fade_handle_keyboard());
 	const curveKeyboardHelpId = $derived(
@@ -356,7 +407,10 @@
 	}
 
 	function restoreFade(handle: FadeHandle, beforeItem: TimelineItem): void {
-		const patch: Partial<TimelineItem> = {};
+		const patch: Partial<TimelineItem> = {
+			audioFadeOffsets: beforeItem.audioFadeOffsets,
+			videoFadeOffsets: beforeItem.videoFadeOffsets
+		};
 		if (isAudio) {
 			if (handle === 'in') patch.audioFadeIn = beforeItem.audioFadeIn;
 			else patch.audioFadeOut = beforeItem.audioFadeOut;
@@ -488,7 +542,26 @@
 			pointerOffsetY: clientY - rect.top,
 			fadePixels,
 			clipWidthPixels: rect.width,
-			rowHeight: rect.height
+			rowHeight: rect.height,
+			progressStart:
+				handle === 'in'
+					? audioFadeIn > 0
+						? (liveItem.audioFadeOffsets?.in ?? 0) / audioFadeIn
+						: 0
+					: audioFadeOut > 0
+						? Math.max(
+								0,
+								1 - ((liveItem.audioFadeOffsets?.out ?? 0) + duration / fps) / audioFadeOut
+							)
+						: 0,
+			progressEnd:
+				handle === 'in'
+					? audioFadeIn > 0
+						? Math.min(1, ((liveItem.audioFadeOffsets?.in ?? 0) + duration / fps) / audioFadeIn)
+						: 1
+					: audioFadeOut > 0
+						? 1 - (liveItem.audioFadeOffsets?.out ?? 0) / audioFadeOut
+						: 1
 		});
 	}
 
@@ -511,7 +584,7 @@
 	}
 
 	function restoreCurve(handle: FadeHandle, beforeItem: TimelineItem): void {
-		const patch: Partial<TimelineItem> = {};
+		const patch: Partial<TimelineItem> = { audioFadeOffsets: beforeItem.audioFadeOffsets };
 		if (handle === 'in') {
 			patch.audioFadeInCurve = beforeItem.audioFadeInCurve;
 			patch.audioFadeInCurveX = beforeItem.audioFadeInCurveX;
@@ -736,18 +809,17 @@
 		<div
 			class="pointer-events-none absolute inset-0 z-[60] transition-opacity duration-150 {densityVisibilityClass}"
 			data-fade-handles-container
+			hidden={!canInteract && !isAnyEditing}
 		>
 			<!-- Fade-in handle -->
 			<button
 				bind:this={fadeInHandle}
 				type="button"
 				role="slider"
-				class="absolute flex h-7 w-7 -translate-y-1/2 cursor-pointer touch-none items-center justify-center rounded-[2px] transition-opacity focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none {fadeInPercent <=
+				class="absolute flex h-4 w-4 -translate-y-1/2 cursor-ew-resize touch-none items-center justify-center rounded-[2px] transition-opacity focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none [@media(pointer:coarse)]:h-7 [@media(pointer:coarse)]:w-7 {fadeInPercent <=
 				0
 					? 'translate-x-0'
-					: '-translate-x-1/2'} {densityPointerClass} {editing === 'in' || hoveredFade === 'in'
-					? 'opacity-100'
-					: handleVisibilityClass}"
+					: '-translate-x-1/2'} {densityPointerClass} opacity-100"
 				style="left:{fadeInPercent}%; top:{handleTop}"
 				disabled={!canInteract}
 				aria-disabled={!canInteract}
@@ -793,12 +865,10 @@
 				bind:this={fadeOutHandle}
 				type="button"
 				role="slider"
-				class="absolute flex h-7 w-7 -translate-y-1/2 cursor-pointer touch-none items-center justify-center rounded-[2px] transition-opacity focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none {fadeOutLeft >=
+				class="absolute flex h-4 w-4 -translate-y-1/2 cursor-ew-resize touch-none items-center justify-center rounded-[2px] transition-opacity focus-visible:ring-2 focus-visible:ring-white focus-visible:outline-none [@media(pointer:coarse)]:h-7 [@media(pointer:coarse)]:w-7 {fadeOutLeft >=
 				100
 					? '-translate-x-full'
-					: '-translate-x-1/2'} {densityPointerClass} {editing === 'out' || hoveredFade === 'out'
-					? 'opacity-100'
-					: handleVisibilityClass}"
+					: '-translate-x-1/2'} {densityPointerClass} opacity-100"
 				disabled={!canInteract}
 				aria-disabled={!canInteract}
 				tabindex={canInteract ? 0 : -1}

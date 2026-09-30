@@ -53,7 +53,7 @@ func (s *Service) executeRun(ctx context.Context, id string) error {
 		return s.finishRunStep(ctx, record, run.Steps, remaining, StateFailed, "The run reached its 30 day limit.", nil)
 	}
 	level := workspaceaccess.LevelEdit
-	if record.Mode == ModeLive {
+	if record.Mode != ModePreview {
 		level = workspaceaccess.LevelAdminister
 	}
 	decision, err := workspaceaccess.NewAuthorizer(s.db).AuthorizeStored(ctx, authority, level)
@@ -279,6 +279,7 @@ func previewOutput(step Step, inputs map[string]any) map[string]any {
 		output["revision"] = 1
 		output["approved"] = true
 	case KindSchedule:
+		output["renditions"] = []any{}
 		output["publication_id"] = inputs["publication_id"]
 		output["scheduled_at"] = inputs["scheduled_at"]
 		output["status"] = "scheduled"

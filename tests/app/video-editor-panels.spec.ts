@@ -289,6 +289,7 @@ for (const scheme of ["light", "dark"] as const) {
       expect(colors.actual).toBe(colors.neutral);
       expect(colors.actual).not.toBe(colors.hover);
     }
+    await page.getByRole("button", { name: "Appearance", exact: true }).click();
     const opacity = page.getByRole("slider", { name: "Opacity", exact: true });
     await opacity.focus();
     await opacity.press("ArrowLeft");
@@ -533,4 +534,125 @@ test("Color palettes explain their action and landscape workspaces retain a usab
     true,
   );
   await page.screenshot({ path: testInfo.outputPath("video-export-320.png") });
+});
+
+for (const scheme of ["light", "dark"] as const) {
+  test(`Transcript has room to read and edit on phones in ${scheme}`, async ({
+    page,
+  }, testInfo) => {
+    test.setTimeout(90_000);
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+    await page.addInitScript((mode) => localStorage.setItem("mode-watcher-mode", mode), scheme);
+    await createProject(page, "Readable transcript");
+    await page.getByRole("tab", { name: "Transcript", exact: true }).click();
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.getByRole("button", { name: "Assets", exact: true }).click();
+      const transcript = page.getByRole("region", { name: "Transcript", exact: true });
+      await expect(transcript).toBeVisible();
+      expect((await transcript.boundingBox())!.height).toBeGreaterThan(300);
+      expect(
+        await transcript.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+      ).toBe(true);
+      await expect(page.getByRole("searchbox", { name: "Search transcript" })).toBeInViewport({
+        ratio: 1,
+      });
+      await page.screenshot({ path: testInfo.outputPath(`transcript-${width}-${scheme}.png`) });
+      await page.getByRole("button", { name: "Program", exact: true }).click();
+      await expect(page.getByRole("button", { name: "Play", exact: true })).toBeInViewport({
+        ratio: 1,
+      });
+      await expect(transcript).toBeHidden();
+    }
+  });
+}
+
+test("Motion uses authored duration in its summary, transport, and export", async ({ page }) => {
+  test.setTimeout(90_000);
+  await createProject(page, "Motion duration");
+  await page.getByRole("tab", { name: "Motion", exact: true }).click();
+  await page.getByRole("button", { name: "New composition", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Width", exact: true }).fill("320");
+  await page.getByRole("spinbutton", { name: "Height", exact: true }).fill("240");
+  await page.getByRole("spinbutton", { name: "Duration (seconds)", exact: true }).fill("12");
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await page
+    .getByRole("toolbar", { name: "Layer tools" })
+    .getByRole("button", { name: "Text", exact: true })
+    .click();
+  await expect(page.getByText(/320×240 · 30 fps · 0:12 · 1 clips/)).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: "00:00:00:00 / 00:00:12:00", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Export video" }).getByText(/12\.0s/),
+  ).toBeVisible();
+});
+
+test("panel content stays inside the editor when the window is short", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  await createProject(page, "Contained panels");
+  const failures: string[] = [];
+  for (const size of [
+    { width: 1440, height: 700 },
+    { width: 1024, height: 500 },
+    { width: 390, height: 844 },
+    { width: 844, height: 390 },
+    { width: 320, height: 568 },
+  ]) {
+    await page.setViewportSize(size);
+    if (size.width < 1024) await page.getByRole("button", { name: "Assets", exact: true }).click();
+    const assets = page.getByRole("complementary", { name: "Assets", exact: true });
+    for (const name of ["Media pool", "Text", "Transcript", "Transition", "Effects", "Create"]) {
+      await assets.getByRole("tab", { name, exact: true }).click();
+      await assets.locator("button:visible").last().focus();
+      const geometry = await page.evaluate(() => ({
+        height: innerHeight,
+        documentHeight: document.documentElement.scrollHeight,
+        headerTop: document.querySelector("header")!.getBoundingClientRect().top,
+        timelineBottom: document.querySelector("footer")!.getBoundingClientRect().bottom,
+        assetsBottom: document.querySelector("#video-editor-assets-panel")!.getBoundingClientRect()
+          .bottom,
+        contentBottom: document
+          .querySelector("#video-editor-left-tool-panel")!
+          .getBoundingClientRect().bottom,
+        overviewBottom: document
+          .querySelector('[role="group"][aria-label="Timeline overview"]')!
+          .getBoundingClientRect().bottom,
+      }));
+      if (
+        geometry.contentBottom > geometry.assetsBottom + 1 ||
+        geometry.overviewBottom > geometry.timelineBottom + 1 ||
+        geometry.documentHeight > geometry.height + 1 ||
+        Math.abs(geometry.headerTop) > 1 ||
+        Math.abs(geometry.timelineBottom - geometry.height) > 1
+      ) {
+        failures.push(`${size.width}x${size.height} ${name}: ${JSON.stringify(geometry)}`);
+        await page.screenshot({ path: testInfo.outputPath(`overflow-${size.width}-${name}.png`) });
+      }
+    }
+    await page.getByRole("button", { name: "Add marker", exact: true }).click();
+    for (const name of ["Audio mixer", "Beat markers"]) {
+      await page.getByRole("button", { name, exact: true }).click();
+      if (name === "Audio mixer") {
+        await page.getByRole("slider", { name: "Master output volume", exact: true }).focus();
+      }
+      const bounds = await page.evaluate(() => ({
+        footer: document.querySelector("footer")!.getBoundingClientRect().bottom,
+        trackHeight: document
+          .querySelector("#video-editor-timeline-scroll")!
+          .getBoundingClientRect().height,
+        overview: document
+          .querySelector('[role="group"][aria-label="Timeline overview"]')!
+          .getBoundingClientRect().bottom,
+      }));
+      if (bounds.overview > bounds.footer + 1 || bounds.trackHeight < 24)
+        failures.push(`${size.width}x${size.height} ${name}: ${JSON.stringify(bounds)}`);
+      await page.getByRole("button", { name, exact: true }).click();
+    }
+  }
+  expect(failures).toEqual([]);
 });

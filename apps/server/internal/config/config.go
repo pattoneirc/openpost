@@ -46,6 +46,7 @@ type Config struct {
 	ProxyAuthSecret          string
 	ProxyAuthWorkspaceName   string
 	DisableRegistrations     bool
+	HostedWaitlistEnabled    bool
 	OAuthDCR                 bool
 	MCPMode                  string
 	PublicProfilesEnabled    bool
@@ -66,6 +67,7 @@ type Config struct {
 	ImageCaptionProvider     string
 	ImageCaptionRequireZDR   bool
 	TextGenerationModel      string
+	WorkflowDecisionModel    string
 	MemeGeneratorEnabled     bool
 	MemeGenerationModel      string
 	ImageEditorEnabled       bool
@@ -243,6 +245,7 @@ func Load() *Config {
 		ProxyAuthSecret:         getEnvDefault("OPENPOST_PROXY_AUTH_SECRET", ""),
 		ProxyAuthWorkspaceName:  strings.TrimSpace(getEnvDefault("OPENPOST_PROXY_AUTH_WORKSPACE_NAME", "My Workspace")),
 		DisableRegistrations:    getEnvBoolWithAliases(false, "OPENPOST_DISABLE_REGISTRATIONS"),
+		HostedWaitlistEnabled:   edition == EditionCloud && getEnvBoolWithAliases(true, "OPENPOST_HOSTED_WAITLIST_ENABLED"),
 		OAuthDCR:                getEnvBoolWithAliases(false, "OPENPOST_OAUTH_DYNAMIC_REGISTRATION_ENABLED"),
 		MCPMode:                 getEnvEnum("OPENPOST_MCP_MODE", MCPModeDirect, MCPModeDirect, MCPModeSearch, MCPModeBoth),
 		PublicProfilesEnabled:   getEnvBoolWithAliases(true, "OPENPOST_PUBLIC_PROFILES_ENABLED"),
@@ -257,12 +260,13 @@ func Load() *Config {
 		OpenRouterAPIKey:        strings.TrimSpace(getEnvDefault("OPENROUTER_API_KEY", "")),
 		ContentAIProvider:       strings.TrimSpace(getEnvWithFallbacks("OPENPOST_CONTENT_AI_PROVIDER", "", "OPENPOST_IMAGE_CAPTION_PROVIDER")),
 		ContentAIRequireZDR:     getEnvBoolWithAliases(false, "OPENPOST_CONTENT_AI_REQUIRE_ZDR", "OPENPOST_IMAGE_CAPTION_REQUIRE_ZDR"),
-		ImageCaptionModel:       strings.TrimSpace(getEnvDefault("OPENPOST_IMAGE_CAPTION_MODEL", "openai/gpt-5.6-luna")),
+		ImageCaptionModel:       strings.TrimSpace(getEnvDefault("OPENPOST_IMAGE_CAPTION_MODEL", "openai/gpt-6-luna")),
 		ImageCaptionProvider:    strings.TrimSpace(getEnvDefault("OPENPOST_IMAGE_CAPTION_PROVIDER", "")),
 		ImageCaptionRequireZDR:  getEnvBoolWithAliases(false, "OPENPOST_IMAGE_CAPTION_REQUIRE_ZDR"),
-		TextGenerationModel:     strings.TrimSpace(getEnvDefault("OPENPOST_TEXT_GENERATION_MODEL", "openai/gpt-5.6-luna")),
+		WorkflowDecisionModel:   strings.TrimSpace(getEnvDefault("OPENPOST_WORKFLOW_DECISION_MODEL", "typesafe/jev-1.13")),
+		TextGenerationModel:     strings.TrimSpace(getEnvDefault("OPENPOST_TEXT_GENERATION_MODEL", "openai/gpt-6-luna")),
 		MemeGeneratorEnabled:    getEnvBoolWithAliases(true, "OPENPOST_MEME_GENERATOR_ENABLED"),
-		MemeGenerationModel:     strings.TrimSpace(getEnvDefault("OPENPOST_MEME_GENERATION_MODEL", "openai/gpt-5.6-luna")),
+		MemeGenerationModel:     strings.TrimSpace(getEnvDefault("OPENPOST_MEME_GENERATION_MODEL", "openai/gpt-6-luna")),
 		ImageEditorEnabled: getEnvBoolWithAliases(
 			true,
 			"OPENPOST_IMAGE_EDITOR_ENABLED",

@@ -68,6 +68,8 @@ export interface MediaMetadata {
 	fileHandle?: FileSystemFileHandle;
 	/** Authenticated Project Asset URL when storageType is cloud. */
 	remoteUrl?: string;
+	/** Server-generated preview for cloud media, independent of local folder access. */
+	remoteThumbnailUrl?: string;
 	/** Cache Storage URL for an explicitly pinned cloud original. */
 	offlineUrl?: string;
 	contentHash?: string;
@@ -89,6 +91,8 @@ export interface MediaMetadata {
 	codec: string;
 	bitrate: number;
 	audioCodec?: string;
+	/** Probe truth. Missing on older imports until the source is inspected. */
+	hasAudio?: boolean;
 	audioCodecSupported?: boolean;
 	videoCodecSupported?: boolean;
 	previewAudioConformedAt?: number;

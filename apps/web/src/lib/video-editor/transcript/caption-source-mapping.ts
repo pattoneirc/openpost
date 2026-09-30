@@ -1,4 +1,8 @@
-import type { TimelineItem, TranscriptCaptionSource } from '../project/types';
+import type {
+	AiCaptionsCaptionSource,
+	TimelineItem,
+	TranscriptCaptionSource
+} from '../project/types';
 import type { SourceRange } from '../timeline/actions/range-removal';
 
 export interface ResolvedTranscriptCaptionTiming {
@@ -13,8 +17,15 @@ export interface CaptionFrameRange {
 	end: number;
 }
 
+/** Generated cues use clip-local frames; imported subtitle files use sequence frames. */
+export function captionTimelineOffset(item: TimelineItem): number {
+	return item.captionSource?.type === 'transcript' || item.captionSource?.type === 'ai-captions'
+		? item.from
+		: 0;
+}
+
 export function resolveTranscriptCaptionTiming(
-	source: TranscriptCaptionSource,
+	source: TranscriptCaptionSource | AiCaptionsCaptionSource,
 	sourceItem: TimelineItem | null | undefined,
 	timelineFps: number
 ): ResolvedTranscriptCaptionTiming {

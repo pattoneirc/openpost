@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+import { userEvent } from 'vitest/browser';
 import { m } from '$lib/paraglide/messages';
 import type { TimelineItem } from '$lib/video-editor/project/types';
 import { createDefaultTracks } from '$lib/video-editor/project/defaults';
@@ -27,6 +28,49 @@ function textItem(): TimelineItem {
 afterEach(() => {
 	timelineStore.__resetForTesting();
 });
+
+it.each([false, true])(
+	'edits only selected recording audio, include camera: %s',
+	async (includeCamera) => {
+		timelineStore._setTracks(createDefaultTracks());
+		timelineStore._setItems([
+			{
+				id: 'screen',
+				type: 'video',
+				label: 'Screen',
+				mediaId: 'screen-media',
+				trackId: 'track-video-main',
+				from: 0,
+				durationInFrames: 90,
+				volume: 1,
+				linkedGroupId: 'recording'
+			},
+			{
+				id: 'camera-audio',
+				type: 'audio',
+				label: 'Camera audio',
+				mediaId: 'camera-media',
+				trackId: 'track-audio',
+				from: 0,
+				durationInFrames: 90,
+				volume: 0.5,
+				linkedGroupId: 'recording'
+			}
+		]);
+		const screen = await render(ClipPropertiesPanel, {
+			itemId: 'screen',
+			itemIds: includeCamera ? ['screen', 'camera-audio'] : ['screen'],
+			onedit: vi.fn()
+		});
+		const gain = screen.getByRole('textbox', { name: 'Gain', exact: false });
+		await gain.fill('-12');
+		await userEvent.keyboard('{Enter}');
+		expect(timelineStore.itemById.get('screen')?.volume).toBeCloseTo(0.2511886);
+		expect(timelineStore.itemById.get('camera-audio')?.volume).toBeCloseTo(
+			includeCamera ? 0.2511886 : 0.5
+		);
+	}
+);
 
 it('puts selected text editing before geometry and keeps advanced geometry disclosed', async () => {
 	const item = textItem();
@@ -145,4 +189,57 @@ it('exposes clip properties as a named group', async () => {
 	const group = screen.getByRole('group', { name: m.video_editor_clip_properties() });
 	await expect.element(group).toBeVisible();
 	await expect.element(group.getByTestId('clip-crop-section')).toBeVisible();
+});
+
+it('keeps everyday video controls visible and discloses detailed playback and crop settings', async () => {
+	const item: TimelineItem = {
+		id: 'footage',
+		trackId: 'track-video-main',
+		from: 0,
+		durationInFrames: 90,
+		label: 'Footage',
+		type: 'video'
+	};
+	timelineStore._setItems([item]);
+	const screen = await render(ClipPropertiesPanel, {
+		itemId: item.id,
+		onedit: vi.fn()
+	});
+	await expect.element(screen.getByRole('textbox', { name: 'Width', exact: true })).toBeVisible();
+	await expect.element(screen.getByRole('textbox', { name: 'Gain', exact: false })).toBeVisible();
+	await expect
+		.element(screen.getByRole('textbox', { name: 'Anchor X', exact: true }))
+		.not.toBeInTheDocument();
+	await expect
+		.element(screen.getByRole('button', { name: 'Reverse clip', exact: true }))
+		.not.toBeInTheDocument();
+	await screen.getByRole('button', { name: 'Playback', exact: true }).click();
+	await expect
+		.element(screen.getByRole('button', { name: 'Reverse clip', exact: true }))
+		.toBeVisible();
+	await screen.getByRole('button', { name: 'Crop media', exact: true }).click();
+	await expect.element(screen.getByRole('textbox', { name: 'Left', exact: true })).toBeVisible();
+});
+
+it('marks collapsed appearance and crop groups when only keyframes change those properties', async () => {
+	const item: TimelineItem = {
+		id: 'animated-footage',
+		trackId: 'track-video-main',
+		from: 0,
+		durationInFrames: 90,
+		label: 'Footage',
+		type: 'video',
+		keyframes: {
+			opacity: { frames: [0, 30], values: [1, 0.5] },
+			cropLeft: { frames: [0, 30], values: [0, 100] }
+		}
+	};
+	timelineStore._setItems([item]);
+	const screen = await render(ClipPropertiesPanel, { itemId: item.id, onedit: vi.fn() });
+	await expect
+		.element(screen.getByRole('button', { name: 'Appearance: Active', exact: true }))
+		.toHaveAttribute('aria-expanded', 'false');
+	await expect
+		.element(screen.getByRole('button', { name: 'Crop media: Active', exact: true }))
+		.toHaveAttribute('aria-expanded', 'false');
 });

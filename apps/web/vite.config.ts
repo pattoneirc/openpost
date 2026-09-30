@@ -9,7 +9,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, searchForWorkspaceRoot, type Plugin, type PluginOption } from 'vite';
 import { postHogSourceMaps } from '../../scripts/posthog-source-maps.ts';
-import { phonemizerDataRacePlugin } from './src/lib/build/phonemizer-data-race.ts';
+import { phonemizerRuntimePlugin } from './src/lib/build/phonemizer-runtime.ts';
 
 const rawParaglidePlugin = paraglideVitePlugin({
 	project: './project.inlang',
@@ -46,13 +46,19 @@ const testMediaStubPlugin: Plugin = {
 };
 
 export default defineConfig({
+	// Editor extensions must share one state/view instance across transitive dependencies.
+	resolve: { dedupe: ['@codemirror/state', '@codemirror/view'] },
+	cacheDir:
+		isVitest && process.env.NODE_ENV === 'production'
+			? 'node_modules/.vite-vitest-production'
+			: undefined,
 	publicDir: isVitest ? 'static' : undefined,
 	define: {
 		'import.meta.env.VITE_APP_MODE': JSON.stringify(process.env.VITE_APP_MODE || 'web')
 	},
 	plugins: [
 		pdfPreviewAssets(),
-		phonemizerDataRacePlugin(),
+		phonemizerRuntimePlugin(),
 		...(isVitest ? [testMediaStubPlugin] : []),
 		tailwindcss(),
 		...appFrameworkPlugins,

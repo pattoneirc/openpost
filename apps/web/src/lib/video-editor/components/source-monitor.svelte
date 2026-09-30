@@ -2,6 +2,7 @@
 	import { formatTimelinePreviewTimecode } from '../preview/timeline-preview-scrub';
 	import { onDestroy, onMount } from 'svelte';
 	import { m } from '$lib/paraglide/messages';
+	import { Button } from '$lib/components/ui/button';
 	import { showToast } from '$lib/toast';
 	import { ProtectedIcon, ThemeIcon } from '$lib/themes/icons';
 	import { editorSession } from '$lib/video-editor/editor.svelte';
@@ -542,12 +543,14 @@
 	}
 
 	function markIn(): void {
-		inPoint = Math.min(currentFrame, outPoint - 1);
+		inPoint = Math.min(currentFrame, durationFrames - 1);
+		if (inPoint >= outPoint) outPoint = inPoint + 1;
 		marksActive = true;
 	}
 
 	function markOut(): void {
-		outPoint = Math.max(inPoint + 1, Math.min(durationFrames, currentFrame + 1));
+		outPoint = Math.min(durationFrames, currentFrame + 1);
+		if (outPoint <= inPoint) inPoint = outPoint - 1;
 		marksActive = true;
 	}
 
@@ -589,7 +592,7 @@
 		event.preventDefault();
 	}
 
-	function edit(mode: 'insert' | 'overwrite'): void {
+	function edit(mode: 'insert' | 'overwrite' | 'append'): void {
 		if (!media) return;
 		try {
 			editorSession.pausePlayback();
@@ -597,19 +600,21 @@
 				media,
 				inFrame: inPoint,
 				outFrame: outPoint,
-				insertFrame: timelineStore.currentFrame,
+				insertFrame: mode === 'append' ? timelineStore.maxItemEndFrame : timelineStore.currentFrame,
 				videoEnabled,
 				audioEnabled,
 				videoTarget,
 				audioTarget,
 				createdVideoTrackName: m.video_editor_track_video_name({ number: videoTracks.length + 1 }),
 				createdAudioTrackName: m.video_editor_track_audio_name({ number: audioTracks.length + 1 }),
-				mode
+				mode: mode === 'append' ? 'insert' : mode
 			});
 			oninserted(result.itemIds);
 			onedit();
 			showToast(
-				mode === 'insert' ? m.video_editor_source_inserted() : m.video_editor_source_overwritten(),
+				mode === 'overwrite'
+					? m.video_editor_source_overwritten()
+					: m.video_editor_source_inserted(),
 				'success'
 			);
 		} catch (error) {
@@ -716,7 +721,7 @@
 
 <section
 	bind:this={monitorElement}
-	class="flex min-h-0 min-w-0 flex-1 flex-col border-r border-border bg-card"
+	class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto border-r border-border bg-card"
 	aria-label={m.video_editor_source_monitor()}
 	data-source-monitor
 	onmouseenter={handleSourceMouseEnter}
@@ -742,7 +747,7 @@
 	</header>
 
 	<div
-		class="editor-protected-surface relative flex min-h-32 flex-1 items-center justify-center overflow-hidden bg-[var(--canvas-pasteboard)]"
+		class="editor-protected-surface relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[var(--canvas-pasteboard)]"
 		data-editor-protected="source-media"
 	>
 		{#if playing && sourceShuttleActive}
@@ -777,7 +782,7 @@
 				<audio bind:this={proxyAudioElement} src={sourceAudioUrl} preload="auto"></audio>
 			{/if}
 		{:else if kind === 'audio'}
-			<div class="flex size-full max-h-[360px] min-h-48 flex-col p-3 text-[var(--editor-muted)]">
+			<div class="flex size-full max-h-[360px] min-h-0 flex-col p-3 text-[var(--editor-muted)]">
 				<div class="mb-2 flex items-center justify-center gap-2 text-xs">
 					<ProtectedIcon icon="media-audio" class="size-4" />
 					<span>{m.video_editor_source_audio_only()}</span>
@@ -1001,6 +1006,15 @@
 		</div>
 
 		<div class="grid grid-cols-2 gap-2">
+			<Button
+				size="xs"
+				variant="outline"
+				class="col-span-2 h-auto min-h-8 py-1 whitespace-normal [@media(pointer:coarse)]:min-h-11"
+				disabled={!videoEnabled && !audioEnabled}
+				onclick={() => edit('append')}
+			>
+				{m.video_editor_add_sequence_end()}
+			</Button>
 			<button
 				class="edit-button"
 				type="button"

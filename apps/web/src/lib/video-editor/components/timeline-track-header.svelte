@@ -1,5 +1,10 @@
 <script lang="ts">
 	import { tick } from 'svelte';
+	import {
+		MIN_TRACK_HEIGHT,
+		MAX_TRACK_HEIGHT,
+		formatTrackHeightText
+	} from '../timeline/track-resize';
 	import { Portal } from 'bits-ui';
 	import { m } from '$lib/paraglide/messages';
 	import { Button } from '$lib/components/ui/button';
@@ -30,6 +35,10 @@
 		onmoveup = () => {},
 		onmovedown = () => {},
 		onrename = () => {},
+		onreorderpointerdown,
+		onheightpointerdown,
+		onheightkeydown,
+		onheightreset,
 		onvisibility,
 		onmute,
 		onsolo,
@@ -54,6 +63,10 @@
 		onmoveup?: () => void;
 		onmovedown?: () => void;
 		onrename?: (name: string) => void;
+		onreorderpointerdown?: (event: PointerEvent) => void;
+		onheightpointerdown?: (event: PointerEvent) => void;
+		onheightkeydown?: (event: KeyboardEvent) => void;
+		onheightreset?: (event: MouseEvent) => void;
 		onvisibility: () => void;
 		onmute: () => void;
 		onsolo: () => void;
@@ -133,8 +146,9 @@
 		if (commit && nameDraft.trim() && nameDraft.trim() !== track.name) onrename(nameDraft.trim());
 	}
 
-	function nameKeydown(event: KeyboardEvent): void {
+	async function nameKeydown(event: KeyboardEvent): Promise<void> {
 		const bindings = keyboardShortcuts.bindings;
+		const target = event.currentTarget;
 		if (eventMatchesShortcut(event, bindings.TRACK_RENAME)) {
 			event.preventDefault();
 			void startRename();
@@ -144,7 +158,12 @@
 		} else if (eventMatchesShortcut(event, bindings.TRACK_MOVE_DOWN)) {
 			event.preventDefault();
 			onmovedown();
+		} else {
+			return;
 		}
+		if (editingName) return;
+		await tick();
+		if (target instanceof HTMLElement && target.isConnected) target.focus();
 	}
 </script>
 
@@ -156,13 +175,15 @@
 />
 
 <div
-	class="flex size-full min-w-0 flex-col justify-center gap-0.5 border-r border-[var(--video-editor-border)] bg-[var(--video-editor-panel)] px-2"
+	class="flex size-full min-w-0 flex-col justify-center gap-0.5 border-r border-[var(--video-editor-border)] bg-[var(--video-editor-panel)] px-2 [@media(pointer:coarse)]:flex-row [@media(pointer:coarse)]:items-center"
 	class:ring-1={selected}
 	class:ring-inset={selected}
 	class:ring-[oklch(0.66_0.14_45)]={selected}
 	data-track-header={track.id}
 >
-	<div class="flex min-w-0 items-center gap-1 {child ? 'pl-3' : ''}">
+	<div
+		class="flex min-w-0 items-center gap-1 [@media(pointer:coarse)]:flex-1 {child ? 'pl-3' : ''}"
+	>
 		{#if track.isGroup}
 			<Button
 				variant="ghost"
@@ -199,14 +220,18 @@
 		{:else}
 			<button
 				type="button"
-				class="min-w-0 flex-1 truncate rounded-sm text-left text-[11px] font-medium text-[var(--video-editor-text)] focus-visible:outline-2 focus-visible:outline-[var(--video-editor-focus)]"
+				class="flex min-w-0 flex-1 cursor-grab touch-none items-center gap-1 rounded-sm text-left text-[11px] font-medium text-[var(--video-editor-text)] focus-visible:outline-2 focus-visible:outline-[var(--video-editor-focus)] active:cursor-grabbing [@media(pointer:coarse)]:min-h-11"
 				aria-pressed={selected}
 				aria-keyshortcuts={nameAriaKeyShortcuts || undefined}
 				data-track-primary-control
-				title={m.video_editor_track_name_hint({ name: track.name })}
+				title={`${m.compose_drag_to_reorder()}. ${m.video_editor_track_name_hint({ name: track.name })}`}
 				onclick={onselect}
+				onpointerdown={onreorderpointerdown}
 				ondblclick={startRename}
-				onkeydown={nameKeydown}>{track.name}</button
+				onkeydown={nameKeydown}
+				><ThemeIcon role="drag" class="size-3 shrink-0 text-[var(--video-editor-muted)]" /><span
+					class="truncate">{track.name}</span
+				></button
 			>
 		{/if}
 		<span class="shrink-0 font-mono text-[9px] text-[var(--video-editor-muted)]">
@@ -217,7 +242,7 @@
 		<Button
 			variant="ghost"
 			size="icon"
-			class={controlClass}
+			class="{controlClass} [@media(pointer:coarse)]:hidden"
 			data-track-primary-control
 			data-active={!effectiveTrack.visible}
 			disabled={inheritedVisible}
@@ -239,7 +264,7 @@
 		<Button
 			variant="ghost"
 			size="icon"
-			class={controlClass}
+			class="{controlClass} [@media(pointer:coarse)]:hidden"
 			data-track-primary-control
 			data-active={effectiveTrack.locked}
 			disabled={inheritedLocked}
@@ -258,17 +283,12 @@
 					class="size-3.5"
 				/>{/if}
 		</Button>
-		<div
-			bind:this={moreMenu}
-			class="relative size-10 max-w-10 min-w-10 shrink-0"
-			style="width:40px;min-width:40px;max-width:40px;height:40px;flex:0 0 40px"
-		>
+		<div bind:this={moreMenu} class="relative size-6 shrink-0 [@media(pointer:coarse)]:size-11">
 			<button
 				bind:this={moreButton}
 				type="button"
-				class="flex size-10 cursor-pointer list-none items-center justify-center rounded text-[var(--video-editor-muted)] hover:bg-[var(--video-editor-control-hover)] hover:text-[var(--video-editor-text)] focus-visible:ring-2 focus-visible:ring-[var(--video-editor-focus)] focus-visible:outline-none [&::-webkit-details-marker]:hidden"
+				class="flex size-6 cursor-pointer list-none items-center justify-center rounded text-[var(--video-editor-muted)] hover:bg-[var(--video-editor-control-hover)] hover:text-[var(--video-editor-text)] focus-visible:ring-2 focus-visible:ring-[var(--video-editor-focus)] focus-visible:outline-none [&::-webkit-details-marker]:hidden [@media(pointer:coarse)]:size-11"
 				data-track-primary-control
-				style="width:40px;height:40px"
 				aria-expanded={moreOpen}
 				aria-haspopup="menu"
 				aria-label={m.video_editor_track_more_actions()}
@@ -283,70 +303,114 @@
 						bind:this={moreMenuContent}
 						class="video-editor-theme fixed z-[100] min-w-56 space-y-1 rounded-md border border-border bg-popover p-1.5 text-popover-foreground shadow-md"
 						style={`left:${moreMenuLeft}px;top:${moreMenuTop}px`}
-						role="menu"
 					>
-						<button
-							type="button"
-							role="menuitem"
-							class={menuItemClass}
-							data-active={effectiveTrack.muted}
-							disabled={inheritedMuted}
-							title={inheritedMuted ? m.video_editor_track_group_mute_inherited() : undefined}
-							onclick={() => runMoreAction(onmute)}
-						>
-							{#if effectiveTrack.muted}<ThemeIcon role="audio" class="size-4" />{:else}<ThemeIcon
-									role="audio"
-									class="size-4"
-								/>{/if}
-							{effectiveTrack.muted ? m.video_editor_track_unmute() : m.video_editor_track_mute()}
-						</button>
-						<button
-							type="button"
-							role="menuitem"
-							class={menuItemClass}
-							data-active={effectiveTrack.solo}
-							disabled={inheritedSolo}
-							title={inheritedSolo ? m.video_editor_track_group_solo_inherited() : undefined}
-							onclick={() => runMoreAction(onsolo)}
-						>
-							<ProtectedIcon icon="editor-solo" class="size-4" />
-							{effectiveTrack.solo ? m.video_editor_track_unsolo() : m.video_editor_track_solo()}
-						</button>
+						<div role="menu">
+							<button
+								type="button"
+								role="menuitem"
+								class="{menuItemClass} hidden min-h-11 [@media(pointer:coarse)]:flex"
+								disabled={inheritedVisible}
+								onclick={() => runMoreAction(onvisibility)}
+							>
+								<ThemeIcon role="eye" class="size-4" />
+								{effectiveTrack.visible ? m.video_editor_track_hide() : m.video_editor_track_show()}
+							</button>
+							<button
+								type="button"
+								role="menuitem"
+								class="{menuItemClass} hidden min-h-11 [@media(pointer:coarse)]:flex"
+								disabled={inheritedLocked}
+								onclick={() => runMoreAction(onlock)}
+							>
+								<ThemeIcon role="lock" class="size-4" />
+								{effectiveTrack.locked
+									? m.video_editor_track_unlock()
+									: m.video_editor_track_lock()}
+							</button>
+							<button
+								type="button"
+								role="menuitem"
+								class={menuItemClass}
+								data-active={effectiveTrack.muted}
+								disabled={inheritedMuted}
+								title={inheritedMuted ? m.video_editor_track_group_mute_inherited() : undefined}
+								onclick={() => runMoreAction(onmute)}
+							>
+								{#if effectiveTrack.muted}<ThemeIcon role="audio" class="size-4" />{:else}<ThemeIcon
+										role="audio"
+										class="size-4"
+									/>{/if}
+								{effectiveTrack.muted ? m.video_editor_track_unmute() : m.video_editor_track_mute()}
+							</button>
+							<button
+								type="button"
+								role="menuitem"
+								class={menuItemClass}
+								data-active={effectiveTrack.solo}
+								disabled={inheritedSolo}
+								title={inheritedSolo ? m.video_editor_track_group_solo_inherited() : undefined}
+								onclick={() => runMoreAction(onsolo)}
+							>
+								<ProtectedIcon icon="editor-solo" class="size-4" />
+								{effectiveTrack.solo ? m.video_editor_track_unsolo() : m.video_editor_track_solo()}
+							</button>
+							{#if !track.isGroup}
+								<button
+									type="button"
+									role="menuitem"
+									class={menuItemClass}
+									data-active={track.syncLock !== false}
+									onclick={() => runMoreAction(onsynclock)}
+								>
+									<ThemeIcon role="link" class="size-4" />
+									{track.syncLock !== false
+										? m.video_editor_track_sync_unlock()
+										: m.video_editor_track_sync_lock()}
+								</button>
+							{:else}
+								<button
+									type="button"
+									role="menuitem"
+									class={menuItemClass}
+									onclick={() => runMoreAction(onungroup)}
+								>
+									<ProtectedIcon icon="editor-ungroup" class="size-4" />
+									{m.video_editor_track_group_ungroup_hint()}
+								</button>
+							{/if}
+							<button
+								type="button"
+								role="menuitem"
+								class="{menuItemClass} text-red-300 hover:bg-red-500/15 hover:text-red-200"
+								disabled={!canDelete}
+								title={canDelete ? undefined : m.video_editor_track_keep_one()}
+								onclick={() => runMoreAction(track.isGroup ? ondeletegroup : ondelete)}
+							>
+								<ThemeIcon role="delete" class="size-4" />
+								{track.isGroup
+									? m.video_editor_track_group_delete()
+									: m.video_editor_track_delete()}
+							</button>
+						</div>
 						{#if !track.isGroup}
-							<button
-								type="button"
-								role="menuitem"
-								class={menuItemClass}
-								data-active={track.syncLock !== false}
-								onclick={() => runMoreAction(onsynclock)}
+							<div
+								role="slider"
+								tabindex="0"
+								aria-orientation="vertical"
+								aria-label={m.video_editor_track_resize({ name: track.name })}
+								aria-valuemin={MIN_TRACK_HEIGHT}
+								aria-valuemax={MAX_TRACK_HEIGHT}
+								aria-valuenow={track.height}
+								aria-valuetext={formatTrackHeightText(track.height)}
+								class="{menuItemClass} hidden min-h-11 cursor-ns-resize touch-none [@media(pointer:coarse)]:flex"
+								title={m.video_editor_track_resize_hint()}
+								onpointerdown={onheightpointerdown}
+								onkeydown={onheightkeydown}
+								ondblclick={onheightreset}
 							>
-								<ThemeIcon role="link" class="size-4" />
-								{track.syncLock !== false
-									? m.video_editor_track_sync_unlock()
-									: m.video_editor_track_sync_lock()}
-							</button>
-						{:else}
-							<button
-								type="button"
-								role="menuitem"
-								class={menuItemClass}
-								onclick={() => runMoreAction(onungroup)}
-							>
-								<ProtectedIcon icon="editor-ungroup" class="size-4" />
-								{m.video_editor_track_group_ungroup_hint()}
-							</button>
+								{m.video_editor_track_resize({ name: track.name })}
+							</div>
 						{/if}
-						<button
-							type="button"
-							role="menuitem"
-							class="{menuItemClass} text-red-300 hover:bg-red-500/15 hover:text-red-200"
-							disabled={!canDelete}
-							title={canDelete ? undefined : m.video_editor_track_keep_one()}
-							onclick={() => runMoreAction(track.isGroup ? ondeletegroup : ondelete)}
-						>
-							<ThemeIcon role="delete" class="size-4" />
-							{track.isGroup ? m.video_editor_track_group_delete() : m.video_editor_track_delete()}
-						</button>
 					</div>
 				</Portal>
 			{/if}

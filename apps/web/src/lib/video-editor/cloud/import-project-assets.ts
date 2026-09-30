@@ -73,7 +73,31 @@ export async function importCloudProjectAssetFile<TDocument extends object>(
 		fileName: file.name,
 		mimeType: file.type || 'application/octet-stream',
 		size: file.size,
-		sha256: contentHash
+		sha256: contentHash,
+		mediaMetadata: lottie
+			? {
+					duration: lottie.durationSeconds,
+					width: lottie.width,
+					height: lottie.height,
+					fps: lottie.frameRate,
+					codec: 'lottie',
+					tags: ['lottie', ...(options.tags ?? [])],
+					lottieTotalFrames: lottie.totalFrames,
+					lottieMarkers: lottie.markers,
+					attribution: options.attribution
+				}
+			: {
+					duration: options.duration ?? probe!.durationSeconds,
+					width: probe!.width,
+					height: probe!.height,
+					fps: probe!.fps,
+					codec: probe!.videoCodec ?? '',
+					audioCodec: probe!.audioCodec,
+					hasAudio: probe!.hasAudio,
+					tags: [probe!.kind, ...(options.tags ?? [])],
+					animationFrameCount: probe!.animationFrameCount,
+					attribution: options.attribution
+				}
 	});
 	const uploaded = await uploadMediaFile({
 		workspaceId: options.repository.workspaceId,
@@ -125,6 +149,7 @@ export async function importCloudProjectAssetFile<TDocument extends object>(
 				bitrate: probe!.bitrate ?? 0,
 				audioCodec: probe!.audioCodec,
 				audioCodecSupported: probe!.audioCodecSupported,
+				hasAudio: probe!.hasAudio,
 				keyframeTimestamps: probe!.keyframeTimestamps,
 				gopInterval: probe!.gopInterval,
 				animationFrameCount: probe!.animationFrameCount,

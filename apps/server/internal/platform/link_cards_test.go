@@ -19,6 +19,15 @@ func TestDetectFirstURL(t *testing.T) {
 	require.Equal(t, "", DetectFirstURL("ftp://example.com/file"))
 }
 
+func TestDetectFirstURLKeepsBalancedParentheses(t *testing.T) {
+	require.Equal(t, "https://en.wikipedia.org/wiki/Go_(programming_language)",
+		DetectFirstURL("Read https://en.wikipedia.org/wiki/Go_(programming_language) today"))
+	require.Equal(t, "https://en.wikipedia.org/wiki/Go_(programming_language)",
+		DetectFirstURL("(see https://en.wikipedia.org/wiki/Go_(programming_language))."))
+	require.Equal(t, "https://example.com/x", DetectFirstURL("(see https://example.com/x)"))
+	require.Equal(t, "https://example.com/x", DetectFirstURL("See https://example.com/x)."))
+}
+
 func TestEffectiveLinkURLPrefersExplicitSetting(t *testing.T) {
 	settings := map[string]interface{}{"url": "https://explicit.example/x"}
 	require.Equal(t, "https://explicit.example/x", EffectiveLinkURL(settings, "see https://detected.example/y"))
@@ -34,6 +43,33 @@ func TestParseOpenGraphMetadata(t *testing.T) {
 	title, description = parseOpenGraphMetadata(`<html><head><title>Fallback</title><meta name="description" content="Meta desc"></head></html>`)
 	require.Equal(t, "Fallback", title)
 	require.Equal(t, "Meta desc", description)
+}
+
+func TestParseOpenGraphMetadataKeepsQuotesAndDecodesEntities(t *testing.T) {
+	title, description := parseOpenGraphMetadata(`<html><head>` +
+		`<meta property="og:title" content="The world's best coffee &amp; tea">` +
+		`<meta content='She said "hi" &#8212; then left' property='og:description'>` +
+		`</head></html>`)
+	require.Equal(t, "The world's best coffee & tea", title)
+	require.Equal(t, `She said "hi" — then left`, description)
+
+	title, description = parseOpenGraphMetadata(`<html><head><title>Don&#39;t panic</title>` +
+		`<meta name="description" content="It's fine"></head></html>`)
+	require.Equal(t, "Don't panic", title)
+	require.Equal(t, "It's fine", description)
+}
+
+func TestParseOpenGraphMetadataReadsOnlyTheContentAttribute(t *testing.T) {
+	// data-content is a different attribute; only content names the value.
+	title, _ := parseOpenGraphMetadata(`<html><head><meta property="og:title" content="Final" data-content="Draft"></head></html>`)
+	require.Equal(t, "Final", title)
+	title, _ = parseOpenGraphMetadata(`<html><head><title>Fallback</title><meta property="og:title" data-content="Draft"></head></html>`)
+	require.Equal(t, "Fallback", title)
+
+	// An unquoted attribute value is valid HTML.
+	title, description := parseOpenGraphMetadata(`<html><head><meta property="og:title" content=Final><meta content=Summary name="description"></head></html>`)
+	require.Equal(t, "Final", title)
+	require.Equal(t, "Summary", description)
 }
 
 func TestLinkedInBuildsArticleFromDetectedURLWithOGFallback(t *testing.T) {

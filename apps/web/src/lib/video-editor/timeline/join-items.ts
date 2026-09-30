@@ -8,6 +8,7 @@ function sourceKey(item: TimelineItem): string | undefined {
 export function canJoinItems(left: TimelineItem, right: TimelineItem): boolean {
 	if (!left.originId || left.originId !== right.originId) return false;
 	if (left.type !== right.type || left.trackId !== right.trackId) return false;
+	if (Boolean(left.audioDetached) !== Boolean(right.audioDetached)) return false;
 	if (!sourceKey(left) || sourceKey(left) !== sourceKey(right)) return false;
 	if (left.from + left.durationInFrames !== right.from) return false;
 	if ((left.speed ?? 1) !== (right.speed ?? 1)) return false;
@@ -50,10 +51,28 @@ export function joinedTimelineItem(items: TimelineItem[]): TimelineItem | null {
 	if (!canJoinMultipleItems(sorted)) return null;
 	const first = sorted[0]!;
 	const last = sorted[sorted.length - 1]!;
-	return {
+	const joined: TimelineItem = {
 		...first,
+		fadeOut: last.fadeOut,
+		audioFadeOut: last.audioFadeOut,
+		audioFadeOutCurve: last.audioFadeOutCurve,
+		audioFadeOutCurveX: last.audioFadeOutCurveX,
 		durationInFrames: last.from + last.durationInFrames - first.from,
 		sourceStart: first.isReversed ? last.sourceStart : first.sourceStart,
 		sourceEnd: first.isReversed ? first.sourceEnd : last.sourceEnd
 	};
+
+	if (first.videoFadeOffsets || last.videoFadeOffsets) {
+		joined.videoFadeOffsets = {
+			in: first.videoFadeOffsets?.in ?? 0,
+			out: last.videoFadeOffsets?.out ?? 0
+		};
+	}
+	if (first.audioFadeOffsets || last.audioFadeOffsets) {
+		joined.audioFadeOffsets = {
+			in: first.audioFadeOffsets?.in ?? 0,
+			out: last.audioFadeOffsets?.out ?? 0
+		};
+	}
+	return joined;
 }

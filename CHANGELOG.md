@@ -4,6 +4,161 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [7.5.2] - 2026-09-29
+
+### Fixed
+
+- Updated the Android app's Expo dependencies to the supported SDK patch versions.
+- Prevent blank Video Editor preview frames at cuts by preparing adjacent clips before playback reaches them.
+- Resume preview audio when playback starts, preventing silent or stalled video after the browser suspends its audio context.
+- Show timeline fade handles only on selected, editable clips.
+- Place new auto-captions and imported subtitles above video, with compact caption tracks.
+- Separating or unlinking audio no longer restores a second copy of the video's sound. Linked audio from a different recording source no longer silences embedded screen audio.
+- Clip context menus stay inside narrow phone screens when opened with the keyboard.
+- Video Editor property diamonds now add or remove a keyframe at the playhead, with a filled diamond at a saved key. Moving the playhead and changing an animated property creates the next key.
+- Adding a first keyframe preserves the current value, including text size, crop, audio gain, shape paths, and effect controls. Text, shape, and background inspectors follow and edit animated values at the playhead.
+- Scale and anchor keys preserve existing clip geometry and can be copied and pasted with both axes.
+- Modal backdrops stay dark when an older custom theme contains a light scrim color.
+
+### Added
+
+- Drag Video Editor track names to reorder layers. Escape cancels the drag, and Undo restores the previous order.
+- Detach audio from a video clip's context menu, then link or unlink the clips to edit them together or separately. Detaching preserves source timing, speed, volume automation, and audio processing, with Undo.
+
+### Improved
+
+- AI text accepts general system and user messages. AI decisions use Jev with recorded probability and usage. Shared text, image caption, and meme generation defaults now use Luna 6; explicit model settings stay unchanged.
+- Organize workflow canvases, rename steps in their header, and use node context menus to add, duplicate, or delete with undo.
+- Write values and insert searchable variable chips in one field editor. Recipes add editable groups of steps for drafts, review, digests, and data preparation.
+- Workflow drafts use the composer's Social Set picker and provider settings. Each run creates posts with the selected set's current accounts and defaults.
+- Workflow scheduling preserves native validation messages and destination outcomes.
+- Workflow keyboard shortcuts support undo, redo, save, node duplication and deletion. Canvas moves and organization can be undone without interfering with text fields or nested dialogs.
+- Node names and save status stay readable on narrow screens.
+- Workflow previews stay centered as cards resize. Node categories use distinct theme colors and clearer symbols across the canvas, templates, runs, and node picker.
+- The landing-page workflow tour shows a release branching into an announcement or a short update, each with a draft and review step.
+
+### Changed
+
+- Recorder microphone audio stays with the camera, or with the screen when the camera is off. Screen-only recordings mix system sound and microphone audio. Microphone-only recordings remain audio files.
+
+## [7.4.2] - 2026-09-29
+
+### Fixed
+
+- Keep generated captions aligned in preview and export when their source clip starts later in the timeline. Trim exported captions to the retained clip.
+- Fix Motion ruler seeking and preserve authored composition duration in full and partial exports.
+- Keep transcript cuts tied to the correct source instance and retained caption range.
+- Explain silent recordings before downloading a transcription model and show the model download size before transcription starts.
+- Keep playback controls and project duration consistent with the active Motion composition.
+- Prevent accidental fades when grabbing an unselected clip near its corner. Insert new recordings above existing visuals with distinct, short track names.
+- Cameras, screen sharing, and microphone monitoring stop before the recording finishes saving. Capture duration no longer includes storage delays.
+- Saving a new recording no longer briefly displays recovery warnings. Preparing previews no longer counts as a media issue.
+- Kept Video Editor asset panels, transcript controls, timeline tracks, and the overview within the window at small sizes. Phone Assets now uses the available panel space, and long controls scroll within their own panel.
+- Prevented the audio mixer, beat controls, and marker details from pushing timeline navigation below the window.
+- Kept transcript words clickable in short panels by letting search and word actions scroll with the text when there is not enough room to pin them.
+- Kept the selected Video Editor asset panel open when choosing it again from More.
+- Kept Video Editor clips selectable on touch screens by moving track-height resizing into the track menu. The mouse resize handle stays on the track edge.
+- Preserved source timing when trimming reversed clips and speed ramps, including ramps with implicit boundary points and very slow reversed clips.
+- Modal backdrops now darken the page in dark mode instead of washing it out with white.
+
+### Changed
+
+- Read and edit video transcripts as flowing text. Click words to seek, drag or Shift-click to select, correct captions, add selected text to the timeline, or cut the matching footage with undo. Search, playback following, pause markers, and detailed caption controls stay within the same panel.
+- Simplify the Video Editor asset rail and Motion layer rows. Show placement guidance, rejected drop feedback, the active Motion composition, and skim time. Remember the selected panel, playhead, zoom, and scroll position on this device.
+- Video recording prefers native H.264 when supported and appends capture data in a storage worker, reducing encoding and disk work while preserving recovery files.
+- The Video Editor recorder separates source setup, recording controls, and saving progress, with fewer controls visible during capture.
+- Hosted registration temporarily collects emails for the launch waitlist while the remaining social platform approvals are completed. Signups need no password or verification email. Existing accounts can still sign in, and self-hosted registration is unchanged.
+- Waitlist emails are saved once and sent to the configured billing Discord channel through the job queue. Set `OPENPOST_HOSTED_WAITLIST_ENABLED=false` to reopen Hosted registration.
+- Updated the Android package to 0.2.47 (49) for the shared API and built-in theme changes in this release.
+- The landing-page tour now shows a small release-to-draft workflow. Workflows has a dedicated feature section, matching artwork, share previews, and links from the documentation home and README.
+
+### Improved
+
+- Simplified Video Editor properties with expandable crop, playback, appearance, anchor, pitch, and advanced audio controls. Modified crop, playback, and appearance settings stay marked when closed.
+- Reduced preview toolbar clutter while keeping frame capture and in/out actions in its menu. Scene detection is available from clip actions.
+- Made transcript setup start with language and Auto-captions, with model settings under Advanced and download size visible. Existing transcripts keep generation setup collapsed so the words stay in view.
+
+### Added
+
+- Canvas format presets for landscape, vertical, square, and feed videos. Applying a format preserves frame rate and clip placement and can be undone in one step.
+- Trim a selected Video Editor clip's start or end to the playhead from Properties. Linked audio and attached captions follow the trim, later clips stay in place, and Undo restores the whole edit.
+- Add media at the playhead or at the end of the sequence from its menu. The source monitor can also append a marked range.
+- Illustrated Workflows guide and examples for feed digests, AI decisions, custom API data, and scheduling after review.
+
+### Security
+
+- Updated the Undici build-tool dependency to 7.29.1 to fix GHSA-3wwx-pv8p-q78v.
+- Updated the fast-uri build-tool dependency to 3.1.7 to fix URI authority parsing vulnerabilities.
+
+## [7.3.1] - 2026-09-28
+
+### Fixes
+
+- Automatically display Arabic and Hebrew post text right to left in the composer and social previews, including mixed English words and paragraphs.
+- Show the provider, account identity, and avatar when choosing workflow destinations.
+- Preserve publishing failures through retries and keep external requests from repeating after an uncertain outcome. Cancellation fences new external effects and response snapshots redact saved credentials.
+- Retry temporary Threads carousel assembly failures and Instagram media-not-ready rejections with bounded backoff, reusing the prepared media containers.
+- Limit Meta propagation retries to confirmed readiness rejections so uncertain network or server failures cannot repeat a publish.
+- Give the JavaScript engine a separate startup budget so cold compilation does not cause valid code to time out. User code keeps its two-second execution limit.
+- Keep JSON intact when inserting variables, validate against the current source data, and accept nested field outputs. Canvas attention matches field errors, and invalid AI responses retain usage with a failed outcome.
+- Keep graph previews readable, expose undo and redo on phones, and reopen node settings on the configuration tab.
+
+### Fixed
+
+- Preserve fades, linked audio, captions, overlapping audio, imported subtitles, gaps and locked tracks through splits and transcript cuts. Prevent the production-only preview crash during timeline edits.
+- Keep the viewing position when undoing edits, support timeline Select All and cancelable marquee selection, and update paused text previews.
+- Restore cloud media playback and prepared audio/Lottie metadata when reopening projects, including multiple project assets that share uploaded media.
+- Restore Kokoro pronunciation data and compatible Parakeet model loading, and keep transcription failures visible.
+- Keep Color and Source controls reachable, align Motion keyframes and layer rows, place new titles above video, and improve recorder storage and export feedback.
+- Accept frame-rounding differences at verified audio EOF without hiding genuinely truncated sources.
+- Keep Motion marquee selection after releasing the pointer, restore selection when canceled, and accept valid binary audio that contains SVG-like bytes.
+- Split long auto-captions into timed cues instead of discarding spoken words behind an ellipsis.
+- Cloud autosave and preview-thumbnail updates preserve the Image Editor text cursor so typing can continue without reselecting the text.
+- Image Editor crop controls now apply, cancel, reset, change aspect ratio, and resize by dragging without losing the active crop session.
+- Crop aspect presets keep their ratio while resizing with the pointer or keyboard, and the first choice keeps its correct label.
+- On phones, the Color workspace keeps space for the live canvas when the page strip is expanded. Short windows compact the strip while keeping grading controls reachable.
+- The Image Editor library no longer describes saved designs as video projects while loading.
+- Video Editor splits selected clips and their linked media without cutting unrelated tracks. With no selection, split still cuts all unlocked clips at the playhead.
+- Video Editor remembers the active sequence and the Edit return destination from Motion on this device when reopening a project.
+- Motion labels empty-composition creation as "New composition", distinct from "Create from selection". Transition feedback now explains that one clip must be selected.
+- Motion timeline and creation dialogs use editor theme surfaces and readable text in light and dark modes.
+- Timer previews retain their authored size and keep counting after scrubbing, using the same preview renderer during hover and playback.
+- Video Editor playback menus stay within the viewport and scroll internally, including expanded voiceover settings.
+- Read a link card's Open Graph title and description whole when they contain an apostrophe, such as "The world's best", which was cut at the apostrophe, and decode HTML entities in them and in the page title, so a LinkedIn article card no longer shows "Tom &amp; Jerry" or "Don&#39;t". A `data-content` attribute is no longer read as the value, and an unquoted `content=` value is read.
+- Detect a link card URL that contains parentheses, such as a Wikipedia article link, whole. Detection stopped at the first ")", so "https://en.wikipedia.org/wiki/Go_(programming_language)" became a broken link missing its closing parenthesis; a ")" is now dropped only when it closes text around the link.
+- Link an imported Bluesky post through the account's DID when Bluesky reports its handle as `handle.invalid`, which it does when a custom-domain handle stops verifying. The post's link was built from that handle and did not open.
+- Keep the paragraph and line breaks of imported Mastodon posts. Only the HTML tags were removed, so every paragraph and line of a status ran together into one line with no space between them.
+- Reset the post-import read budget at the start of the UTC day, when an account whose budget ran out is retried. The budget rolled over 24 hours after its first read instead, so it was still spent at that midnight retry and the import waited another full day.
+
+### Features
+
+- Rebuild Workflows as a full-screen editor with a compact toolbar, searchable node picker, drag-to-add connections, required-field attention, variable chips, a large node-inspection modal with input/output panels, and graph previews for templates and runs.
+- Add scheduled, new-post, and failed-publication triggers; AI text and decisions; HTTP requests with cURL import; isolated JavaScript; and content/data transformations. Add digest, relevance-review, API-to-post, and weekly draft templates.
+- Manage encrypted GitHub and custom API credentials on a Connections page. Restrict custom credentials to a selected HTTPS host and replace secrets without rebuilding workflows.
+- Test individual data, HTTP, feed, and AI nodes without running later publishing steps. Record AI token usage and provider-reported costs without imposing a spending cap.
+
+### Operations
+
+- Migration 146 adds credential metadata, external-effect receipts, and workflow AI usage. Existing repost policies, grants, executions, and per-post overrides retain their native owners and IDs. Pause workflows and finish or cancel their runs before rolling back to a version without these node types.
+
+## [7.2.4] - 2026-09-28
+
+### Added
+
+- Native workflows with GitHub releases, RSS/Atom, manual runs, and published-post sources. Build content flows with drafts, AI writing, review, scheduling, conditions, waits, metrics, and prepared replies.
+- A visual workflow editor, starting templates, previews without publishing effects, and run inspection with revision-bound approval. Runs persist across worker restarts and use OpenPost's native publishing rules.
+- Move existing repost rules, grants, templates, and run history into Workflows without restarting deliveries. Preserve rule identity on edits, reject stale changes, and recover workflow drafts after Social Set changes.
+
+### Fixed
+
+- Saving a paused repost rule no longer enables it through the database default.
+- GitHub sources fetch smaller release pages to handle repositories with large asset histories. Source errors no longer block editor autosave or offer unrelated save recovery actions.
+
+### Changed
+
+- Put common editing tools first in the Image and Video Editor toolbars, keep related tools together, and move specialized tools later in the list.
+- Made the website Resources menu more compact, with clearer link groups and icons.
+
 ## [7.1.0] - 2026-09-27
 
 ### Added

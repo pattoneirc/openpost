@@ -1,3 +1,4 @@
+import { sequenceStore } from '../sequences/sequence-store.svelte';
 import { expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
@@ -54,14 +55,20 @@ it('keeps a 44px play target inside the narrow transport bar', async () => {
 	}
 });
 
-it('shows secondary transport controls when the Program container is wide', async () => {
+it('keeps playback direct and frame capture in the wide transport menu', async () => {
 	const screen = await render(Fixture, { width: 900 });
 
 	await expect
 		.element(screen.getByRole('button', { name: 'Go to start', exact: true }))
 		.toBeVisible();
 	await expect.element(screen.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
-	expect(screen.getByRole('button', { name: 'More actions', exact: true }).query()).toBeNull();
+	await screen.getByRole('button', { name: 'More actions', exact: true }).click();
+	await expect
+		.element(screen.getByRole('menuitem', { name: 'Save current frame', exact: true }))
+		.toBeVisible();
+	await expect
+		.element(screen.getByRole('menuitem', { name: 'Mark in', exact: true }))
+		.toBeVisible();
 });
 
 it('keeps preview menus inside the fullscreen surface', async () => {
@@ -217,6 +224,71 @@ it('shows elapsed and total time in the same frame timecode', async () => {
 		const screen = await render(Fixture, { width: 900 });
 		await expect.element(screen.getByLabelText('00:00:52:15 / 00:02:06:13')).toBeVisible();
 	} finally {
+		timelineStore.__resetForTesting();
+	}
+});
+
+it.each([320, 390])('keeps expanded overflow actions inside a %ipx viewport', async (width) => {
+	await page.viewport(width, 500);
+	try {
+		const screen = await render(Fixture, { width });
+		const originalHeight = document.documentElement.scrollHeight;
+		await screen.getByRole('button', { name: 'More actions', exact: true }).click();
+		await screen.getByRole('menuitem', { name: 'Voiceover settings', exact: true }).click();
+		const menu = screen.getByRole('menu').element();
+		await expect.poll(() => menu.getBoundingClientRect().bottom).toBeLessThanOrEqual(500);
+		expect(menu.getBoundingClientRect().top).toBeGreaterThanOrEqual(0);
+		expect(menu.scrollHeight).toBeGreaterThan(menu.clientHeight);
+		expect(getComputedStyle(menu).overflowY).toBe('auto');
+		expect(document.documentElement.scrollHeight).toBe(originalHeight);
+		await userEvent.keyboard('{End}');
+		await expect
+			.element(screen.getByRole('menuitem', { name: 'Enter theater mode', exact: true }))
+			.toHaveFocus();
+		expect(menu.scrollTop).toBeGreaterThan(0);
+		const lastAction = screen
+			.getByRole('menuitem', { name: 'Enter theater mode', exact: true })
+			.element()
+			.getBoundingClientRect();
+		expect(lastAction.bottom).toBeLessThanOrEqual(menu.getBoundingClientRect().bottom);
+		await userEvent.keyboard('{Escape}');
+	} finally {
+		await page.viewport(1280, 900);
+	}
+});
+
+it('keeps the authored Motion duration after the last layer ends', async () => {
+	const id = 'motion-duration';
+	sequenceStore.addComposition({
+		id,
+		name: 'Motion duration',
+		editorKind: 'composite-2d',
+		items: [
+			{
+				id: 'title',
+				type: 'text',
+				trackId: 'visual',
+				from: 0,
+				durationInFrames: 274,
+				text: 'Title',
+				label: 'Title'
+			}
+		],
+		tracks: [],
+		transitions: [],
+		fps: 30,
+		width: 1920,
+		height: 1080,
+		durationInFrames: 353
+	});
+	sequenceStore.switchTo(id);
+	try {
+		const screen = await render(Fixture, { width: 900 });
+		await expect
+			.element(screen.getByRole('img', { name: '00:00:00:00 / 00:00:11:23', exact: true }))
+			.toBeVisible();
+	} finally {
+		sequenceStore.deleteCompositionAndReferences(id);
 		timelineStore.__resetForTesting();
 	}
 });

@@ -324,6 +324,8 @@
 	let sidebarViewportHeight = $state(400);
 	let sidebarScrollTop = $state(0);
 	let sidebarRowHeights = $state<Map<string, number>>(new Map());
+	type RowGeometry = { barHeight: number; barTop: number; vectors: number[]; textBands: number[] };
+	let sidebarRowGeometry = $state<Map<string, RowGeometry>>(new Map());
 	let selectedItemIds = $state<Set<string>>(new Set());
 	let lastSelectedId = $state<string | null>(null);
 	$effect(() => {
@@ -355,6 +357,14 @@
 	let newDuration = $state(300);
 	let editingNameId: string | null = $state(null);
 	let editingNameValue = $state('');
+	let inlineKeyframeWidth = $state(320);
+	const sheetLabelWidth = $derived(Math.min(180, Math.max(120, inlineKeyframeWidth * 0.45)));
+	function sheetScale(item: TimelineItem): number {
+		return Math.max(
+			0.001,
+			(inlineKeyframeWidth - sheetLabelWidth - 16) / Math.max(1, item.durationInFrames - 1)
+		);
+	}
 	let expandedLayerIds = $state<Set<string>>(new Set());
 	let expandedGroupIds = $state<Set<string>>(new Set());
 	let filterText = $state('');
@@ -423,7 +433,7 @@
 		sidebarRows.slice(sidebarWindow.startIndex, sidebarWindow.endIndex)
 	);
 	$effect(() => {
-		const activeKeys = new Set(sidebarRowKeys);
+		const activeKeys = new Set(motionRows.map(motionRowKey));
 		if ([...sidebarRowHeights.keys()].every((key) => activeKeys.has(key))) return;
 		sidebarRowHeights = new Map([...sidebarRowHeights].filter(([key]) => activeKeys.has(key)));
 	});
@@ -440,7 +450,23 @@
 		const measure = () => {
 			const style = getComputedStyle(node);
 			const marginBottom = Number.parseFloat(style.marginBottom) || 0;
-			setSidebarRowHeight(activeKey, node.getBoundingClientRect().height + marginBottom);
+			const rect = node.getBoundingClientRect();
+			setSidebarRowHeight(activeKey, rect.height + marginBottom);
+			const header = node.querySelector('.layer-row')?.getBoundingClientRect();
+			const offsets = (selector: string) =>
+				[...node.querySelectorAll(selector)].map((el) => el.getBoundingClientRect().top - rect.top);
+			const barHeight = matchMedia('(pointer: coarse)').matches ? 44 : ROW_H - 12;
+			const geometry: RowGeometry = {
+				barHeight,
+				barTop: header ? header.top - rect.top + (header.height - barHeight) / 2 : 0,
+				vectors: offsets('.vector-row'),
+				textBands: offsets('.text-band-row')
+			};
+			if (JSON.stringify(sidebarRowGeometry.get(activeKey)) !== JSON.stringify(geometry)) {
+				const next = new Map(sidebarRowGeometry);
+				next.set(activeKey, geometry);
+				sidebarRowGeometry = next;
+			}
 		};
 		const observer = new ResizeObserver(measure);
 		observer.observe(node);
@@ -463,7 +489,23 @@
 		queryTimelineItemRange(itemIndex, { start: visibleRange.start, end: visibleRange.end })
 	);
 	const layerEntryByItemId = $derived(
-		new Map(layerEntries.map((row, index) => [row.item.id, { row, index }]))
+		new Map(
+			sidebarRows.flatMap((row, index) =>
+				isLayerRow(row)
+					? [
+							[
+								row.item.id,
+								{
+									row,
+									index,
+									top: sidebarLayout.offsets[index] ?? 0,
+									geometry: sidebarRowGeometry.get(motionRowKey(row))
+								}
+							] as const
+						]
+					: []
+			)
+		)
 	);
 	const visibleLayerEntries = $derived.by(() => {
 		const ids = new Set([...visibleBars.map((item) => item.id), ...selectedItemIds]);
@@ -589,13 +631,19 @@
 		const clamped = Math.max(0, Math.min(frame, durationFrames - 1));
 		timelineStore._setCurrentFrame(clamped);
 	}
+	let suppressMarqueeClick = false;
 	function handleTimelineClick(event: MouseEvent): void {
+		if (suppressMarqueeClick) {
+			suppressMarqueeClick = false;
+			return;
+		}
 		const target = event.target;
 		if (!(target instanceof HTMLElement)) return;
 		if (
 			target.closest('[data-layer-row]') ||
 			target.closest('[data-vector-row]') ||
-			target.closest('[data-testid^="composition-bar"]')
+			target.closest('[data-testid^="composition-bar"]') ||
+			target.closest('[data-testid="composition-ruler"], button, input, select, textarea')
 		)
 			return;
 		clearSelection();
@@ -611,7 +659,7 @@
 	}
 	function handleFit(): void {
 		const span = Math.max(60, durationFrames);
-		const containerWidth = scrollEl ? scrollEl.clientWidth - 220 : 800;
+		const containerWidth = scrollEl ? Math.max(1, scrollEl.clientWidth - 24) : 800;
 		const targetPxPerFrame = containerWidth / span;
 		const level = clampTimelineZoom(targetPxPerFrame / 4);
 		timelineStore._setZoomLevel(level);
@@ -643,7 +691,7 @@
 			fallbackFrom: item.from,
 			fallbackTo: item.from + item.durationInFrames - 1,
 			fps,
-			availableWidth: Math.max(1, scrollEl.clientWidth - 220 - 50),
+			availableWidth: Math.max(1, scrollEl.clientWidth - 50),
 			scrollBase: 0
 		});
 		timelineStore._setZoomLevel(level);
@@ -1236,11 +1284,20 @@
 		let trackId = row?.dataset.layerRow
 			? (timelineStore.itemById.get(row.dataset.layerRow)?.trackId ?? null)
 			: null;
-		if (!trackId && layerBarsEl) {
+		if (
+			!trackId &&
+			layerBarsEl &&
+			event.clientY >= scrollRect.top + 28 &&
+			event.clientY < scrollRect.bottom
+		) {
 			const barsRect = layerBarsEl.getBoundingClientRect();
 			if (event.clientY >= barsRect.top && event.clientY <= barsRect.bottom) {
-				const rowIndex = Math.floor((event.clientY - barsRect.top) / ROW_H);
-				trackId = layerEntries[rowIndex]?.item.trackId ?? null;
+				const y = event.clientY - barsRect.top;
+				const rowIndex = sidebarLayout.offsets.findIndex(
+					(top, index) => y >= top && y < top + sidebarLayout.sizes[index]!
+				);
+				const targetRow = sidebarRows[rowIndex];
+				trackId = targetRow && isLayerRow(targetRow) ? targetRow.item.trackId : null;
 			}
 		}
 		let visualTrackId: string | null = null;
@@ -1549,11 +1606,15 @@
 			if (!reorderDrag) return;
 			const deltaY = e.clientY - reorderDrag.startY;
 			if (Math.abs(deltaY) < 6) return;
-			const rows = motionRows;
+			const rows = sidebarRows;
 			const idx = rows.findIndex((r) =>
 				isLayerRow(r) ? r.track?.id === trackId : r.track.id === trackId
 			);
-			const targetIdx = Math.max(0, Math.min(rows.length - 1, idx + Math.round(deltaY / ROW_H)));
+			if (!sidebarEl) return;
+			const y = e.clientY - sidebarEl.getBoundingClientRect().top + sidebarEl.scrollTop - 28;
+			const targetIdx = sidebarLayout.offsets.findIndex(
+				(top, index) => y >= top && y < top + sidebarLayout.sizes[index]!
+			);
 			if (targetIdx === idx || targetIdx < 0) return;
 			// update track orders atomically
 			const trackOrder = timelineStore.tracks.toSorted((a, b) => a.order - b.order);
@@ -1722,8 +1783,9 @@
 			event.preventDefault();
 			const item = timelineStore.itemById.get(lastSelectedId);
 			if (!item) return;
-			const rows = motionRows;
+			const rows = sidebarRows;
 			const idx = rows.findIndex((r) => isLayerRow(r) && r.item.id === lastSelectedId);
+			if (idx < 0) return;
 			const dir = reorderUp ? -1 : 1;
 			const targetIdx = idx + dir;
 			if (targetIdx < 0 || targetIdx >= rows.length) return;
@@ -1780,7 +1842,7 @@
 		return MOTION_VECTOR_ROW_DEFINITIONS.filter((row) => {
 			const hasVector = activeVectorKeyframes(item, row.property);
 			const separated = item.separatedVectorProperties?.includes(row.property);
-			return Boolean(hasVector) || !separated;
+			return Boolean(hasVector) || (expandedLayerIds.has(item.id) && !separated);
 		}).slice(0, 3);
 	}
 	function keyframesForVector(item: TimelineItem, property: KeyframeProperty) {
@@ -2009,6 +2071,7 @@
 		active: boolean;
 	} | null = $state(null);
 	function startMarquee(event: PointerEvent): void {
+		suppressMarqueeClick = false;
 		const target = event.target;
 		if (!(target instanceof HTMLElement)) return;
 		if (
@@ -2020,9 +2083,10 @@
 		if (event.button !== 0) return;
 		const marqueeRoot = event.currentTarget;
 		if (!(marqueeRoot instanceof HTMLElement)) return;
-		const rect = marqueeRoot.getBoundingClientRect();
-		const rowIndexById = new Map(visualLayerItems.map((item, index) => [item.id, index]));
+		if (!layerBarsEl) return;
+		const rect = layerBarsEl.getBoundingClientRect();
 		pointerGestures?.cancel('superseded');
+		const selectionBefore = new Set(selectedItemIds);
 		marquee = {
 			x: event.clientX - rect.left,
 			y: event.clientY - rect.top,
@@ -2038,18 +2102,25 @@
 			const dy = e.clientY - marquee.startY;
 			if (!marquee.active && Math.abs(dx) < 4 && Math.abs(dy) < 4) return;
 			marquee.active = true;
-			const curX = e.clientX - rect.left;
-			const curY = e.clientY - rect.top;
+			const currentRect = layerBarsEl?.getBoundingClientRect() ?? rect;
+			const curX = e.clientX - currentRect.left;
+			const curY = e.clientY - currentRect.top;
 			marquee.w = curX - marquee.x;
 			marquee.h = curY - marquee.y;
 			// select items whose bar overlaps marquee in timeline content
 			const sel = new Set<string>();
-			for (const row of layerEntries) {
-				const item = row.item;
-				const left = timelineX(item.from) - scrollLeft;
-				const right = timelineX(item.from + item.durationInFrames) - scrollLeft;
-				const top = 8 + (rowIndexById.get(item.id) ?? 0) * ROW_H;
-				const barRect = { left, right, top, bottom: top + ROW_H - 12 };
+			for (const entry of layerEntryByItemId.values()) {
+				const item = entry.row.item;
+				if (isLocked(item)) continue;
+				const left = timelineX(item.from);
+				const right = timelineX(item.from + item.durationInFrames);
+				const top = entry.top + (entry.geometry?.barTop ?? 0);
+				const barRect = {
+					left,
+					right,
+					top,
+					bottom: top + (entry.geometry?.barHeight ?? ROW_H - 12)
+				};
 				const mRect = {
 					left: Math.min(marquee.x, marquee.x + marquee.w),
 					right: Math.max(marquee.x, marquee.x + marquee.w),
@@ -2064,16 +2135,19 @@
 				)
 					sel.add(item.id);
 			}
-			if (sel.size) selectedItemIds = sel;
+			selectedItemIds = sel;
 		};
 		pointerGestures?.start({
 			pointerId: event.pointerId,
 			target: marqueeRoot,
 			onMove,
 			onCommit: () => {
+				suppressMarqueeClick = marquee?.active ?? false;
 				marquee = null;
 			},
 			onCancel: () => {
+				suppressMarqueeClick = marquee?.active ?? false;
+				selectedItemIds = selectionBefore;
 				marquee = null;
 			}
 		});
@@ -2090,18 +2164,10 @@
 		pointerGestures?.cancel('superseded');
 		scrubActive = true;
 		const rect = scrubRoot.getBoundingClientRect();
-		const frame = Math.round(
-			((event.clientX - rect.left) / Math.max(1, rect.width)) *
-				(visibleRange.end - visibleRange.start) +
-				visibleRange.start
-		);
+		const frame = Math.round((event.clientX - rect.left) / pxPerFrame);
 		handleGhostScrubMove(frame);
 		const onMove = (e: PointerGestureEvent) => {
-			const f = Math.round(
-				((e.clientX - rect.left) / Math.max(1, rect.width)) *
-					(visibleRange.end - visibleRange.start) +
-					visibleRange.start
-			);
+			const f = Math.round((e.clientX - rect.left) / pxPerFrame);
 			handleGhostScrubMove(f);
 		};
 		pointerGestures?.start({
@@ -2231,7 +2297,7 @@
 				<Button
 					size="sm"
 					variant="ghost"
-					aria-label={m.video_editor_motion_create_composition()}
+					aria-label={m.video_editor_motion_new_composition()}
 					onclick={() => {
 						showNewDialog = true;
 						newName = '';
@@ -2241,7 +2307,7 @@
 					data-testid="composition-new"
 				>
 					<ThemeIcon role="add" class="size-4" />
-					{m.video_editor_motion_create_composition()}
+					{m.video_editor_motion_new_composition()}
 				</Button>
 			</div>
 			<div class="header-center">
@@ -3087,15 +3153,18 @@
 															>
 														</div>
 													</div>
-													<div class="inline-props-views">
+													<div class="inline-props-views" bind:clientWidth={inlineKeyframeWidth}>
 														{#if keyframeEditorMode(item.id) !== 'graph'}
 															<KeyframeDopesheet
 																{item}
 																availableProperties={getAnimatablePropertiesForItem(item)}
 																currentFrame={previewFrame ?? timelineStore.currentFrame}
-																pixelsPerFrame={pxPerFrame}
-																{timelineWidth}
-																{timelineX}
+																pixelsPerFrame={sheetScale(item)}
+																timelineWidth={inlineKeyframeWidth}
+																timelineX={(frame) =>
+																	sheetLabelWidth + 8 + (frame - item.from) * sheetScale(item)}
+																propertyColumnWidth={sheetLabelWidth}
+																presentation="side"
 																onscrub={seekTo}
 																onactiveproperty={(property) =>
 																	setActiveKeyframeProperty(item.id, property)}
@@ -3257,6 +3326,10 @@
 									data-testid="sidebar-virtual-after"
 								></div>
 							{/if}
+							<div
+								aria-hidden="true"
+								style:height={`${Math.max(200, sidebarLayout.totalSize + 120) - sidebarLayout.totalSize}px`}
+							></div>
 							{#if motionRows.length === 0}
 								<div class="empty-layers" data-testid="composition-empty-layers">
 									<p>{m.video_editor_composition_timeline_empty()}</p>
@@ -3334,10 +3407,7 @@
 			>
 				<div
 					class="timeline-inner"
-					style="width:{timelineWidth}px; height:{Math.max(
-						240,
-						layerEntries.length * ROW_H + 120
-					)}px"
+					style="width:{timelineWidth}px; height:{Math.max(240, sidebarLayout.totalSize + 148)}px"
 				>
 					<div
 						class="composition-ruler"
@@ -3401,11 +3471,11 @@
 						class="layer-bars"
 						bind:this={layerBarsEl}
 						data-testid="composition-layer-bars"
-						style="height:{Math.max(200, layerEntries.length * ROW_H)}px"
+						style="height:{Math.max(200, sidebarLayout.totalSize + 120)}px"
 					>
 						{#each visibleLayerEntries as entry (entry.row.item.id)}
 							{@const row = entry.row}
-							{@const idx = entry.index}
+							{@const rowTop = entry.top}
 							{@const item = row.item}
 							{@const isSelected = selectedItemIds.has(item.id)}
 							{@const vRows = vectorRowsFor(item)}
@@ -3414,10 +3484,11 @@
 								type="button"
 								class="layer-bar"
 								class:selected={isSelected}
-								style="left:{timelineX(item.from)}px; top:{8 + idx * ROW_H}px; width:{Math.max(
+								style="left:{timelineX(item.from)}px; top:{rowTop +
+									(entry.geometry?.barTop ?? 0)}px; width:{Math.max(
 									8,
 									item.durationInFrames * pxPerFrame
-								)}px; height:{ROW_H - 12}px"
+								)}px; height:{entry.geometry?.barHeight ?? ROW_H - 12}px"
 								data-testid={`composition-bar-${item.id}`}
 								aria-label={itemLabel(item)}
 								aria-pressed={isSelected}
@@ -3437,7 +3508,9 @@
 							{#each vRows as vRow, vIdx (vRow.property)}
 								<div
 									class="vector-lane"
-									style="top:{8 + idx * ROW_H + ROW_H + vIdx * VECTOR_H}px; height:{VECTOR_H}px"
+									style="top:{rowTop +
+										(entry.geometry?.vectors[vIdx] ??
+											ROW_H + vIdx * VECTOR_H)}px; height:{VECTOR_H}px"
 									data-testid={`vector-lane-${item.id}-${vRow.property}`}
 								>
 									{#each keyframesForVector(item, vRow.primary) as kf (keyframeIdentity(kf))}
@@ -3480,11 +3553,11 @@
 							{#each textBands as band, bIdx (band.slot)}
 								<div
 									class="text-band-lane"
-									style="top:{8 +
-										idx * ROW_H +
-										ROW_H +
-										vRows.length * VECTOR_H +
-										bIdx * TEXT_BAND_H}px; height:{TEXT_BAND_H}px"
+									style="top:{rowTop +
+										(entry.geometry?.textBands[bIdx] ??
+											ROW_H +
+												vRows.length * VECTOR_H +
+												bIdx * TEXT_BAND_H)}px; height:{TEXT_BAND_H}px"
 									data-testid={`text-lane-${item.id}-${band.slot}`}
 								>
 									<button
@@ -3650,10 +3723,10 @@
 				class="dialog"
 				role="dialog"
 				aria-modal="true"
-				aria-label={m.video_editor_motion_create_composition()}
+				aria-label={m.video_editor_motion_new_composition()}
 				data-testid="new-composition-dialog"
 			>
-				<h3>{m.video_editor_motion_create_composition()}</h3>
+				<h3>{m.video_editor_motion_new_composition()}</h3>
 				<label
 					>{m.video_editor_composition_timeline_name()}<Input
 						value={newName}
@@ -3723,7 +3796,7 @@
 				newFps = 30;
 				newDuration = 300;
 			}}
-			data-testid="empty-new-composition">{m.video_editor_motion_create_composition()}</Button
+			data-testid="empty-new-composition">{m.video_editor_motion_new_composition()}</Button
 		>
 		{#if showNewDialog}
 			<div
@@ -3735,10 +3808,10 @@
 				class="dialog"
 				role="dialog"
 				aria-modal="true"
-				aria-label={m.video_editor_motion_create_composition()}
+				aria-label={m.video_editor_motion_new_composition()}
 				data-testid="new-composition-dialog-empty"
 			>
-				<h3>{m.video_editor_motion_create_composition()}</h3>
+				<h3>{m.video_editor_motion_new_composition()}</h3>
 				<label
 					>{m.video_editor_composition_timeline_name()}<Input
 						value={newName}
@@ -3781,14 +3854,14 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 360px;
-		border: 1px solid oklch(0.26 0.016 55);
+		border: 1px solid var(--video-editor-border);
 		border-radius: 0.5rem;
-		background: oklch(0.155 0.009 55);
-		color: oklch(0.9 0.01 65);
+		background: var(--video-editor-panel);
+		color: var(--video-editor-text);
 		overflow: hidden;
 	}
 	.composition-timeline:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: -2px;
 	}
 	.composition-header {
@@ -3798,8 +3871,8 @@
 		justify-content: space-between;
 		gap: 0.5rem;
 		padding: 0.35rem 0.5rem;
-		border-bottom: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.17 0.01 55);
+		border-bottom: 1px solid var(--video-editor-border);
+		background: var(--video-editor-panel);
 	}
 	.header-left,
 	.header-center,
@@ -3811,25 +3884,25 @@
 	}
 	.header-label {
 		font-size: 0.62rem;
-		color: oklch(0.72 0.015 65);
+		color: var(--video-editor-muted);
 	}
 	.composition-timeline :global(.composition-picker) {
 		min-width: 160px;
 		height: 32px;
 		border-radius: 0.32rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		padding: 0 0.4rem;
 		font-size: 0.72rem;
 	}
 	.composition-timeline :global(.composition-picker:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.composition-meta {
 		font-size: 0.62rem;
-		color: oklch(0.68 0.016 65);
+		color: var(--video-editor-muted);
 		display: inline-flex;
 		align-items: center;
 		gap: 0.25rem;
@@ -3838,8 +3911,8 @@
 		width: 56px;
 		height: 24px;
 		border-radius: 0.25rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		text-align: center;
 		font-size: 0.62rem;
@@ -3848,7 +3921,7 @@
 		width: 72px;
 	}
 	.composition-timeline :global(.meta-input:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.header-zoom {
@@ -3858,7 +3931,7 @@
 	}
 	.zoom-label {
 		font-size: 0.62rem;
-		color: oklch(0.72 0.015 65);
+		color: var(--video-editor-muted);
 	}
 	.zoom-slider-wrap {
 		width: 140px;
@@ -3869,12 +3942,12 @@
 		align-items: center;
 		gap: 0.4rem;
 		padding: 0.45rem 0.7rem;
-		border-bottom: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.16 0.009 55);
+		border-bottom: 1px solid var(--video-editor-border);
+		background: var(--video-editor-panel);
 	}
 	.toolbar-label {
 		font-size: 0.62rem;
-		color: oklch(0.72 0.015 65);
+		color: var(--video-editor-muted);
 		margin-right: 0.2rem;
 	}
 	.toolbar-search {
@@ -3885,21 +3958,21 @@
 		width: 180px;
 		height: 32px;
 		border-radius: 0.32rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		padding: 0 0.5rem;
 		font-size: 0.72rem;
 	}
 	.composition-timeline :global(.filter-input:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.io-lane {
 		position: relative;
 		height: 22px;
-		border-bottom: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.16 0.009 55);
+		border-bottom: 1px solid var(--video-editor-border);
+		background: var(--video-editor-panel);
 	}
 	.io-strip {
 		position: relative;
@@ -3918,7 +3991,7 @@
 	}
 	.io-label {
 		font-size: 0.58rem;
-		color: oklch(0.78 0.08 45);
+		color: var(--video-editor-text);
 	}
 	.io-empty {
 		position: absolute;
@@ -3926,7 +3999,7 @@
 		display: grid;
 		place-items: center;
 		font-size: 0.62rem;
-		color: oklch(0.62 0.016 65);
+		color: var(--video-editor-muted);
 	}
 	.io-handle {
 		position: absolute;
@@ -3942,7 +4015,7 @@
 		min-width: 12px;
 	}
 	.io-handle:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.composition-body {
@@ -4000,14 +4073,14 @@
 		}
 	}
 	.layer-sidebar {
-		border-right: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.16 0.009 55);
+		border-right: 1px solid var(--video-editor-border);
+		background: var(--video-editor-panel);
 		overflow-y: auto;
 		overflow-x: hidden;
-		padding: 0.35rem;
+		padding: 0 0.35rem;
 	}
 	.layer-sidebar:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: -2px;
 	}
 	.sidebar-virtual-spacer {
@@ -4015,13 +4088,20 @@
 		pointer-events: none;
 	}
 	.layer-sidebar-header {
+		position: sticky;
+		top: 0;
+		z-index: 2;
+		height: 28px;
+		box-sizing: border-box;
+		align-items: center;
+		background: var(--background);
 		display: grid;
 		grid-template-columns: 1fr 86px 44px 64px;
 		gap: 0.25rem;
 		font-size: 0.58rem;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
-		color: oklch(0.62 0.016 65);
+		color: var(--video-editor-muted);
 		padding: 0.2rem 0.15rem;
 	}
 	.group-row {
@@ -4030,8 +4110,8 @@
 		gap: 0.25rem;
 		padding: 0.3rem 0.2rem;
 		border-radius: 0.32rem;
-		border: 1px solid oklch(0.24 0.012 55);
-		background: oklch(0.18 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-panel);
 		margin-bottom: 0.25rem;
 	}
 	.group-header {
@@ -4048,10 +4128,11 @@
 		min-height: 32px;
 	}
 	.group-header.selected {
-		color: oklch(0.78 0.08 45);
+		background: var(--video-editor-selection);
+		color: var(--video-editor-selection-text);
 	}
 	.group-header:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.group-toggle {
@@ -4062,7 +4143,7 @@
 		border-radius: 0.2rem;
 	}
 	.group-toggle:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.group-name {
@@ -4073,7 +4154,7 @@
 	}
 	.group-span {
 		font-size: 0.58rem;
-		color: oklch(0.62 0.016 65);
+		color: var(--video-editor-muted);
 		font-variant-numeric: tabular-nums;
 	}
 	.group-actions {
@@ -4104,19 +4185,19 @@
 		min-height: 32px;
 	}
 	.layer-row.selected {
-		background: oklch(0.22 0.02 55);
+		background: var(--video-editor-control);
 		border-color: oklch(0.66 0.14 45 / 0.5);
 	}
 	.layer-row.pickTarget {
 		border-color: oklch(0.62 0.14 230);
-		background: oklch(0.2 0.02 230);
+		background: var(--video-editor-control);
 	}
 	.layer-row.controller {
 		border-style: dashed;
 		opacity: 0.85;
 	}
 	.layer-row:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: -2px;
 	}
 	.layer-expand {
@@ -4131,7 +4212,7 @@
 		border-radius: 0.2rem;
 	}
 	.layer-expand:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.layer-name {
@@ -4147,7 +4228,7 @@
 		display: grid;
 		place-items: center;
 		border-radius: 0.2rem;
-		background: oklch(0.24 0.012 55);
+		background: var(--video-editor-border);
 		font-size: 0.58rem;
 		font-weight: 700;
 	}
@@ -4163,7 +4244,7 @@
 		min-height: 28px;
 	}
 	.icon-btn:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.solo-label {
@@ -4189,7 +4270,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		font-size: 0.62rem;
-		color: oklch(0.72 0.02 65);
+		color: var(--video-editor-muted);
 	}
 	.blend-cell {
 		display: flex;
@@ -4198,19 +4279,19 @@
 		width: 100%;
 		height: 24px;
 		border-radius: 0.25rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		font-size: 0.62rem;
 		padding: 0 0.2rem;
 	}
 	.composition-timeline :global(.blend-select:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.timing-cell {
 		font-size: 0.58rem;
-		color: oklch(0.62 0.016 65);
+		color: var(--video-editor-muted);
 		font-variant-numeric: tabular-nums;
 		text-align: right;
 	}
@@ -4220,7 +4301,7 @@
 		width: 20px;
 		height: 20px;
 		cursor: grab;
-		color: oklch(0.62 0.016 65);
+		color: var(--video-editor-muted);
 		user-select: none;
 		border-radius: 0.2rem;
 	}
@@ -4228,7 +4309,7 @@
 		cursor: grabbing;
 	}
 	.drag-handle:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.composition-timeline :global(.rename-input) {
@@ -4236,14 +4317,14 @@
 		height: 28px;
 		border-radius: 0.25rem;
 		border: 1px solid oklch(0.66 0.14 45);
-		background: oklch(0.2 0.01 55);
+		background: var(--video-editor-control);
 		color: inherit;
 		padding: 0 0.35rem;
 		font-size: 0.72rem;
 		min-width: 0;
 	}
 	.composition-timeline :global(.rename-input:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.vector-row {
@@ -4252,23 +4333,23 @@
 		align-items: center;
 		gap: 0.25rem;
 		padding: 0.18rem 0.35rem;
-		border-top: 1px dashed oklch(0.24 0.012 55);
+		border-top: 1px dashed var(--video-editor-border);
 		font-size: 0.6rem;
-		color: oklch(0.68 0.015 65);
+		color: var(--video-editor-muted);
 	}
 	.vector-keys {
 		position: relative;
 		height: 12px;
 		border-radius: 0.2rem;
-		background: oklch(0.13 0.008 55);
+		background: var(--video-editor-panel);
 		overflow: hidden;
 	}
 	.vector-lane {
 		position: absolute;
 		left: 0;
 		right: 0;
-		background: oklch(0.13 0.008 55 / 0.5);
-		border-top: 1px dashed oklch(0.24 0.012 55);
+		background: color-mix(in oklch, var(--video-editor-panel) 50%, transparent);
+		border-top: 1px dashed var(--video-editor-border);
 	}
 	.vector-key {
 		position: absolute;
@@ -4278,7 +4359,7 @@
 		margin-left: -5px;
 		transform: rotate(45deg);
 		background: oklch(0.76 0.14 45);
-		border: 1px solid oklch(0.12 0.01 55);
+		border: 1px solid var(--video-editor-panel);
 		cursor: grab;
 		min-width: 12px;
 		min-height: 12px;
@@ -4291,7 +4372,7 @@
 		box-shadow: 0 0 0 2px oklch(0.66 0.14 45 / 0.4);
 	}
 	.vector-key:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.vector-key-secondary {
@@ -4303,23 +4384,23 @@
 		grid-template-columns: 36px 1fr 60px;
 		gap: 0.25rem;
 		padding: 0.18rem 0.35rem;
-		border-top: 1px dashed oklch(0.24 0.012 55);
+		border-top: 1px dashed var(--video-editor-border);
 		font-size: 0.58rem;
-		color: oklch(0.68 0.015 65);
+		color: var(--video-editor-muted);
 	}
 	.text-band-label {
 		font-weight: 600;
-		color: oklch(0.78 0.12 230);
+		color: var(--video-editor-text);
 	}
 	.text-band-preset {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		color: oklch(0.72 0.02 65);
+		color: var(--video-editor-muted);
 	}
 	.text-band-meta {
 		font-variant-numeric: tabular-nums;
-		color: oklch(0.62 0.016 65);
+		color: var(--video-editor-muted);
 		text-align: right;
 	}
 	.inline-props {
@@ -4328,10 +4409,10 @@
 		align-items: stretch;
 		gap: 0.35rem;
 		padding: 0.3rem 0.35rem;
-		border-top: 1px dashed oklch(0.24 0.012 55);
-		background: oklch(0.14 0.008 55);
+		border-top: 1px dashed var(--video-editor-border);
+		background: var(--video-editor-panel);
 		font-size: 0.62rem;
-		color: oklch(0.68 0.015 65);
+		color: var(--video-editor-muted);
 	}
 	.inline-props-toolbar,
 	.dopesheet-mode-row {
@@ -4353,6 +4434,10 @@
 		width: 100%;
 		overflow-x: auto;
 	}
+	.inline-props-views > :global(*) {
+		height: 240px;
+		min-height: 0;
+	}
 	.inline-props-views :global([data-keyframe-value-graph]) {
 		min-width: min(20rem, 100%);
 		width: 100%;
@@ -4360,7 +4445,7 @@
 	.inline-label {
 		flex: 0 0 auto;
 		font-weight: 600;
-		color: oklch(0.76 0.14 45);
+		color: var(--video-editor-text);
 	}
 	.text-band-lane {
 		position: absolute;
@@ -4379,7 +4464,7 @@
 		border-radius: 0.22rem;
 		background: oklch(0.45 0.12 230 / 0.28);
 		border: 1px solid oklch(0.55 0.12 230 / 0.6);
-		color: oklch(0.85 0.02 65);
+		color: var(--video-editor-text);
 		font-size: 0.58rem;
 		cursor: grab;
 		overflow: hidden;
@@ -4392,12 +4477,12 @@
 		cursor: not-allowed;
 	}
 	.text-band:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.text-band-slot {
 		font-weight: 700;
-		color: oklch(0.78 0.14 230);
+		color: var(--video-editor-text);
 	}
 	.text-band-handle {
 		position: absolute;
@@ -4416,14 +4501,14 @@
 		cursor: not-allowed;
 	}
 	.text-band-handle:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.empty-layers {
 		padding: 1rem 0.4rem;
 		font-size: 0.72rem;
 		text-align: center;
-		color: oklch(0.62 0.016 65);
+		color: var(--video-editor-muted);
 	}
 	.empty-actions {
 		display: flex;
@@ -4433,11 +4518,11 @@
 	}
 	.timeline-content {
 		overflow: auto;
-		background: oklch(0.145 0.008 55);
+		background: var(--video-editor-panel);
 		position: relative;
 	}
 	.timeline-content:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: -2px;
 	}
 	.timeline-inner {
@@ -4448,8 +4533,8 @@
 		top: 0;
 		z-index: 2;
 		height: 28px;
-		border-bottom: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.16 0.009 55);
+		border-bottom: 1px solid var(--video-editor-border);
+		background: var(--video-editor-panel);
 		overflow: hidden;
 		cursor: pointer;
 	}
@@ -4461,13 +4546,13 @@
 		margin-left: -24px;
 		border: 0;
 		background: transparent;
-		color: oklch(0.62 0.012 55);
+		color: var(--video-editor-muted);
 		cursor: pointer;
 		min-width: 44px;
 		min-height: 28px;
 	}
 	.ruler-tick:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: -2px;
 	}
 	.tick-line {
@@ -4476,7 +4561,7 @@
 		top: 16px;
 		width: 1px;
 		bottom: 0;
-		background: oklch(0.28 0.012 55);
+		background: var(--video-editor-border);
 	}
 	.tick-label {
 		position: absolute;
@@ -4503,29 +4588,28 @@
 		position: absolute;
 		top: 0;
 		bottom: 0;
-		background: oklch(0.12 0.008 55 / 0.45);
+		background: color-mix(in oklch, var(--video-editor-panel) 45%, transparent);
 		pointer-events: none;
 	}
 	.comp-end-dim {
 		position: absolute;
 		top: 0;
 		bottom: 0;
-		border-left: 1px solid oklch(0.38 0.02 55);
-		background: oklch(0.12 0.008 55 / 0.55);
+		border-left: 1px solid var(--video-editor-border);
+		background: color-mix(in oklch, var(--video-editor-panel) 55%, transparent);
 		pointer-events: none;
 	}
 	.layer-bars {
 		position: relative;
 		min-height: 200px;
-		padding-top: 8px;
 	}
 	.layer-bar {
 		position: absolute;
 		height: 22px;
 		border-radius: 0.28rem;
-		border: 1px solid oklch(0.32 0.02 58);
-		background: oklch(0.22 0.015 55);
-		color: oklch(0.86 0.01 65);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
+		color: var(--video-editor-text);
 		font-size: 0.62rem;
 		text-align: left;
 		padding-left: 0.35rem;
@@ -4537,11 +4621,11 @@
 	}
 	.layer-bar.selected {
 		border-color: oklch(0.66 0.14 45);
-		background: oklch(0.28 0.03 50);
+		background: var(--video-editor-border);
 		box-shadow: 0 0 0 2px oklch(0.66 0.14 45 / 0.22);
 	}
 	.layer-bar:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.bar-label {
@@ -4566,15 +4650,15 @@
 		width: 48px;
 		height: 22px;
 		border-radius: 0.2rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		font-size: 0.58rem;
 		text-align: center;
 		padding: 0 0.2rem;
 	}
 	.composition-timeline :global(.timing-input:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.motion-layer-bands,
@@ -4583,7 +4667,7 @@
 		flex-direction: column;
 		gap: 0.15rem;
 		padding: 0.25rem 0.35rem;
-		border-top: 1px dashed oklch(0.24 0.012 55);
+		border-top: 1px dashed var(--video-editor-border);
 	}
 	.motion-layer-band,
 	.modifier-band {
@@ -4600,7 +4684,7 @@
 	}
 	.motion-layer-band:focus-visible,
 	.modifier-band:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.path-vertex-lane,
@@ -4608,16 +4692,16 @@
 		display: flex;
 		align-items: center;
 		padding: 0.2rem 0.35rem;
-		border-top: 1px dashed oklch(0.24 0.012 55);
+		border-top: 1px dashed var(--video-editor-border);
 		font-size: 0.58rem;
-		color: oklch(0.68 0.015 65);
+		color: var(--video-editor-muted);
 	}
 	.link-pick-row {
 		display: flex;
 		align-items: center;
 		gap: 0.3rem;
 		padding: 0.25rem 0.35rem;
-		border-top: 1px dashed oklch(0.24 0.012 55);
+		border-top: 1px dashed var(--video-editor-border);
 	}
 	.link-pick-btn {
 		display: inline-flex;
@@ -4626,33 +4710,33 @@
 		height: 22px;
 		padding: 0 0.4rem;
 		border-radius: 0.2rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		font-size: 0.58rem;
 		cursor: pointer;
 	}
 	.link-pick-btn[aria-pressed='true'] {
 		border-color: oklch(0.66 0.14 45);
-		background: oklch(0.28 0.03 50);
+		background: var(--video-editor-border);
 	}
 	.link-pick-btn:focus-visible {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.link-badge {
 		font-size: 0.58rem;
 		padding: 0.1rem 0.3rem;
 		border-radius: 0.2rem;
-		background: oklch(0.22 0.015 55);
-		border: 1px solid oklch(0.26 0.016 55);
+		background: var(--video-editor-control);
+		border: 1px solid var(--video-editor-border);
 	}
 	.published-controls {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
 		padding: 0.3rem 0.35rem;
-		border-top: 1px dashed oklch(0.24 0.012 55);
+		border-top: 1px dashed var(--video-editor-border);
 	}
 	.control-row {
 		display: flex;
@@ -4664,13 +4748,13 @@
 		flex: 1;
 		height: 22px;
 		border-radius: 0.2rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		padding: 0 0.3rem;
 	}
 	.control-row :global(input:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.drop-ghost {
@@ -4690,7 +4774,7 @@
 		bottom: 0;
 		width: 1px;
 		background: oklch(0.76 0.14 45);
-		box-shadow: 0 0 0 1px oklch(0.18 0.01 55 / 0.75);
+		box-shadow: 0 0 0 1px color-mix(in oklch, var(--video-editor-panel) 75%, transparent);
 		pointer-events: none;
 		z-index: 12;
 	}
@@ -4710,13 +4794,13 @@
 		justify-content: space-between;
 		gap: 0.6rem;
 		padding: 0.45rem 0.6rem;
-		border-top: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.17 0.01 55);
+		border-top: 1px solid var(--video-editor-border);
+		background: var(--video-editor-panel);
 		flex-wrap: wrap;
 	}
 	.footer-status {
 		font-size: 0.62rem;
-		color: oklch(0.68 0.015 65);
+		color: var(--video-editor-muted);
 		min-height: 18px;
 	}
 	.footer-actions {
@@ -4731,15 +4815,15 @@
 	.frame-readout {
 		font-size: 0.62rem;
 		font-variant-numeric: tabular-nums;
-		color: oklch(0.72 0.015 65);
+		color: var(--video-editor-muted);
 	}
 	.pick-overlay {
 		position: absolute;
 		inset: 0;
 		display: grid;
 		place-items: center;
-		background: oklch(0.12 0.008 55 / 0.6);
-		color: oklch(0.9 0.01 65);
+		background: color-mix(in oklch, var(--video-editor-panel) 60%, transparent);
+		color: var(--video-editor-text);
 		font-size: 0.72rem;
 		pointer-events: none;
 	}
@@ -4754,8 +4838,8 @@
 		left: 50%;
 		top: 50%;
 		transform: translate(-50%, -50%);
-		background: oklch(0.18 0.01 55);
-		border: 1px solid oklch(0.26 0.016 55);
+		background: var(--video-editor-panel);
+		border: 1px solid var(--video-editor-border);
 		border-radius: 0.5rem;
 		padding: 1rem;
 		z-index: 50;
@@ -4765,7 +4849,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.6rem;
-		color: oklch(0.9 0.01 65);
+		color: var(--video-editor-text);
 	}
 	.dialog h3 {
 		margin: 0;
@@ -4781,13 +4865,13 @@
 	.dialog :global(input) {
 		height: 32px;
 		border-radius: 0.32rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		padding: 0 0.5rem;
 	}
 	.dialog :global(input:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.dialog-actions {
@@ -4802,11 +4886,11 @@
 		gap: 0.8rem;
 		padding: 2rem 1rem;
 		text-align: center;
-		color: oklch(0.68 0.015 65);
+		color: var(--video-editor-muted);
 		min-height: 240px;
-		border: 1px dashed oklch(0.26 0.016 55);
+		border: 1px dashed var(--video-editor-border);
 		border-radius: 0.5rem;
-		background: oklch(0.16 0.009 55);
+		background: var(--video-editor-panel);
 	}
 	.empty-picker {
 		display: flex;
@@ -4817,13 +4901,13 @@
 	.empty-picker :global(button[data-slot='select-trigger']) {
 		height: 32px;
 		border-radius: 0.32rem;
-		border: 1px solid oklch(0.26 0.016 55);
-		background: oklch(0.2 0.01 55);
+		border: 1px solid var(--video-editor-border);
+		background: var(--video-editor-control);
 		color: inherit;
 		padding: 0 0.4rem;
 	}
 	.empty-picker :global(button[data-slot='select-trigger']:focus-visible) {
-		outline: 2px solid oklch(0.66 0.14 45);
+		outline: 2px solid var(--video-editor-focus);
 		outline-offset: 2px;
 	}
 	.sr-only {

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { z } from 'zod';
 	import { untrack } from 'svelte';
 	import { createQuery } from '@tanstack/svelte-query';
 	import {
@@ -18,6 +19,7 @@
 	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import { m } from '$lib/paraglide/messages';
 	let { workspaceID, runID }: { workspaceID: string; runID: string } = $props();
+	const usageSchema = z.object({ total_tokens: z.number(), cost_usd: z.number().nullish() });
 	const canAdmin = $derived(workspaceCtx.currentWorkspace?.role === 'admin');
 	const runQuery = createQuery(() => ({
 		...workflowRunQueryOptions(workflowQueryAPI, workspaceID, runID),
@@ -86,7 +88,9 @@
 				<p class="mt-1 text-xs text-muted-foreground">
 					{m.workflows_run_revision({ revision: run.workflow_revision })} · {run.mode === 'preview'
 						? m.workflows_preview()
-						: m.workflows_live()}
+						: run.mode === 'test'
+							? m.workflows_test_node()
+							: m.workflows_live()}
 				</p>
 			</div>
 			{#if ['queued', 'running', 'waiting', 'awaiting_approval'].includes(run.state)}<Button
@@ -127,6 +131,20 @@
 			</section>
 		{/if}
 		{#each run.steps ?? [] as step (step.step_id)}
+			{@const usage = usageSchema.safeParse(step.output?.usage)}
+			{@const postID =
+				run.mode === 'live'
+					? z
+							.string()
+							.catch('')
+							.parse(
+								step.kind === 'schedule'
+									? step.inputs?.publication_id
+									: step.kind === 'create_draft' || step.kind === 'build_draft'
+										? step.output?.id
+										: undefined
+							)
+					: ''}
 			<details
 				class="rounded-lg border bg-card p-3"
 				open={step.state === 'failed' || step.state === 'awaiting_approval'}
@@ -137,7 +155,19 @@
 					<span class="ml-2 font-normal text-muted-foreground">{runStateLabel(step.state)}</span
 					></summary
 				>
+				{#if usage.success}<p class="mt-2 text-xs text-muted-foreground">
+						{m.workflows_usage_tokens({
+							count: usage.data.total_tokens
+						})}{#if usage.data.cost_usd != null}
+							· {m.workflows_usage_cost({ amount: usage.data.cost_usd.toFixed(6) })}{/if}
+					</p>{/if}
 				{#if step.error}<p class="mt-3 text-sm text-destructive">{step.error}</p>{/if}
+				{#if postID}<Button
+						class="mt-3"
+						size="sm"
+						variant="outline"
+						href={`/publications/${encodeURIComponent(postID)}`}>{m.workflows_edit()}</Button
+					>{/if}
 				<div class="mt-3 space-y-3">
 					{#each [{ label: m.workflows_inputs(), data: step.inputs }, { label: m.workflows_outputs(), data: step.output }] as item}<div
 						>

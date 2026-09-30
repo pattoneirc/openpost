@@ -75,7 +75,11 @@ async function createShaderProject(
   });
   await page.getByRole("textbox", { name: "Project name" }).fill("Shader proof");
   await page.getByRole("textbox", { name: "Project name" }).press("Tab");
-  await page.getByRole("tab", { name: "Backgrounds", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Assets", exact: true })
+    .getByRole("button", { name: "More", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Backgrounds", exact: true }).click();
   await page.getByRole("searchbox", { name: "Search backgrounds" }).fill(preset);
   await page.getByRole("button", { name: preset, exact: true }).click();
   await page.getByRole("searchbox", { name: "Search backgrounds" }).fill("");
@@ -125,13 +129,17 @@ test("shader clips preserve edits, seek and export an MP4", async ({ page }) => 
   const projectURL = page.url();
   await page.goto("/video-editor");
   await page.goto(projectURL);
-  await page.getByRole("tab", { name: "Backgrounds", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Assets", exact: true })
+    .getByRole("button", { name: "More", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Backgrounds", exact: true }).click();
   await expect(canvas).toBeVisible();
   await page.locator("header").getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Export MP4", exact: true }).click();
-  await expect(
-    page.getByText("Saved Shader proof.mp4 to the exports folder.", { exact: true }),
-  ).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText("Saved Shader proof.mp4.", { exact: true })).toBeVisible({
+    timeout: 60_000,
+  });
   await page.getByRole("button", { name: "Exports", exact: true }).click();
   const download = page.getByRole("button", { name: "Download Shader proof.mp4", exact: true });
   await expect(download).toBeEnabled();
@@ -293,9 +301,9 @@ test("Paper backgrounds and chained shader effects survive reopening and export"
   );
   await page.locator("header").getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Export MP4", exact: true }).click();
-  await expect(
-    page.getByText("Saved Shader proof.mp4 to the exports folder.", { exact: true }),
-  ).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText("Saved Shader proof.mp4.", { exact: true })).toBeVisible({
+    timeout: 60_000,
+  });
   await page.getByRole("button", { name: "Exports", exact: true }).click();
   const [file] = await Promise.all([
     page.waitForEvent("download"),

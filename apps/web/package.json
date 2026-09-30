@@ -18,11 +18,12 @@
 		"check:watch": "bun run generate:i18n && bun run sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint:oxlint": "oxlint .",
 		"lint:svelte": "eslint 'src/**/*.svelte' 'src/**/*.svelte.{ts,js}'",
-		"test": "bun run sync && vitest run --project server && vitest run --project client --shard=1/4 && vitest run --project client --shard=2/4 && vitest run --project client --shard=3/4 && vitest run --project client --shard=4/4",
+		"test": "bun run sync && vitest run --project server && vitest run --project client --shard=1/4 && vitest run --project client --shard=2/4 && vitest run --project client --shard=3/4 && vitest run --project client --shard=4/4 && bun run test:production",
 		"test:watch": "bun run sync && vitest",
 		"test:server": "bun run sync && vitest run --project server",
 		"generate:types": "openapi-typescript openapi.json -o ../../packages/api-contract/src/schema.d.ts",
-		"sync": "svelte-kit sync"
+		"sync": "svelte-kit sync",
+		"test:production": "NODE_ENV=production vitest run --mode production --project client src/lib/video-editor/components/preview-transcript.production.svelte.test.ts src/lib/video-editor/components/preview-cut.svelte.test.ts"
 	},
 	"devDependencies": {
 		"@eslint/compat": "^2.0.2",
@@ -50,6 +51,7 @@
 		"@types/d3-scale": "^4.0.9",
 		"@types/d3-shape": "^3.1.8",
 		"@types/node": "^24",
+		"@types/shell-quote": "^1.7.5",
 		"@vite-pwa/sveltekit": "^1.1.0",
 		"@vitest/browser-playwright": "^4.1.11",
 		"@webgpu/types": "^0.1.72",
@@ -77,6 +79,11 @@
 	"dependencies": {
 		"@asamuzakjp/css-color": "3.2.0",
 		"@bprogress/core": "^1.3.4",
+		"@codemirror/autocomplete": "^6.20.3",
+		"@codemirror/commands": "^6.11.1",
+		"@codemirror/lang-javascript": "^6.2.5",
+		"@codemirror/state": "^6.7.6",
+		"@codemirror/view": "^6.43.13",
 		"@fontsource-variable/dm-sans": "^5.3.0",
 		"@fontsource-variable/geist": "^5.2.8",
 		"@fontsource-variable/geist-mono": "^5.2.8",
@@ -100,6 +107,7 @@
 		"@noble/hashes": "1.8.0",
 		"@number-flow/svelte": "^0.4.2",
 		"@openpost/api-contract": "workspace:*",
+		"@openpost/dither": "workspace:*",
 		"@openpost/plan-catalog": "workspace:*",
 		"@openpost/platform-text": "workspace:*",
 		"@openpost/query-catalog": "workspace:*",
@@ -130,11 +138,11 @@
 		"onnxruntime-web": "1.26.0-dev.20260410-5e55544225",
 		"openapi-fetch": "^0.17.0",
 		"phonemizer": "1.2.1",
+		"shell-quote": "^1.10.0",
 		"svelte-sonner": "^1.1.1",
 		"tailwind-merge": "^3.5.0",
 		"tailwind-variants": "^3.2.2",
 		"torph": "^0.1.1",
-		"zod": "^4.4.3",
-		"@openpost/dither": "workspace:*"
+		"zod": "^4.4.3"
 	}
 }

@@ -1,6 +1,12 @@
 <!-- Type-specific, undoable clip inspector with FreeCut-compatible auto-key rules. -->
 <script lang="ts">
+	import { sequenceStore } from '../sequences/sequence-store.svelte';
 	import { m } from '$lib/paraglide/messages';
+	import { Button } from '$lib/components/ui/button';
+	import {
+		canTrimItemToPlayhead,
+		trimItemToPlayhead
+	} from '$lib/video-editor/timeline/actions/trim-playhead';
 	import { Input } from '$lib/components/ui/input';
 	import AppSelect, { type AppSelectOption } from '$lib/components/app-select.svelte';
 	import ColorPicker from '$lib/components/color-picker.svelte';
@@ -19,7 +25,7 @@
 	import { editorSession } from '$lib/video-editor/editor.svelte';
 	import CompositionControlOverrides from './composition-control-overrides.svelte';
 	import { resolveAnimatedItemLocalAt } from '$lib/video-editor/timeline/animated-properties';
-	import { getSynchronizedLinkedItems } from '$lib/video-editor/timeline/utils/linked-items';
+	import { findLinkedAudioCompanion } from '$lib/video-editor/audio/transition-crossfade';
 	import AudioDuckingPanel from './audio-ducking-panel.svelte';
 	import AudioEffectsPanel from './audio-effects-panel.svelte';
 	import {
@@ -58,19 +64,28 @@
 		onbrowsetextstyles?: () => void;
 	} = $props();
 	const item = $derived(itemId ? timelineStore.itemById.get(itemId) : undefined);
+	const canTrimStart = $derived(itemId ? canTrimItemToPlayhead(itemId, 'start') : false);
+	const canTrimEnd = $derived(itemId ? canTrimItemToPlayhead(itemId, 'end') : false);
+	function trimToPlayhead(edge: 'start' | 'end'): void {
+		if (!itemId) return;
+		editorSession.pausePlayback();
+		if (trimItemToPlayhead(itemId, edge)) onedit();
+	}
+
 	const audioItems = $derived.by(() => {
 		const selectedIds = itemIds.length > 0 ? itemIds : itemId ? [itemId] : [];
 		const selected = [...new Set(selectedIds)]
 			.map((id) => timelineStore.itemById.get(id))
 			.filter((candidate): candidate is TimelineItem => candidate !== undefined);
-		const selectedAudio = selected.filter((candidate) => candidate.type === 'audio');
-		if (selectedAudio.length > 0) return selectedAudio;
 		const resolved = new Map<string, TimelineItem>();
 		for (const candidate of selected) {
+			if (candidate.type === 'audio') {
+				resolved.set(candidate.id, candidate);
+				continue;
+			}
 			if (candidate.type !== 'video') continue;
-			const companion = getSynchronizedLinkedItems(timelineStore.items, candidate.id).find(
-				(linked) => linked.type === 'audio'
-			);
+			const companion = findLinkedAudioCompanion(candidate, timelineStore.items);
+			if (candidate.audioDetached && !companion) continue;
 			resolved.set((companion ?? candidate).id, companion ?? candidate);
 		}
 		return [...resolved.values()];
@@ -162,8 +177,8 @@
 	];
 
 	function valueFor(source: TimelineItem, property: KeyframeProperty): number {
-		const frameWidth = editorSession.project?.metadata.width ?? 1920;
-		const frameHeight = editorSession.project?.metadata.height ?? 1080;
+		const frameWidth = sequenceStore.activeWidth;
+		const frameHeight = sequenceStore.activeHeight;
 		const resolved = resolveAnimatedItemLocalAt(source, timelineStore.currentFrame, {
 			fps: timelineStore.fps,
 			frameWidth,
@@ -212,27 +227,27 @@
 			case 'volume':
 				return resolved.volume ?? 1;
 			case 'fontSize':
-				return source.fontSize ?? defaultValue(property);
+				return resolved.fontSize ?? defaultValue(property);
 			case 'fontWeight':
-				return source.fontWeight ?? defaultValue(property);
+				return resolved.fontWeight ?? defaultValue(property);
 			case 'lineHeight':
-				return source.lineHeight ?? defaultValue(property);
+				return resolved.lineHeight ?? defaultValue(property);
 			case 'letterSpacing':
-				return source.letterSpacing ?? 0;
+				return resolved.letterSpacing ?? 0;
 			case 'paddingX':
-				return source.paddingX ?? 0;
+				return resolved.paddingX ?? 0;
 			case 'paddingY':
-				return source.paddingY ?? 0;
+				return resolved.paddingY ?? 0;
 			case 'borderRadius':
-				return source.borderRadius ?? 0;
+				return resolved.borderRadius ?? 0;
 			case 'strokeWidth':
-				return source.strokeWidth ?? 0;
+				return resolved.strokeWidth ?? 0;
 			case 'textShadowOffsetX':
-				return source.textShadow?.offsetX ?? 0;
+				return resolved.textShadow?.offsetX ?? 0;
 			case 'textShadowOffsetY':
-				return source.textShadow?.offsetY ?? 0;
+				return resolved.textShadow?.offsetY ?? 0;
 			case 'textShadowBlur':
-				return source.textShadow?.blur ?? 0;
+				return resolved.textShadow?.blur ?? 0;
 		}
 		return defaultValue(property);
 	}
@@ -286,6 +301,32 @@
 
 {#if item}
 	<div class="flex flex-col gap-3" role="group" aria-label={m.video_editor_clip_properties()}>
+		{#if ['video', 'audio', 'image', 'composition'].includes(item.type)}
+			<div
+				class="grid grid-cols-1 gap-1"
+				role="group"
+				aria-label={m.video_editor_trim_to_playhead()}
+			>
+				<Button
+					size="xs"
+					variant="outline"
+					class="h-auto min-h-8 py-1 whitespace-normal [@media(pointer:coarse)]:min-h-11"
+					disabled={!canTrimStart}
+					onclick={() => trimToPlayhead('start')}
+				>
+					{m.video_editor_trim_start_playhead()}
+				</Button>
+				<Button
+					size="xs"
+					variant="outline"
+					class="h-auto min-h-8 py-1 whitespace-normal [@media(pointer:coarse)]:min-h-11"
+					disabled={!canTrimEnd}
+					onclick={() => trimToPlayhead('end')}
+				>
+					{m.video_editor_trim_end_playhead()}
+				</Button>
+			</div>
+		{/if}
 		{#if item.type === 'adjustment'}
 			<p class="text-xs leading-relaxed text-muted-foreground">
 				{m.video_editor_adjustment_layer_hint()}
@@ -374,8 +415,8 @@
 		{#if item.type === 'subtitle'}
 			<SubtitlePropertiesPanel
 				{item}
-				canvasWidth={editorSession.project?.metadata.width ?? 1920}
-				canvasHeight={editorSession.project?.metadata.height ?? 1080}
+				canvasWidth={sequenceStore.activeWidth}
+				canvasHeight={sequenceStore.activeHeight}
 				{onedit}
 			/>
 		{/if}
@@ -395,16 +436,11 @@
 		{/if}
 
 		{#if item.type === 'video' || item.type === 'audio'}
-			{#if item.type === 'audio'}
-				<ClipAudioCoreSection itemId={item.id} {itemIds} {onedit} />
-				<ClipPlaybackSection itemId={item.id} {itemIds} {onedit} />
-			{:else}
-				<ClipPlaybackSection itemId={item.id} {itemIds} {onedit} />
-				<ClipAudioCoreSection itemId={item.id} {itemIds} {onedit} />
-			{/if}
+			<ClipAudioCoreSection {audioItems} {onedit} />
+			<ClipPlaybackSection itemId={item.id} {itemIds} {onedit} />
 
 			{#if audioItem}
-				<section>
+				<EditorDisclosure label={m.video_editor_advanced()}>
 					<details class="mt-2 rounded-md border border-border bg-muted/40">
 						<summary
 							class="flex min-h-[25px] cursor-pointer list-none items-center justify-between px-2 text-[10px] text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring"
@@ -508,7 +544,7 @@
 							</div>
 						{/if}
 					</div>
-				</section>
+				</EditorDisclosure>
 			{/if}
 		{/if}
 

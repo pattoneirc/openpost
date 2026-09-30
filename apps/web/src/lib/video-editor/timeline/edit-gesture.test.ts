@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { timelineOffsetToSourceFrame, playbackRateCurve } from './source-time-map';
+import { audioClipFadeGainAtFrame } from '../media/clip-fades';
 import type { TimelineItem } from '../project/types';
 import {
 	canvasNudgePatch,
@@ -7,7 +9,8 @@ import {
 	planCanvasNudge,
 	planLinkedSlipGesture,
 	planRateStretchGesture,
-	planSlideGesture
+	planSlideGesture,
+	planTrimGesture
 } from './edit-gesture';
 
 function video(
@@ -34,10 +37,18 @@ describe('rate-stretch gesture parity', () => {
 		expect(isRateStretchableType({ ...video('a', 't', 0, 10), type: 'audio' })).toBe(true);
 		expect(isRateStretchableType({ ...video('c', 't', 0, 10), type: 'composition' })).toBe(true);
 		expect(
-			isRateStretchableType({ ...video('g', 't', 0, 10), type: 'image', label: 'loop.gif' })
+			isRateStretchableType({
+				...video('g', 't', 0, 10),
+				type: 'image',
+				label: 'loop.gif'
+			})
 		).toBe(true);
 		expect(
-			isRateStretchableType({ ...video('s', 't', 0, 10), type: 'image', label: 'still.png' })
+			isRateStretchableType({
+				...video('s', 't', 0, 10),
+				type: 'image',
+				label: 'still.png'
+			})
 		).toBe(false);
 		expect(isRateStretchableType({ ...video('x', 't', 0, 10), type: 'text' })).toBe(false);
 	});
@@ -59,7 +70,11 @@ describe('rate-stretch gesture parity', () => {
 		);
 		expect(plan?.patch.durationInFrames).toBe(120);
 		expect(plan?.patch.speed).toBeCloseTo(200 / 120, 5);
-		expect(plan?.snapTarget).toEqual({ frame: 120, type: 'item-start', itemId: 'other' });
+		expect(plan?.snapTarget).toEqual({
+			frame: 120,
+			type: 'item-start',
+			itemId: 'other'
+		});
 	});
 
 	it('caps the stretched duration at the speed limits', () => {
@@ -103,7 +118,10 @@ describe('rate-stretch gesture parity', () => {
 describe('canvas-pixel nudge parity', () => {
 	it('nudges visual transforms and skips timeline-only kinds', () => {
 		const visual = video('v', 't', 0, 10, { transform: { x: 5, y: 0 } });
-		expect(canvasNudgePatch(visual, 1, 0)?.transform).toMatchObject({ x: 6, y: 0 });
+		expect(canvasNudgePatch(visual, 1, 0)?.transform).toMatchObject({
+			x: 6,
+			y: 0
+		});
 		expect(canvasNudgePatch({ ...visual, type: 'audio' }, 1, 0)).toBeNull();
 		expect(canvasNudgePatch({ ...visual, type: 'adjustment' }, 0, 1)).toBeNull();
 		expect(canvasNudgePatch({ ...visual, type: 'controller' }, 0, 1)).toBeNull();
@@ -156,4 +174,154 @@ describe('slip and slide preservation parity', () => {
 		const clamped = planLinkedSlipGesture(item, -1000, [item], 30);
 		expect(clamped.find((update) => update.id === item.id)?.patch.sourceStart).toBe(80);
 	});
+});
+
+it('preserves the existing fade envelope when dragging a trimmed clip edge', () => {
+	const item = video('clip', 't', 15, 285, {
+		sourceStart: 15,
+		sourceEnd: 300,
+		sourceFps: 30,
+		audioFadeIn: 2,
+		audioFadeOut: 2,
+		audioFadeOffsets: { in: 0.5, out: 0 }
+	});
+	const plan = planTrimGesture(item, 'start', 15, [item], 30, [], 0);
+	const trimmed = { ...item, ...plan.patch };
+	expect(trimmed.from).toBe(30);
+	expect(audioClipFadeGainAtFrame(trimmed, 30, 30)).toBeCloseTo(0.5);
+	expect(audioClipFadeGainAtFrame(trimmed, 270, 30)).toBeCloseTo(0.5);
+});
+
+describe('trimmed source playback', () => {
+	it('keeps a linear source speed ramp after trimming inside the ramp', () => {
+		const original = video('v', 't', 0, 83, {
+			sourceStart: 0,
+			sourceEnd: 120,
+			sourceDuration: 120,
+			sourceFps: 30,
+			speed: 1,
+			speedRamp: [
+				{ id: 'a', sourceFrame: 0, speed: 1, easing: 'linear' },
+				{ id: 'b', sourceFrame: 120, speed: 2, easing: 'linear' }
+			]
+		});
+		const plan = planTrimGesture(original, 'start', 40, [original], 30, [], 0);
+		const retained = { ...original, ...plan.patch };
+		expect(retained.sourceStart).toBe(47);
+		// Integrating 1 / (1 + source / 120) gives elapsed = 120 * ln(1 + source / 120).
+		expect(timelineOffsetToSourceFrame(retained, 20, 30)).toBeCloseTo(
+			167 * Math.exp(20 / 120) - 120,
+			4
+		);
+		const curve = playbackRateCurve(retained, 30);
+		expect(curve[0]?.offsetFrames).toBe(0);
+		expect(curve[0]?.rate).toBeCloseTo(1 + 47 / 120, 5);
+		expect(curve.every((point) => point.offsetFrames >= 0)).toBe(true);
+	});
+	it.each(['start', 'end'] as const)(
+		'trims the correct source edge in reverse playback: %s',
+		(handle) => {
+			const original = video('v', 't', 0, 120, {
+				sourceStart: 0,
+				sourceEnd: 120,
+				sourceDuration: 120,
+				sourceFps: 30,
+				isReversed: true
+			});
+			const plan = planTrimGesture(
+				original,
+				handle,
+				handle === 'start' ? 30 : -30,
+				[original],
+				30,
+				[],
+				0
+			);
+			expect(plan.patch).toMatchObject(
+				handle === 'start'
+					? { from: 30, durationInFrames: 90, sourceEnd: 90 }
+					: { durationInFrames: 90, sourceStart: 30 }
+			);
+		}
+	);
+});
+
+it('keeps implicit ramp endpoints anchored to their original window after trimming', () => {
+	const original = video('v', 't', 0, 83, {
+		sourceStart: 0,
+		sourceEnd: 120,
+		sourceDuration: 120,
+		sourceFps: 30,
+		speed: 1,
+		speedRamp: [{ id: 'peak', sourceFrame: 60, speed: 2, easing: 'linear' }]
+	});
+	const retained = {
+		...original,
+		...planTrimGesture(original, 'start', 20, [original], 30, [], 0).patch
+	};
+	expect(retained.sourceStart).toBe(24);
+	expect(timelineOffsetToSourceFrame(retained, 10, 30)).toBeCloseTo(84 * Math.exp(10 / 60) - 60, 4);
+});
+it.each(['start', 'end'] as const)(
+	'retains a source frame when slow reverse playback is trimmed at %s',
+	(handle) => {
+		const original = video('v', 't', 0, 120, {
+			sourceStart: 0,
+			sourceEnd: 12,
+			sourceDuration: 12,
+			sourceFps: 30,
+			speed: 0.1,
+			isReversed: true
+		});
+		const retained = {
+			...original,
+			...planTrimGesture(original, handle, handle === 'start' ? 119 : -119, [original], 30, [], 0)
+				.patch
+		};
+		expect(retained.durationInFrames).toBe(1);
+		expect(retained.sourceEnd! - retained.sourceStart!).toBe(1);
+		expect(timelineOffsetToSourceFrame(retained, 0, 30)).toBe(handle === 'start' ? 0 : 11);
+	}
+);
+
+it('preserves the existing playback of a saved trimmed ramp with missing endpoints', () => {
+	const original = video('v', 't', 0, 42, {
+		sourceStart: 30,
+		sourceEnd: 90,
+		sourceDuration: 120,
+		sourceFps: 30,
+		speed: 1,
+		speedRamp: [{ id: 'peak', sourceFrame: 60, speed: 2, easing: 'linear' }]
+	});
+	expect(timelineOffsetToSourceFrame(original, 10, 30)).toBeCloseTo(
+		30 + 30 * (Math.exp(10 / 30) - 1),
+		4
+	);
+	const retained = {
+		...original,
+		...planTrimGesture(original, 'start', 10, [original], 30, [], 0).patch
+	};
+	expect(timelineOffsetToSourceFrame(retained, 5, 30)).toBeCloseTo(42 * Math.exp(5 / 30), 4);
+});
+
+it('keeps ramp points independently addressable after extending and retrimming', () => {
+	const original = video('v', 't', 20, 42, {
+		sourceStart: 30,
+		sourceEnd: 90,
+		sourceDuration: 120,
+		sourceFps: 30,
+		speed: 1,
+		speedRamp: [{ id: 'peak', sourceFrame: 60, speed: 2, easing: 'linear' }]
+	});
+	const extended = {
+		...original,
+		...planTrimGesture(original, 'start', -10, [original], 30, [], 0).patch
+	};
+	const retrimmed = {
+		...extended,
+		...planTrimGesture(extended, 'start', 5, [extended], 30, [], 0).patch
+	};
+	const ids = retrimmed.speedRamp!.map((point) => point.id);
+	expect(new Set(ids).size).toBe(ids.length);
+	expect(retrimmed.speedRamp!.filter((point) => point.id === 'peak')).toEqual(original.speedRamp);
 });

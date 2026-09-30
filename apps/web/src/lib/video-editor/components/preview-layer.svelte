@@ -51,6 +51,7 @@
 	} from '$lib/video-editor/effects/scope-samples.svelte';
 	import { colorPreviewStore } from '$lib/video-editor/effects/color-preview-store.svelte';
 	import { selectCuesAtFrame } from '$lib/video-editor/media/render-plan';
+	import { captionTimelineOffset } from '$lib/video-editor/transcript/caption-source-mapping';
 	import { previewPlaybackSettings } from '$lib/video-editor/preview/playback-settings.svelte';
 	import {
 		previewItemVolume,
@@ -108,6 +109,7 @@
 
 	let {
 		item,
+		active = true,
 		displayFrame,
 		url,
 		audioUrl,
@@ -128,6 +130,7 @@
 		onselect
 	}: {
 		item: TimelineItem;
+		active?: boolean;
 		displayFrame?: number;
 		url?: string | null;
 		audioUrl?: string | null;
@@ -192,7 +195,17 @@
 	$effect(() => {
 		if (!scopeSampleRequested) lastScopeAt = Number.NEGATIVE_INFINITY;
 	});
-	const visualFrame = $derived(displayFrame ?? timelineStore.currentFrame);
+	const visualFrame = $derived(
+		active
+			? (displayFrame ?? timelineStore.currentFrame)
+			: Math.max(
+					item.from,
+					Math.min(
+						item.from + item.durationInFrames - 1,
+						displayFrame ?? timelineStore.currentFrame
+					)
+				)
+	);
 	const baseResolved = $derived(
 		resolveAnimatedItemAt(item, visualFrame, {
 			fps: timelineStore.fps,
@@ -265,7 +278,7 @@
 	const mediaCropStyle = 'left:0;top:0;width:100%;height:100%';
 	const activeSubtitle = $derived(
 		resolved.type === 'subtitle'
-			? selectCuesAtFrame(resolved.cues ?? [], visualFrame)[0]
+			? selectCuesAtFrame(resolved.cues ?? [], visualFrame - captionTimelineOffset(resolved))[0]
 			: undefined
 	);
 	const basePreviewVolume = $derived(
@@ -288,7 +301,7 @@
 		audioClipFadeGainAtFrame(resolved, timelineStore.currentFrame, timelineStore.fps)
 	);
 	const previewVolume = $derived(
-		previewItemVolumeWithFade(basePreviewVolume, crossfadeGain, clipFadeGain)
+		active ? previewItemVolumeWithFade(basePreviewVolume, crossfadeGain, clipFadeGain) : 0
 	);
 	const fallbackMasterGain = $derived(
 		timelineStore.masterMuted ? 0 : mixerDbToGain(timelineStore.masterVolumeDb)
@@ -325,7 +338,13 @@
 			audioOwner === 'separateProxy'
 				? audioUrl
 				: resolveReverseShuttleAudioUrl(item, url, audioUrl);
-		if (!isPlaying || !isReverseShuttleRate(transportRate) || !ownsShuttleAudio || !sourceUrl) {
+		if (
+			!active ||
+			!isPlaying ||
+			!isReverseShuttleRate(transportRate) ||
+			!ownsShuttleAudio ||
+			!sourceUrl
+		) {
 			shuttleScheduler?.dispose();
 			shuttleScheduler = null;
 			if (shuttleGainNode) {
@@ -594,7 +613,15 @@
 		onsourcechange?.();
 	}
 
-	onDestroy(clearProxySeekFallback);
+	onDestroy(() => {
+		clearProxySeekFallback();
+		for (const media of [mediaElement, proxyAudioElement]) {
+			if (!media) continue;
+			media.pause();
+			media.removeAttribute('src');
+			media.load();
+		}
+	});
 
 	function paintRaster(canvas: HTMLCanvasElement): void {
 		if (!['text', 'subtitle', 'shape'].includes(resolved.type)) return;
@@ -684,7 +711,14 @@
 			// Karaoke highlight requires the exact cue words and the absolute frame; the shared
 			// helper falls back to normal rendering when karaoke is disabled or timings are unusable.
 			if (resolved.captionHighlightMode === 'karaoke' && activeSubtitle.words?.length) {
-				renderSubtitleCueRaster(context, activeSubtitle, resolved, width, height, visualFrame);
+				renderSubtitleCueRaster(
+					context,
+					activeSubtitle,
+					resolved,
+					width,
+					height,
+					visualFrame - captionTimelineOffset(resolved)
+				);
 			} else {
 				renderSubtitleRaster(context, activeSubtitle.text, resolved, width, height);
 			}
@@ -795,6 +829,7 @@
 				audio.playbackRate = combinedRate;
 			}
 			if (
+				active &&
 				editorSession.isPlaying &&
 				!shuttleReverse &&
 				video.paused &&
@@ -802,13 +837,14 @@
 			)
 				void video.play().catch(() => undefined);
 			if (shuttleReverse && !video.paused) video.pause();
-			if (editorSession.isPlaying && !shuttleReverse) clearProxySeekFallback();
-			if (editorSession.isPlaying && !shuttleReverse && audio?.paused)
+			if (active && editorSession.isPlaying && !shuttleReverse && proxyFallbackKind === 'seek')
+				clearProxySeekFallback();
+			if (active && editorSession.isPlaying && !shuttleReverse && audio?.paused)
 				void audio.play().catch(() => undefined);
 			if (shuttleReverse && audio && !audio.paused) audio.pause();
 			if (item.isReversed && !conform && !video.paused) video.pause();
-			if (!editorSession.isPlaying && !video.paused) video.pause();
-			if (!editorSession.isPlaying && audio && !audio.paused) audio.pause();
+			if ((!active || !editorSession.isPlaying) && !video.paused) video.pause();
+			if ((!active || !editorSession.isPlaying) && audio && !audio.paused) audio.pause();
 			if (scopeSampleRequested && selected && !needsGpu && !deferEffects)
 				requestAnimationFrame(() => publishScopeSample(video));
 		};
@@ -829,6 +865,7 @@
 
 	$effect(() => {
 		void visualFrame;
+		void active;
 		syncVideoFrame?.();
 	});
 
@@ -1288,9 +1325,9 @@
 	class="absolute overflow-hidden"
 	data-preview-item={item.id}
 	style={layerStyle}
-	style:visibility={hideContent || resolved.isMask ? 'hidden' : undefined}
+	style:visibility={!active || hideContent || resolved.isMask ? 'hidden' : undefined}
 	role="presentation"
-	aria-hidden={deferEffects ? 'true' : undefined}
+	aria-hidden={!active || deferEffects ? 'true' : undefined}
 	onpointerdown={onselect}
 >
 	{#if resolved.type === 'video' && previewMediaUrl}

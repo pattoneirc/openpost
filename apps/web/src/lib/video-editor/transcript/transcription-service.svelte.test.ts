@@ -9,7 +9,7 @@ afterEach(() => {
 	timelineStore.__resetForTesting();
 });
 
-it('reactively reports a newly started caption job and clears it after a source failure', async () => {
+it('reactively reports a newly started caption job and retains the error after a source failure', async () => {
 	mediaPool.upsert(
 		{
 			id: 'recording',
@@ -58,7 +58,10 @@ it('reactively reports a newly started caption job and clears it after a source 
 		});
 	});
 	flushSync();
-	const result = service.enqueue('clip', { model: 'whisper-tiny', quantization: 'q8' });
+	const result = service.enqueue('clip', {
+		model: 'whisper-tiny',
+		quantization: 'q8'
+	});
 	const outcome = result.catch((error: Error) => error);
 	try {
 		await expect.poll(() => resolveSource.mock.calls.length).toBe(1);
@@ -70,6 +73,56 @@ it('reactively reports a newly started caption job and clears it after a source 
 		expect(error).toBeInstanceOf(Error);
 		flushSync();
 		expect(observed).toBeUndefined();
+		expect(service.errorForItem('clip')).toBe('Recording unavailable');
 		dispose();
 	}
+});
+
+it('rejects a known silent recording before resolving media or starting a model', async () => {
+	mediaPool.upsert(
+		{
+			id: 'silent',
+			storageType: 'cloud',
+			remoteUrl: '/silent.webm',
+			fileName: 'silent.webm',
+			fileSize: 4,
+			mimeType: 'video/webm',
+			duration: 1,
+			width: 1920,
+			height: 1080,
+			fps: 30,
+			codec: 'vp9',
+			bitrate: 0,
+			tags: [],
+			hasAudio: false
+		},
+		'ready'
+	);
+	timelineStore._setItems([
+		{
+			id: 'silent-clip',
+			label: 'Screen',
+			mediaId: 'silent',
+			type: 'video',
+			trackId: 'video',
+			from: 0,
+			durationInFrames: 30
+		}
+	]);
+	const resolveSource = vi.fn();
+	const transcribe = vi.fn();
+	const service = new TranscriptionService({
+		resolveSource,
+		transcribe,
+		getSourceTranscript: async () => null,
+		saveSourceTranscript: vi.fn(),
+		deleteSourceTranscript: vi.fn()
+	});
+	await expect(
+		service.enqueue('silent-clip', { model: 'whisper-tiny', quantization: 'q8' })
+	).rejects.toThrow(
+		'This recording has no audio. Record with a microphone or choose a clip with speech.'
+	);
+	expect(resolveSource).not.toHaveBeenCalled();
+	expect(transcribe).not.toHaveBeenCalled();
 });

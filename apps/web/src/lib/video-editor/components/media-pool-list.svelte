@@ -1,4 +1,4 @@
-<!-- Media pool list: imported sources with probe status; click adds to timeline -->
+<!-- Imported sources, placement, and source health. -->
 <script lang="ts">
 	import { onDestroy, tick, untrack } from 'svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -8,6 +8,10 @@
 		mediaDragData,
 		writeMediaDragData
 	} from '$lib/video-editor/media/media-drag';
+	import {
+		insertMediaAtPlayhead,
+		insertMediaAtSequenceEnd
+	} from '$lib/video-editor/timeline/actions/insert-media';
 	import { mediaPlacement } from '$lib/video-editor/media/media-placement.svelte';
 	import { getMediaObjectUrl } from '$lib/video-editor/media/media-source';
 	import { editorSession } from '$lib/video-editor/editor.svelte';
@@ -199,9 +203,7 @@
 		).length,
 		unsupportedCodec: countUnsupportedCodecMedia(mediaPool.mediaList)
 	});
-	const healthIssueTotal = $derived(
-		healthCounts.missing + healthCounts.proxyPending + healthCounts.unsupportedCodec
-	);
+	const healthIssueTotal = $derived(healthCounts.missing + healthCounts.unsupportedCodec);
 	const showHealthChip = $derived(hasMediaHealthIssues(healthCounts));
 
 	$effect(() => {
@@ -343,6 +345,12 @@
 	async function previewUrl(id: string): Promise<void> {
 		const media = mediaPool.get(id);
 		if (!media || objectUrls[id]) return;
+		if (media.storageType === 'cloud') {
+			if (media.remoteThumbnailUrl) objectUrls[id] = media.remoteThumbnailUrl;
+			else if (media.tags.includes('image'))
+				objectUrls[id] = await getMediaObjectUrl(media).catch(() => '');
+			return;
+		}
 		try {
 			const thumbnail = await readBlob(requireWorkspaceRoot(), mediaThumbnailPath(id));
 			if (thumbnail) {
@@ -443,8 +451,18 @@
 		);
 	}
 
+	function addMedia(media: MediaMetadata, destination: 'playhead' | 'end'): void {
+		mediaPlacement.cancel();
+		editorSession.pausePlayback();
+		if (destination === 'end') insertMediaAtSequenceEnd(media);
+		else insertMediaAtPlayhead(media);
+		editorSession.syncTimelineClock();
+		editorSession.scheduleAutosave();
+	}
+
 	function placeMedia(media: MediaMetadata): void {
 		mediaPlacement.begin(mediaDragData('media', media.id, media.fileName));
+		showToast(m.video_editor_media_placement_instruction(), 'info');
 	}
 
 	function groupLabel(kind: MediaLibraryKind): string {
@@ -903,6 +921,7 @@
 
 	function placeSequence(sequence: SubComposition): void {
 		mediaPlacement.begin(mediaDragData('composition', sequence.id, sequence.name));
+		showToast(m.video_editor_media_placement_instruction(), 'info');
 	}
 
 	function duplicateComposition(sequence: SubComposition): void {
@@ -1371,7 +1390,9 @@
 				{m.video_editor_sequences()}
 			</h3>
 			<ul
-				class={assetViewMode === 'grid' ? 'grid gap-1.5' : 'flex flex-col gap-1'}
+				class={assetViewMode === 'grid'
+					? 'grid max-h-40 gap-1.5 overflow-y-auto'
+					: 'flex max-h-40 flex-col gap-1 overflow-y-auto'}
 				style:grid-template-columns={assetViewMode === 'grid' ? assetGridTemplate : undefined}
 				data-asset-group="sequences"
 				data-view={assetViewMode}
@@ -1591,7 +1612,7 @@
 										aria-label={`${m.video_editor_source_monitor()}: ${entry?.media.fileName ?? ''}`}
 										aria-pressed={selectedMediaIds.has(id)}
 										onclick={(event) => entry && selectMedia(event, entry.media)}
-										title={issue ? sourceIssueLabel(issue) : m.video_editor_source_monitor()}
+										title={issue ? sourceIssueLabel(issue) : entry?.media.fileName}
 									>
 										<span
 											class="flex shrink-0 items-center justify-center overflow-hidden rounded bg-[var(--canvas-pasteboard)] {assetViewMode ===
@@ -1617,7 +1638,8 @@
 											{/if}
 										</span>
 										<span class="min-w-0 flex-1">
-											<span class="block truncate text-xs font-medium">{entry?.media.fileName}</span
+											<span class="line-clamp-2 text-xs font-medium break-all"
+												>{entry?.media.fileName}</span
 											>
 											{#if issue}
 												<span class="flex items-center gap-1 text-[11px] text-warning-foreground">
@@ -1668,6 +1690,20 @@
 												{/snippet}
 											</DropdownMenu.Trigger>
 											<DropdownMenu.Content class="video-editor-theme w-52" align="end">
+												<DropdownMenu.Item
+													disabled={Boolean(issue)}
+													onclick={() => addMedia(entry.media, 'playhead')}
+												>
+													<ThemeIcon role="add" class="size-4" />
+													{m.video_editor_stock_add_playhead()}
+												</DropdownMenu.Item>
+												<DropdownMenu.Item
+													disabled={Boolean(issue)}
+													onclick={() => addMedia(entry.media, 'end')}
+												>
+													<ThemeIcon role="add" class="size-4" />
+													{m.video_editor_add_sequence_end()}
+												</DropdownMenu.Item>
 												{#if issue}
 													{#if issue.kind === 'permission'}
 														<DropdownMenu.Item
@@ -1865,6 +1901,20 @@
 									</ContextMenu.Item>
 									<ContextMenu.Separator />
 								{/if}
+								<ContextMenu.Item
+									disabled={Boolean(issue)}
+									onclick={() => addMedia(entry.media, 'playhead')}
+								>
+									<ThemeIcon role="add" class="size-4" />
+									{m.video_editor_stock_add_playhead()}
+								</ContextMenu.Item>
+								<ContextMenu.Item
+									disabled={Boolean(issue)}
+									onclick={() => addMedia(entry.media, 'end')}
+								>
+									<ThemeIcon role="add" class="size-4" />
+									{m.video_editor_add_sequence_end()}
+								</ContextMenu.Item>
 								<ContextMenu.Item disabled={Boolean(issue)} onclick={() => onsourceopen(id)}>
 									<ProtectedIcon icon="media-video" class="size-4" />
 									{m.video_editor_source_monitor()}

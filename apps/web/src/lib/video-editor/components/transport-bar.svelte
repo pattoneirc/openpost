@@ -15,7 +15,6 @@
 	import { ProtectedIcon, ThemeIcon } from '$lib/themes/icons';
 	import { editorSession } from '$lib/video-editor/editor.svelte';
 	import { timelineStore } from '$lib/video-editor/timeline/stores/timeline-store.svelte';
-	import { outputDurationFrames } from '$lib/video-editor/media/render-plan';
 	import { renderTimelineFrame } from '$lib/video-editor/media/render-export';
 	import { importGeneratedImage } from '$lib/video-editor/media/import.svelte';
 	import {
@@ -61,7 +60,7 @@
 
 	const playing = $derived(editorSession.isPlaying);
 	const fps = $derived(editorSession.fps);
-	const totalFrames = $derived(outputDurationFrames(timelineStore.items));
+	const totalFrames = $derived(sequenceStore.activeDurationInFrames);
 	const monitorPercent = $derived(Math.round(previewPlaybackSettings.volume * 100));
 	const zoomLabel = $derived(
 		previewPlaybackSettings.zoom === -1
@@ -78,7 +77,9 @@
 	let fullscreenPortalTarget = $state<HTMLElement | null>(null);
 	let savingFrame = $state(false);
 
-	const timecode = $derived(formatTimelinePreviewTimecode(timelineStore.currentFrame, fps));
+	const timecode = $derived(
+		formatTimelinePreviewTimecode($timelinePreviewScrub.frame ?? timelineStore.currentFrame, fps)
+	);
 	const durationTimecode = $derived(formatTimelinePreviewTimecode(totalFrames, fps));
 
 	function previewElement(): HTMLElement | null {
@@ -214,7 +215,7 @@
 					? editorSession.pausePlayback()
 					: editorSession.startPlayback({
 							start: timelineStore.inPoint ?? 0,
-							end: timelineStore.outPoint ?? Math.max(timelineStore.maxItemEndFrame, 1),
+							end: timelineStore.outPoint ?? Math.max(totalFrames, 1),
 							loop: true
 						})}
 		>
@@ -296,29 +297,6 @@
 				</Popover.Content>
 			</Popover.Root>
 		</div>
-		<Button
-			class="hidden @min-[800px]/program:inline-flex"
-			size="icon-xs"
-			variant="ghost"
-			disabled={savingFrame || totalFrames === 0}
-			aria-label={savingFrame ? m.video_editor_saving_frame() : m.video_editor_save_frame()}
-			title={m.video_editor_save_frame()}
-			onclick={() => void saveCurrentFrame()}
-		>
-			{#if savingFrame}<ProtectedIcon
-					icon="loading"
-					class="animate-spin motion-reduce:animate-none"
-				/>{:else}<ThemeIcon role="camera" />{/if}
-		</Button>
-		<Button
-			class="hidden @min-[800px]/program:inline-flex"
-			size="icon-xs"
-			variant="ghost"
-			disabled={savingFrame || totalFrames === 0}
-			aria-label={m.video_editor_frame_open_image()}
-			title={m.video_editor_frame_open_image()}
-			onclick={() => void saveCurrentFrame('image-editor')}><ThemeIcon role="image" /></Button
-		>
 	</div>
 
 	<span
@@ -326,30 +304,12 @@
 		class="voiceover-secondary shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs whitespace-nowrap tabular-nums sm:px-2"
 		aria-label={`${timecode} / ${durationTimecode}`}
 	>
+		{#if $timelinePreviewScrub.frame !== null}<span class="mr-1 text-muted-foreground"
+				>{m.video_editor_skim_time()}</span
+			>{/if}
 		{timecode}
 		<span class="text-muted-foreground max-[479px]:hidden">/ {durationTimecode}</span>
 	</span>
-
-	<div class="mx-auto hidden shrink-0 items-center gap-1 @min-[800px]/program:flex">
-		<Button size="xs" variant="outline" onclick={() => setInPoint(timelineStore.currentFrame)}>
-			{m.video_editor_mark_in()}
-		</Button>
-		<Button size="xs" variant="outline" onclick={() => setOutPoint(timelineStore.currentFrame)}>
-			{m.video_editor_mark_out()}
-		</Button>
-		{#if timelineStore.inPoint !== null || timelineStore.outPoint !== null}
-			<Button
-				size="xs"
-				variant="ghost"
-				onclick={() => {
-					setInPoint(null);
-					setOutPoint(null);
-				}}
-			>
-				{m.video_editor_clear_marks()}
-			</Button>
-		{/if}
-	</div>
 
 	<div class="voiceover-secondary ml-auto flex shrink-0 items-center gap-1">
 		<DropdownMenu.Root>
@@ -359,7 +319,6 @@
 						{...props}
 						size="icon-xs"
 						variant="ghost"
-						class="@min-[800px]/program:hidden"
 						aria-label={m.image_editor_more_actions()}
 						title={m.image_editor_more_actions()}
 					>
@@ -370,7 +329,8 @@
 			<DropdownMenu.Content
 				align="end"
 				side="top"
-				class="transport-overflow video-editor-theme min-w-48"
+				collisionPadding={8}
+				class="transport-overflow video-editor-theme max-h-(--bits-dropdown-menu-content-available-height) min-w-48 overflow-y-auto overscroll-contain"
 				portalProps={fullscreenPortalTarget ? { to: fullscreenPortalTarget } : undefined}
 			>
 				<TimelineVoiceoverMenu {projectId} />
