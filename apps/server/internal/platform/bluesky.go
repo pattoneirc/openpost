@@ -993,11 +993,30 @@ func copyPlatformSettings(source map[string]interface{}) map[string]interface{} 
 }
 
 var (
-	blueskyURLPattern     = regexp.MustCompile(`https?://[-A-Za-z0-9@:%._+~#=]{1,256}\.[A-Za-z0-9()]{1,6}\b[-A-Za-z0-9()@:%_+.~#?&/=]*`)
+	// blueskyURLPattern runs a link to the first character a URL cannot hold
+	// unencoded: RFC 3986's unreserved, reserved and "%" characters, less "*"
+	// so Markdown-style emphasis around a link stays outside it.
+	blueskyURLPattern     = regexp.MustCompile(`https?://[-A-Za-z0-9._~!$&'()+,;=:/?#\[\]@%]+`)
 	blueskyMentionPattern = regexp.MustCompile(`@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?`)
 	blueskyHandlePattern  = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-	blueskyTagPattern     = regexp.MustCompile(`#[A-Za-z0-9_]+`)
 	blueskyDIDPattern     = regexp.MustCompile(`^did:[a-z0-9]+:[A-Za-z0-9._:%-]+$`)
+	// blueskyTagPattern follows TAG_REGEX in @atproto/api's rich-text
+	// detection: a hashtag starts the text or follows whitespace, runs to the
+	// next space or zero-width character, and holds at least one character
+	// that is neither a digit nor punctuation. Group 1 is the hash sign and
+	// group 2 the tag.
+	blueskyTagPattern          = regexp.MustCompile(`(?:^|[\s\v\p{Z}\x{FEFF}])([#＃])([^` + blueskyTagBreaks + `]*[^\d\p{P}` + blueskyTagBreaks + `]+[^` + blueskyTagBreaks + `]*)`)
+	blueskyTrailingPunctuation = regexp.MustCompile(`\p{P}+$`)
+)
+
+const (
+	// blueskyTagBreaks ends a hashtag: JavaScript's \s plus the zero-width
+	// characters @atproto/api excludes.
+	blueskyTagBreaks = `\s\v\p{Z}\x{FEFF}\x{00AD}\x{2060}\x{200B}\x{200C}\x{200D}\x{20E2}`
+	// blueskyMaxTagGraphemes and blueskyMaxTagBytes are the
+	// app.bsky.richtext.facet#tag limits.
+	blueskyMaxTagGraphemes = 64
+	blueskyMaxTagBytes     = 640
 )
 
 const (
@@ -1034,7 +1053,9 @@ func buildBlueskyFacets(text string, settings map[string]interface{}) []map[stri
 	for _, match := range blueskyURLPattern.FindAllStringIndex(text, -1) {
 		start, end := match[0], match[1]
 		uri := strings.TrimRight(text[start:end], ".,;:!?\")']}")
-		if uri == "" {
+		// A link needs a host: "https:///path" or a bare "https://" is not a
+		// URI the post record accepts.
+		if _, rest, _ := strings.Cut(uri, "://"); rest == "" || strings.IndexAny(rest, "/?#") == 0 {
 			continue
 		}
 		end = start + len(uri)
@@ -1048,14 +1069,20 @@ func buildBlueskyFacets(text string, settings map[string]interface{}) []map[stri
 		})
 	}
 
-	for _, match := range blueskyTagPattern.FindAllStringIndex(text, -1) {
-		start, end := match[0], match[1]
+	for _, match := range blueskyTagPattern.FindAllStringSubmatchIndex(text, -1) {
+		start := match[2]
+		tag := blueskyTrailingPunctuation.ReplaceAllString(text[match[4]:match[5]], "")
+		// "#" followed by U+FE0F is the keycap emoji, not a hashtag.
+		if strings.HasPrefix(tag, "\uFE0F") || len(tag) > blueskyMaxTagBytes || uniseg.GraphemeClusterCount(tag) > blueskyMaxTagGraphemes {
+			continue
+		}
+		end := match[4] + len(tag)
 		candidates = append(candidates, blueskyFacetCandidate{
 			start: start,
 			end:   end,
 			facet: blueskyFacet(start, end, map[string]string{
 				bskyRecordTypeField: "app.bsky.richtext.facet#tag",
-				"tag":               text[start+1 : end],
+				"tag":               tag,
 			}),
 		})
 	}
@@ -1078,6 +1105,10 @@ func buildBlueskyFacets(text string, settings map[string]interface{}) []map[stri
 		})
 	}
 
+	return nonOverlappingBlueskyFacets(candidates)
+}
+
+func nonOverlappingBlueskyFacets(candidates []blueskyFacetCandidate) []map[string]interface{} {
 	// The relay rejects overlapping facets. Candidates arrive ordered by
 	// kind (links, then tags, then mentions), so keep the first span that
 	// claims a byte range and drop later overlaps.
