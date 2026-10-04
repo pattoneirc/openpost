@@ -318,6 +318,16 @@ export async function deleteImageEditorDesign(workspaceID: string, id: string): 
 	});
 }
 
+export async function restoreImageEditorDesign(workspaceID: string, id: string): Promise<void> {
+	const session = captureQueryMutationSession();
+	const { error, response } = await client.POST('/image-editor/designs/{id}/restore', {
+		params: { path: { id } }
+	});
+	settleImageEditorMutation(session, response);
+	if (error) throw new Error(problemMessage(error, 'Could not restore the design.'));
+	await reconcileImageEditorDesign(session, workspaceID, id);
+}
+
 export async function toggleImageEditorDesignFavorite(
 	workspaceID: string,
 	id: string
@@ -470,6 +480,35 @@ export async function createImageEditorCheckpoint(
 	const revision = imageEditorRevisionSummary(data);
 	await reconcileImageEditorRevisions(session, workspaceID, id);
 	return revision;
+}
+
+export async function deleteImageEditorCheckpoint(
+	workspaceID: string,
+	id: string,
+	revisionID: string
+): Promise<void> {
+	const session = captureQueryMutationSession();
+	const { error, response } = await client.DELETE(
+		'/image-editor/designs/{id}/revisions/{revision_id}',
+		{
+			params: { path: { id, revision_id: revisionID }, query: { confirm: true } }
+		}
+	);
+	settleImageEditorMutation(session, response);
+	if (error)
+		throw new ImageEditorAPIError(
+			problemMessage(error, 'Could not remove the checkpoint.'),
+			response.status
+		);
+	await reconcileQueryMutation(queryClient, session, {
+		cancel: [{ queryKey: imageEditorQueryKeys.revision(workspaceID, id, revisionID) }],
+		reconcile: () =>
+			queryClient.removeQueries({
+				queryKey: imageEditorQueryKeys.revision(workspaceID, id, revisionID),
+				exact: true
+			})
+	});
+	await reconcileImageEditorRevisions(session, workspaceID, id);
 }
 
 export async function restoreImageEditorRevision(

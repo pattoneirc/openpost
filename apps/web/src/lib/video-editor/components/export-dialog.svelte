@@ -126,6 +126,7 @@
 	let codecSupport = $state<Partial<Record<VideoCodec, boolean>>>({});
 	let codecFallback = $state<{ from: VideoCodec; to: VideoCodec } | null>(null);
 	let resolution = $state('source');
+	let resolutionProjectId: string | null = null;
 	let useRange = $state(false);
 	let subtitleMode = $state<NonNullable<RenderExportOptions['subtitleMode']>>('burn');
 	let sequenceDestination = $state<'directory' | 'zip'>(
@@ -178,7 +179,12 @@
 	const resolutionOptions = $derived([
 		{
 			value: 'source',
-			label: `${exportProject?.metadata.width} × ${exportProject?.metadata.height}`
+			label: exportProject
+				? m.video_editor_export_sequence_resolution({
+						width: exportProject.metadata.width,
+						height: exportProject.metadata.height
+					})
+				: ''
 		},
 		{ value: '1920x1080', label: '1920 × 1080' },
 		{ value: '1280x720', label: '1280 × 720' },
@@ -426,8 +432,8 @@
 		}
 	}
 
-	function openExportDialog(): void {
-		if (!project) return;
+	export function openExportDialog(): void {
+		if (!project || open) return;
 		const snapshot = captureSnapshot();
 		exportableSequences = createExportableSequences(
 			$state.snapshot(project),
@@ -435,7 +441,10 @@
 			sequenceStore.activeSequenceId
 		);
 		selectedSequenceId = sequenceStore.activeSequenceId;
-		resolution = 'source';
+		if (resolutionProjectId !== project.id) {
+			resolution = 'source';
+			resolutionProjectId = project.id;
+		}
 		useRange = false;
 		codecFallback = null;
 		queueSubmissionError = null;
@@ -730,7 +739,7 @@
 	>
 		<header class="shrink-0 border-b border-[var(--video-editor-border)] px-3 py-3 pr-12">
 			<Dialog.Title id="export-title" class="text-base font-semibold"
-				>{m.video_editor_export_title()}</Dialog.Title
+				>{isAudioFormat ? m.common_export() : m.video_editor_export_title()}</Dialog.Title
 			>
 		</header>
 		<div
@@ -758,11 +767,13 @@
 						class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--video-editor-muted)] tabular-nums"
 						aria-live="polite"
 					>
-						<span
-							>{m.video_editor_export_resolution()}: {selectedSequence.project.metadata.width} × {selectedSequence
-								.project.metadata.height}</span
-						>
-						<span>{selectedSequence.project.metadata.fps} fps</span>
+						{#if !isAudioFormat}
+							<span
+								>{m.video_editor_export_resolution()}: {selectedSequence.project.metadata.width} × {selectedSequence
+									.project.metadata.height}</span
+							>
+							<span>{selectedSequence.project.metadata.fps} fps</span>
+						{/if}
 						<span
 							>{m.video_editor_project_duration({
 								duration: formatMediaDuration(
@@ -820,29 +831,31 @@
 						/>
 					</label>
 				{/if}
-				<label class="text-xs text-muted-foreground">
-					{#if isSequenceFormat && (format === 'jpeg-sequence' || format === 'webp-sequence')}
-						{m.video_editor_export_jpeg_quality()}
-					{:else}
-						{m.video_editor_export_quality()}
-					{/if}
-					<AppSelect
-						class="mt-1 h-8 w-full text-sm"
-						value={quality}
-						options={qualityOptions}
-						disabled={rendering}
-						onValueChange={setQuality}
-					/>
-				</label>
-				<label class="text-xs text-muted-foreground">
-					{m.video_editor_export_resolution()}<AppSelect
-						class="mt-1 h-8 w-full text-sm"
-						bind:value={resolution}
-						options={resolutionOptions}
-						disabled={rendering}
-					/>
-				</label>
-				{#if !isSequenceFormat}
+				{#if !isAudioFormat}
+					<label class="text-xs text-muted-foreground">
+						{#if isSequenceFormat && (format === 'jpeg-sequence' || format === 'webp-sequence')}
+							{m.video_editor_export_jpeg_quality()}
+						{:else}
+							{m.video_editor_export_quality()}
+						{/if}
+						<AppSelect
+							class="mt-1 h-8 w-full text-sm"
+							value={quality}
+							options={qualityOptions}
+							disabled={rendering}
+							onValueChange={setQuality}
+						/>
+					</label>
+					<label class="text-xs text-muted-foreground">
+						{m.video_editor_export_resolution()}<AppSelect
+							class="mt-1 h-8 w-full text-sm"
+							bind:value={resolution}
+							options={resolutionOptions}
+							disabled={rendering}
+						/>
+					</label>
+				{/if}
+				{#if !isSequenceFormat && !isAudioFormat}
 					<label class="text-xs text-muted-foreground">
 						{m.video_editor_export_subtitles()}<AppSelect
 							class="mt-1 h-8 w-full text-sm"
@@ -906,64 +919,69 @@
 					/>
 				{/key}
 			{/if}
-			<div
-				class="mt-3 rounded-lg border border-[var(--video-editor-border)] bg-[var(--video-editor-control)] p-3"
-				aria-live="polite"
-			>
-				<div class="flex items-start gap-2">
-					{#if preflight.pending}
-						<ProtectedIcon
-							icon="loading"
-							class="mt-0.5 size-4 shrink-0 animate-spin text-[var(--video-editor-muted)] motion-reduce:animate-none"
-						/>
-					{:else if summarizePreflightSeverity(preflight.checks) === 'error'}
-						<ProtectedIcon icon="error" class="mt-0.5 size-4 shrink-0 text-destructive" />
-					{:else if summarizePreflightSeverity(preflight.checks) === 'warning'}
-						<ProtectedIcon icon="warning" class="mt-0.5 size-4 shrink-0 text-warning-foreground" />
-					{:else}
-						<ProtectedIcon icon="success" class="mt-0.5 size-4 shrink-0 text-success" />
-					{/if}
-					<div class="min-w-0 flex-1">
-						<p class="text-xs font-medium">
-							{preflight.pending
-								? m.video_editor_preflight_checking()
-								: preflight.canExport
-									? m.video_editor_preflight_ready()
-									: m.video_editor_preflight_blocked()}
-						</p>
-						<p class="mt-0.5 text-xs text-[var(--video-editor-muted)] tabular-nums">
-							{m.video_editor_preflight_estimate({
-								duration: preflight.estimatedDurationSeconds.toFixed(1),
-								size: formatBytes(preflight.estimatedFileSizeBytes),
-								path:
-									preflight.predictedRenderPath === 'smart-copy'
-										? m.video_editor_preflight_path_smart_copy()
-										: preflight.predictedRenderPath === 'worker'
-											? m.video_editor_preflight_path_worker()
-											: m.video_editor_preflight_path_main_thread()
-							})}
-						</p>
+			{#if !rendering}
+				<div
+					class="mt-3 rounded-lg border border-[var(--video-editor-border)] bg-[var(--video-editor-control)] p-3"
+					aria-live="polite"
+				>
+					<div class="flex items-start gap-2">
+						{#if preflight.pending}
+							<ProtectedIcon
+								icon="loading"
+								class="mt-0.5 size-4 shrink-0 animate-spin text-[var(--video-editor-muted)] motion-reduce:animate-none"
+							/>
+						{:else if summarizePreflightSeverity(preflight.checks) === 'error'}
+							<ProtectedIcon icon="error" class="mt-0.5 size-4 shrink-0 text-destructive" />
+						{:else if summarizePreflightSeverity(preflight.checks) === 'warning'}
+							<ProtectedIcon
+								icon="warning"
+								class="mt-0.5 size-4 shrink-0 text-warning-foreground"
+							/>
+						{:else}
+							<ProtectedIcon icon="success" class="mt-0.5 size-4 shrink-0 text-success" />
+						{/if}
+						<div class="min-w-0 flex-1">
+							<p class="text-xs font-medium">
+								{preflight.pending
+									? m.video_editor_preflight_checking()
+									: preflight.canExport
+										? m.video_editor_preflight_ready()
+										: m.video_editor_preflight_blocked()}
+							</p>
+							<p class="mt-0.5 text-xs text-[var(--video-editor-muted)] tabular-nums">
+								{m.video_editor_preflight_estimate({
+									duration: preflight.estimatedDurationSeconds.toFixed(1),
+									size: formatBytes(preflight.estimatedFileSizeBytes),
+									path:
+										preflight.predictedRenderPath === 'smart-copy'
+											? m.video_editor_preflight_path_smart_copy()
+											: preflight.predictedRenderPath === 'worker'
+												? m.video_editor_preflight_path_worker()
+												: m.video_editor_preflight_path_main_thread()
+								})}
+							</p>
+						</div>
 					</div>
+					{#if visiblePreflightChecks.length > 0}
+						<ul class="mt-2 space-y-1 border-t border-[var(--video-editor-border)] pt-2">
+							{#each visiblePreflightChecks as check (check.id)}
+								<li
+									class={[
+										'text-xs',
+										check.severity === 'error'
+											? 'text-destructive'
+											: check.severity === 'warning'
+												? 'text-warning-foreground'
+												: 'text-[var(--video-editor-muted)]'
+									]}
+								>
+									{preflightMessage(check)}
+								</li>
+							{/each}
+						</ul>
+					{/if}
 				</div>
-				{#if visiblePreflightChecks.length > 0}
-					<ul class="mt-2 space-y-1 border-t border-[var(--video-editor-border)] pt-2">
-						{#each visiblePreflightChecks as check (check.id)}
-							<li
-								class={[
-									'text-xs',
-									check.severity === 'error'
-										? 'text-destructive'
-										: check.severity === 'warning'
-											? 'text-warning-foreground'
-											: 'text-[var(--video-editor-muted)]'
-								]}
-							>
-								{preflightMessage(check)}
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
+			{/if}
 		</div>
 		<footer class="shrink-0 border-t border-[var(--video-editor-border)] p-3" data-export-actions>
 			{#if queueSubmissionError}

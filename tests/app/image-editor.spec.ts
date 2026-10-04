@@ -53,11 +53,13 @@ test.describe("touch editor discovery", () => {
     await expect
       .poll(async () => (await page.getByRole("menu").boundingBox())!.width)
       .toBeGreaterThanOrEqual(264);
+    await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
     await page.getByRole("menuitem", { name: /^Duplicate/ }).click();
     await page.setViewportSize({ width: 1024, height: 768 });
     await expect(layers).toHaveCount(7);
     await page.setViewportSize({ width: 320, height: 780 });
     await more.click();
+    await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
     await page.getByRole("menuitem", { name: /^Undo/ }).click();
     await page.keyboard.press("Escape");
     await expect(page.getByRole("menu")).toHaveCount(0);
@@ -258,27 +260,75 @@ test("guest camera capture supports crop controls and undo without workspace wri
   expect(cropErrors).toEqual([]);
 });
 
-test("Image Editor keeps Export as the rightmost visible header action", async ({ page }) => {
+test("Image Editor keeps Export rightmost and saved feedback clear at narrow widths", async ({
+  page,
+}, testInfo) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto("/image-editor");
   await page.getByRole("button", { name: "New project", exact: true }).click();
-
   const header = page.getByRole("banner");
-  const exportButton = header.getByRole("button", {
-    name: "Export",
-    exact: true,
-  });
-  const exportBox = await exportButton.boundingBox();
-  expect(exportBox).not.toBeNull();
-
-  for (const button of [
-    header.getByRole("button", { name: "More actions", exact: true }),
-    header.getByRole("button", { name: "Save to OpenPost", exact: true }),
-  ]) {
-    await expect(button).toBeVisible();
-    const box = await button.boundingBox();
-    if (box) expect(exportBox!.x).toBeGreaterThan(box.x);
+  const saved = page.getByTestId("image-editor-save-indicator");
+  await page.getByRole("textbox", { name: "Design title" }).fill("Saved header project");
+  await page.keyboard.press("Tab");
+  await expect(saved).toHaveAttribute("data-state", "saved");
+  const cdp = await page.context().newCDPSession(page);
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+    await page.evaluate(
+      (dark) => document.documentElement.classList.toggle("dark", dark),
+      scheme === "dark",
+    );
+    for (const width of [1600, 390, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      await cdp.send("Emulation.setTouchEmulationEnabled", {
+        enabled: width !== 1600,
+        maxTouchPoints: 1,
+      });
+      await expect
+        .poll(() => page.evaluate(() => matchMedia("(pointer:coarse)").matches))
+        .toBe(width !== 1600);
+      const exportButton = header.getByRole("button", { name: "Export", exact: true });
+      const exportBox = await exportButton.boundingBox();
+      expect(exportBox).not.toBeNull();
+      for (const button of [
+        header.getByRole("button", { name: "More actions", exact: true }),
+        ...(width === 1600
+          ? [header.getByRole("button", { name: "Save to OpenPost", exact: true })]
+          : []),
+      ]) {
+        await expect(button).toBeVisible();
+        const box = await button.boundingBox();
+        if (box) expect(exportBox!.x).toBeGreaterThan(box.x);
+      }
+      const status = await saved.boundingBox();
+      const color = await header.getByRole("tab", { name: "Color", exact: true }).boundingBox();
+      expect(status).not.toBeNull();
+      expect(color).not.toBeNull();
+      expect(
+        status!.x >= color!.x + color!.width ||
+          status!.x + status!.width <= color!.x ||
+          status!.y >= color!.y + color!.height ||
+          status!.y + status!.height <= color!.y,
+      ).toBe(true);
+      await expect
+        .poll(() =>
+          header.evaluate((element) =>
+            [...element.querySelectorAll("button")].every((button) => {
+              const bounds = button.getBoundingClientRect();
+              return !bounds.width || (bounds.left >= 0 && bounds.right <= innerWidth);
+            }),
+          ),
+        )
+        .toBe(true);
+      await page.screenshot({ path: testInfo.outputPath(`image-header-${width}-${scheme}.png`) });
+    }
   }
+  await header.getByRole("tab", { name: "Color", exact: true }).click();
+  await page.keyboard.press("Home");
+  await expect(header.getByRole("tab", { name: "Edit", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
 });
 
 test("signed-in creators can use built-in templates in their workspace", async ({
@@ -422,7 +472,7 @@ test("public image editor creates, restores, and exports a local design", async 
   await page.getByRole("button", { name: "Download" }).click();
   await download;
   await expect(
-    page.getByLabel("Notifications alt+T").getByText("Export downloaded."),
+    page.getByLabel("Notifications alt+T").getByText("Export download started."),
   ).toBeVisible();
 
   const home = page
@@ -486,9 +536,12 @@ test("Image Editor previews and downloads the same encoded PNG, JPEG, and WebP b
     );
   }
 
-  await expect(page.getByLabel("Notifications alt+T")).not.toContainText("Export downloaded.", {
-    timeout: 10_000,
-  });
+  await expect(page.getByLabel("Notifications alt+T")).not.toContainText(
+    "Export download started.",
+    {
+      timeout: 10_000,
+    },
+  );
   await page.getByRole("button", { name: "Export", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Export design" });
   for (const format of ["PNG", "JPEG", "WebP"] as const) {
@@ -863,7 +916,7 @@ test("workspace designs can be deleted and editing a media file reopens its desi
         name: "reuse.png",
         mimeType: "image/png",
         buffer: Buffer.from(
-          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ZkAAAAASUVORK5CYII=",
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAEElEQVR4nGL6//8/IAAA//8GBgMAt2YRIQAAAABJRU5ErkJggg==",
           "base64",
         ),
       },

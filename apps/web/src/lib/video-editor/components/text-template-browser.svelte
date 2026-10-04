@@ -2,6 +2,7 @@
 <script lang="ts">
 	import LibraryShelf from './library-shelf.svelte';
 	import type { ProjectAssetImporter } from '../media/types';
+	import { videoLibrary } from '../library/library-store.svelte';
 	import LibraryFavorite from './library-favorite.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { ProtectedIcon } from '$lib/themes/icons';
@@ -63,11 +64,20 @@
 					1,
 					copy
 				)
-			)
+			) {
 				onapplied();
+				videoLibrary.recordChoice(
+					`${videoLibrary.scope}:text:${presetId}`,
+					TEXT_STYLE_PRESETS.find((preset) => preset.id === presetId)?.label ?? presetId
+				);
+			}
 			return;
 		}
 		oninserted(addTextTemplateItem(presetId, copy));
+		videoLibrary.recordChoice(
+			`${videoLibrary.scope}:text:${presetId}`,
+			TEXT_STYLE_PRESETS.find((preset) => preset.id === presetId)?.label ?? presetId
+		);
 	}
 
 	function startDrag(
@@ -103,7 +113,7 @@
 				{#if group.layout === 'single'}
 					<button
 						type="button"
-						class="template-card"
+						class="template-card w-full"
 						draggable="true"
 						onclick={insertPlainText}
 						ondragstart={(event) => startDrag(event, m.video_editor_text_default_label())}
@@ -119,10 +129,10 @@
 				{/if}
 				{#each TEXT_STYLE_PRESETS.filter((preset) => preset.layout === group.layout) as preset (preset.id)}
 					{@const copy = localizedTextStylePresetCopy(preset.id)}
-					<div class="relative min-w-0">
+					<div class="group/library-item relative min-w-0">
 						<button
 							type="button"
-							class="template-card"
+							class="template-card w-full"
 							draggable="true"
 							onclick={() => usePreset(preset.id)}
 							ondragstart={(event) => startDrag(event, copy.label, preset.id)}

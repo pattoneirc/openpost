@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { themeColorContrastRatio } from '$lib/themes/validation';
 import { defaultEditorColorWheels } from '$lib/editor-color-grade/model';
 import { defaultImageAdjustments } from './document';
 import { ImageEditorController } from './editor.svelte';
@@ -61,6 +62,28 @@ function response(): ImageEditorDocumentResponse {
 }
 
 describe('OpenPost Image Editor editor layer interactions', () => {
+	it('keeps new cover text readable over light and dark frames without restyling other designs', () => {
+		const editor = new ImageEditorController({ textAppearance: () => 'over-image' });
+		const initial = response();
+		editor.load(initial);
+		editor.addText('A product update');
+		const text = editor.selectedLayers[0].text!;
+		for (const frameColor of ['#000000', '#ffffff']) {
+			expect(
+				themeColorContrastRatio(text.color, text.highlight_color ?? 'transparent', frameColor)
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		const authored = editor.document!;
+		editor.undo();
+		expect(editor.document!.pages[0].layers).toEqual(initial.document.pages[0].layers);
+		const reopened = new ImageEditorController();
+		reopened.load({ ...initial, document: authored });
+		expect(reopened.document!.pages[0].layers.at(-1)!.text).toEqual(text);
+		reopened.addText('Ordinary text');
+		expect(reopened.selectedLayers[0].text).toMatchObject({ color: '#1c1917' });
+		expect(reopened.selectedLayers[0].text!.highlight_color).toBeUndefined();
+	});
+
 	it('drops an old text range when direct page or layer selection changes', () => {
 		const editor = new ImageEditorController();
 		editor.load(response());
@@ -1312,22 +1335,27 @@ describe('OpenPost Image Editor editor layer interactions', () => {
 		});
 	});
 
-	it('resolves an image aspect ratio when media dimensions arrive after insertion', () => {
-		const editor = new ImageEditorController();
-		editor.load(response());
+	it.each([false, true])(
+		'resolves pending image dimensions without changing the lock (%s)',
+		(locked) => {
+			const editor = new ImageEditorController();
+			editor.load(response());
 
-		editor.addImage({ id: 'media', name: 'Deferred image' });
-		const pending = editor.selectedLayers[0];
-		expect(pending.image?.intrinsic_pending).toBe(true);
+			editor.addImage({ id: 'media', name: 'Deferred image' });
+			const pending = editor.selectedLayers[0];
+			expect(pending.image?.intrinsic_pending).toBe(true);
+			editor.updateLayer(pending.id, { locked });
 
-		editor.resolveImageDimensions(pending.id, 1200, 800);
+			editor.resolveImageDimensions(pending.id, 1200, 800);
 
-		const image = editor.selectedLayers[0];
-		expect(image.transform.width / image.transform.height).toBeCloseTo(3 / 2);
-		expect(image.image?.source_width).toBe(1200);
-		expect(image.image?.source_height).toBe(800);
-		expect(image.image?.intrinsic_pending).toBe(false);
-	});
+			const image = editor.selectedLayers[0];
+			expect(image.transform.width / image.transform.height).toBeCloseTo(3 / 2);
+			expect(image.image?.source_width).toBe(1200);
+			expect(image.image?.source_height).toBe(800);
+			expect(image.image?.intrinsic_pending).toBe(false);
+			expect(image.locked).toBe(locked);
+		}
+	);
 
 	it('adds gradients as selection-clipped paint layers', () => {
 		const editor = new ImageEditorController();
@@ -1452,4 +1480,217 @@ describe('OpenPost Image Editor editor layer interactions', () => {
 		]);
 		expect(editor.selectedLayers[0].erase_mask).toBeUndefined();
 	});
+});
+
+it('protects locked authored properties while allowing layer management and unlock recovery', () => {
+	const editor = new ImageEditorController();
+	const initial = response();
+	const locked = initial.document.pages[0].layers[0];
+	locked.locked = true;
+	locked.shape!.radius = 32;
+	editor.load(initial);
+	editor.selectLayer(locked.id);
+	const baseline = JSON.stringify(editor.document);
+	editor.updateLayer(locked.id, { shape: { ...locked.shape!, radius: 80 } });
+	editor.updateLayer(locked.id, { locked: false, opacity: 0.2 });
+	expect(JSON.stringify(editor.document)).toBe(baseline);
+	expect(editor.canUndo).toBe(false);
+	editor.updateLayer(locked.id, { name: 'Renamed', visible: false });
+	expect(editor.selectedLayers[0]).toMatchObject({ name: 'Renamed', visible: false, locked: true });
+	editor.updateLayer(locked.id, { locked: false });
+	editor.updateLayer(locked.id, { shape: { ...locked.shape!, radius: 80 } });
+	expect(editor.selectedLayers[0].shape?.radius).toBe(80);
+	editor.undo();
+	expect(editor.selectedLayers[0].shape?.radius).toBe(32);
+	editor.redo();
+	expect(editor.selectedLayers[0].shape?.radius).toBe(80);
+
+	editor.addText();
+	const textID = editor.selectedLayers[0].id;
+	editor.selectLayer(locked.id, 'toggle');
+	editor.groupSelected();
+	const groupID = editor.selectedLayers[0].id;
+	editor.updateLayer(groupID, { locked: true });
+	const grouped = JSON.stringify(editor.document);
+	const originalText = editor.activePage!.layers.find((layer) => layer.id === textID)!.text!;
+	expect(editor.updateTextContent(textID, 'Rejected')).toEqual(originalText);
+	editor.updateTextStyle(textID, 'font_weight', 400);
+	editor.updateTransform(textID, { x: 0 });
+	editor.updateLayer(locked.id, { shape: { ...locked.shape!, radius: 99 } });
+	expect(JSON.stringify(editor.document)).toBe(grouped);
+});
+
+function nestedLockedResponse(): ImageEditorDocumentResponse {
+	const initial = response();
+	const outer = { ...layer('outer', 0), type: 'group' as const, locked: true };
+	const inner = { ...layer('inner', 0), type: 'group' as const, parent_id: outer.id };
+	const child = { ...layer('child', 10), parent_id: inner.id };
+	const sibling = { ...layer('sibling', 110), parent_id: inner.id };
+	initial.document.pages[0].layers = [child, sibling, inner, outer, layer('outside', 210)];
+	return initial;
+}
+
+it.each([
+	['nudge', (editor: ImageEditorController) => editor.nudgeSelected(1, 0)],
+	['delete', (editor: ImageEditorController) => editor.deleteSelected()],
+	['reorder', (editor: ImageEditorController) => editor.reorderLayer('child', 'front')],
+	[
+		'relative reorder',
+		(editor: ImageEditorController) => editor.moveLayerRelative('child', 'sibling', 'above')
+	],
+	[
+		'ungroup',
+		(editor: ImageEditorController) => {
+			editor.selectLayer('inner');
+			editor.ungroupSelected();
+		}
+	],
+	[
+		'group',
+		(editor: ImageEditorController) => {
+			editor.selectLayer('sibling', 'toggle');
+			editor.groupSelected();
+		}
+	],
+	[
+		'align',
+		(editor: ImageEditorController) => {
+			editor.selectLayer('sibling', 'toggle');
+			editor.alignSelected('left');
+		}
+	]
+] as const)('rejects %s beneath a locked ancestor without authoring history', (_, action) => {
+	const editor = new ImageEditorController();
+	editor.load(nestedLockedResponse());
+	editor.selectLayer('child');
+	const baseline = JSON.stringify(editor.document);
+	action(editor);
+	expect(JSON.stringify(editor.document)).toBe(baseline);
+	expect(editor.canUndo).toBe(false);
+	expect(editor.selectedLayerIDs.length).toBeGreaterThan(0);
+});
+
+it.each(['erase', 'magic erase', 'restore', 'cut', 'delete', 'promote'] as const)(
+	'rejects pixel %s beneath a locked ancestor, preserving the selection and pixels',
+	(action) => {
+		const editor = new ImageEditorController();
+		const initial = nestedLockedResponse();
+		const child = initial.document.pages[0].layers[0];
+		child.type = 'image';
+		child.shape = undefined;
+		child.image = {
+			media_id: 'image',
+			source_width: 2,
+			source_height: 2,
+			fit: 'cover',
+			crop: { x: 0, y: 0, width: 1, height: 1 },
+			adjustments: defaultImageAdjustments()
+		};
+		child.erase_mask = {
+			source_width: 2,
+			source_height: 2,
+			spans: [{ x: 0, y: 0, width: 1 }],
+			strokes: []
+		};
+		editor.load(initial);
+		editor.selectLayer('child');
+		const mask = new Uint8Array([0, 1, 1, 1]);
+		editor.applyPixelSelection(mask, ['child'], 'replace');
+		const baseline = JSON.stringify(editor.document);
+		const selection = editor.pixelSelection;
+		if (action === 'erase') editor.addEraseStroke('child', 2, 2, [{ x: 1, y: 1 }], 1);
+		else if (action === 'magic erase') editor.addMagicErase('child', 2, 2, mask);
+		else if (action === 'restore') editor.restoreImageEraseMask('child');
+		else
+			expect(
+				editor.commitPixelSelectionContent(action, [
+					{ id: 'child', width: 2, height: 2, data: mask }
+				])
+			).toBe(false);
+		expect(JSON.stringify(editor.document)).toBe(baseline);
+		expect(editor.pixelSelection).toBe(selection);
+		expect(editor.selectedLayerIDs).toEqual(['child']);
+		expect(editor.canUndo).toBe(false);
+	}
+);
+
+it('reports locked descendants in partial opacity changes and keeps unlock, undo and reload usable', () => {
+	const editor = new ImageEditorController();
+	editor.load(nestedLockedResponse());
+	editor.selectLayer('child');
+	editor.selectLayer('outside', 'toggle');
+	expect(editor.updateSelectedOpacity(0.4)).toEqual({
+		applied: 1,
+		skippedLocked: 1,
+		skippedUnsupported: 0
+	});
+	expect(editor.activePage?.layers.find((item) => item.id === 'child')?.opacity).toBe(1);
+	expect(editor.activePage?.layers.find((item) => item.id === 'outside')?.opacity).toBe(0.4);
+	editor.undo();
+	expect(editor.activePage?.layers.find((item) => item.id === 'outside')?.opacity).toBe(1);
+	editor.updateLayer('outer', { locked: false });
+	editor.selectLayer('inner');
+	editor.ungroupSelected();
+	expect(editor.activePage?.layers.find((item) => item.id === 'child')?.parent_id).toBe('outer');
+	editor.undo();
+	expect(editor.activePage?.layers.find((item) => item.id === 'child')?.parent_id).toBe('inner');
+	editor.redo();
+	expect(editor.activePage?.layers.some((item) => item.id === 'inner')).toBe(false);
+	const persisted = { ...response(), document: JSON.parse(JSON.stringify(editor.document)) };
+	const reopened = new ImageEditorController();
+	reopened.load(persisted);
+	reopened.selectLayer('child');
+	reopened.nudgeSelected(1, 0);
+	expect(reopened.selectedLayers[0].transform.x).toBe(11);
+});
+
+it('protects locked descendant colors and adjustment gestures without blocking unlocked groups', () => {
+	const editor = new ImageEditorController();
+	editor.load(nestedLockedResponse());
+	editor.selectLayer('child');
+	editor.eyedropperTarget = 'selected_fill';
+	const baseline = JSON.stringify(editor.document);
+	editor.applySampledColor('#ffffff', 255);
+	expect(JSON.stringify(editor.document)).toBe(baseline);
+	expect(editor.canUndo).toBe(false);
+	editor.updateLayer('outer', { locked: false });
+	editor.selectLayer('inner');
+	editor.nudgeSelected(5, 0);
+	expect(editor.activePage?.layers.find((item) => item.id === 'child')?.transform.x).toBe(15);
+	expect(editor.activePage?.layers.find((item) => item.id === 'sibling')?.transform.x).toBe(115);
+	editor.undo();
+	expect(editor.activePage?.layers.find((item) => item.id === 'child')?.transform.x).toBe(10);
+	editor.redo();
+	expect(editor.activePage?.layers.find((item) => item.id === 'child')?.transform.x).toBe(15);
+
+	editor.addImage({ id: 'image', name: 'Photo', width: 2, height: 2 });
+	const imageID = editor.selectedLayers[0].id;
+	editor.moveLayerToGroup(imageID, 'inner');
+	editor.updateLayer('outer', { locked: true });
+	const imageBaseline = JSON.stringify(editor.document);
+	editor.previewImageAdjustment([imageID], 'contrast', 0.3);
+	editor.commitImageAdjustmentGesture();
+	expect(JSON.stringify(editor.document)).toBe(imageBaseline);
+});
+
+it('bounds authored mask radius without rounding valid fractions', () => {
+	const editor = new ImageEditorController();
+	const initial = response();
+	const target = initial.document.pages[0].layers[0];
+	target.transform.width = 381.75;
+	target.transform.height = 214.875;
+	target.mask = { shape: 'rounded_rectangle', inset: 0, radius: 32.25 };
+	editor.load(initial);
+	editor.updateLayer(target.id, { mask: { ...target.mask, radius: 108 } });
+	expect(editor.activePage!.layers[0].mask!.radius).toBe(107.4375);
+	editor.updateLayer(target.id, { mask: { ...target.mask, radius: 108 } });
+	editor.undo();
+	expect(editor.activePage!.layers[0].mask!.radius).toBe(32.25);
+	editor.redo();
+	expect(editor.activePage!.layers[0].mask!.radius).toBe(107.4375);
+	editor.updateLayer(target.id, { mask: { ...target.mask, radius: 101.75 } });
+	expect(editor.activePage!.layers[0].mask!.radius).toBe(101.75);
+	editor.updateLayer(target.id, { mask: { ...target.mask, radius: -1 } });
+	expect(editor.activePage!.layers[0].mask!.radius).toBe(0);
+	expect(editor.activePage!.layers[0].transform).toEqual(target.transform);
 });

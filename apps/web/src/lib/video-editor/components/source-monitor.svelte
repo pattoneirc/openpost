@@ -78,24 +78,25 @@
 			(kind === 'audio' || (kind === 'video' && !!media?.audioCodec))
 	);
 	const needsCustomAudio = $derived(hasAudio && isAc3AudioCodec(media?.audioCodec));
+	const destinationTracks = $derived(effectiveMediaTracks(timelineStore.tracks));
 	const videoTracks = $derived(
-		effectiveMediaTracks(timelineStore.tracks).filter(
-			(track) => track.kind !== 'audio' && !track.locked
-		)
+		destinationTracks.filter((track) => track.kind !== 'audio' && !track.locked)
 	);
 	const audioTracks = $derived(
-		effectiveMediaTracks(timelineStore.tracks).filter(
-			(track) => track.kind === 'audio' && !track.locked
-		)
+		destinationTracks.filter((track) => track.kind === 'audio' && !track.locked)
 	);
 	const videoTargetOptions = $derived([
 		{ value: 'auto', label: m.video_editor_source_target_auto() },
-		...videoTracks.map((track) => ({ value: track.id, label: track.name })),
+		...destinationTracks
+			.filter((track) => track.kind !== 'audio' && (!track.locked || track.id === videoTarget))
+			.map((track) => ({ value: track.id, label: track.name, disabled: track.locked })),
 		{ value: 'create', label: m.video_editor_source_target_create() }
 	]);
 	const audioTargetOptions = $derived([
 		{ value: 'auto', label: m.video_editor_source_target_auto() },
-		...audioTracks.map((track) => ({ value: track.id, label: track.name })),
+		...destinationTracks
+			.filter((track) => track.kind === 'audio' && (!track.locked || track.id === audioTarget))
+			.map((track) => ({ value: track.id, label: track.name, disabled: track.locked })),
 		{ value: 'create', label: m.video_editor_source_target_create() }
 	]);
 
@@ -534,7 +535,7 @@
 				startCustomAudio(mediaElement.currentTime);
 			}
 		}
-		if (next >= outPoint) {
+		if (playing && next >= outPoint) {
 			seek(outPoint - 1);
 			pause();
 			return;
@@ -658,10 +659,8 @@
 		) {
 			return;
 		}
-		if (editorShortcutTargetIsDisabled(event.target)) {
-			if (monitorElement?.contains(event.target)) event.stopImmediatePropagation();
-			return;
-		}
+		// Focused controls must receive their own keys after this capture listener returns.
+		if (editorShortcutTargetIsDisabled(event.target)) return;
 		if (!isGlobalEditShortcut && !isLocal && !isShuttleShortcut) return;
 		if (isLocal && isShuttleShortcut) {
 			if (isShuttlePause) {

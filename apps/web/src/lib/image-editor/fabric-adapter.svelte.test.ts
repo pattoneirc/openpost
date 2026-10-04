@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { userEvent } from 'vitest/browser';
 import type { Canvas, IText } from 'fabric';
 import { renderImageEditorPage } from './static-renderer';
 import { OpenPostFabricAdapter } from './fabric-adapter';
+import { ImageEditorController } from './editor.svelte';
 import { editTextWithRuns, type ImageEditorTextEdit } from './text-runs';
 import {
 	imageEditorCollectiveTransform,
@@ -126,6 +128,46 @@ function pixelDigest(canvas: HTMLCanvasElement): number {
 	return hash >>> 0;
 }
 
+it('preserves flat multiline layout across live font changes and fresh renders', async () => {
+	const layer: ImageEditorLayer = {
+		...renderLayer('multiline', 20, 20, 300, 160),
+		type: 'text',
+		shape: undefined,
+		text: {
+			text: 'Font café é 👋\nمرحبا بالعالم',
+			font_family: 'Arial',
+			font_weight: 400,
+			font_style: 'normal',
+			font_size: 28,
+			color: '#000000',
+			align: 'left',
+			line_height: 1.1,
+			letter_spacing: 0,
+			stroke_width: 0,
+			shadow: { color: '#00000000', blur: 0, offset_x: 0, offset_y: 0 },
+			wrap: 'word',
+			curve: { type: 'none', strength: 0.65, offset: 0, reverse: false }
+		}
+	};
+	const initial = pageFixture([layer]);
+	const changed = pageFixture([{ ...layer, text: { ...layer.text!, font_family: 'Georgia' } }]);
+	const live = await mountAdapter(documentFixture(initial), initial);
+	const fresh = await mountAdapter(documentFixture(changed), changed, { staticCanvas: true });
+	try {
+		await live.adapter.sync(documentFixture(changed), changed);
+		await document.fonts.ready;
+		await settleCanvas();
+		const pixels = (canvas: HTMLCanvasElement) =>
+			canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
+		expect(pixels(live.canvas)).toEqual(pixels(fresh.canvas));
+	} finally {
+		live.adapter.dispose();
+		fresh.adapter.dispose();
+		live.canvas.remove();
+		fresh.canvas.remove();
+	}
+});
+
 it('renders saved grapheme emphasis in the live canvas and static export', async () => {
 	const layer: ImageEditorLayer = {
 		id: 'headline',
@@ -240,6 +282,49 @@ it('uses the Fabric textarea edit position for repeated text', async () => {
 		);
 		expect(updated?.runs).toEqual([{ start: 2, end: 3, font_weight: 700 }]);
 		target.exitEditing();
+	} finally {
+		mounted.adapter.dispose();
+	}
+});
+
+it('continues canvas typing from inspector text changes during active editing', async () => {
+	const layer: ImageEditorLayer = {
+		...renderLayer('text', 20, 20, 300, 100),
+		type: 'text',
+		shape: undefined,
+		text: {
+			text: 'New text',
+			font_family: 'Arial',
+			font_weight: 400,
+			font_style: 'normal',
+			font_size: 24,
+			color: '#000000',
+			align: 'left',
+			line_height: 1.1,
+			letter_spacing: 0,
+			stroke_width: 0,
+			shadow: { color: '#00000000', blur: 0, offset_x: 0, offset_y: 0 }
+		}
+	};
+	const page = pageFixture([layer]);
+	const onTextChange = vi.fn();
+	const mounted = await mountAdapter(documentFixture(page), page, { onTextChange });
+	try {
+		mounted.adapter.enterTextEditing(layer.id);
+		const textarea = document.activeElement;
+		expect(textarea).toBeInstanceOf(HTMLTextAreaElement);
+		if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('Text editor did not open');
+		const changed = structuredClone(page);
+		changed.layers[0].text!.text = 'Fresh 👨‍👩‍👧‍👦 café\nمرحبا';
+		await mounted.adapter.sync(documentFixture(changed), changed);
+		textarea.focus();
+		textarea.setSelectionRange(0, 5);
+		await userEvent.keyboard('{Backspace}');
+		expect(onTextChange).toHaveBeenCalledWith(
+			'text',
+			' 👨‍👩‍👧‍👦 café\nمرحبا',
+			expect.objectContaining({ previousText: 'Fresh 👨‍👩‍👧‍👦 café\nمرحبا', start: 0, end: 5 })
+		);
 	} finally {
 		mounted.adapter.dispose();
 	}
@@ -982,3 +1067,98 @@ describe('OpenPost Image Editor page gradient rendering', () => {
 		}
 	});
 });
+
+for (const selection of ['group', 'selection'] as const) {
+	it(`scales nested mixed ${selection} glyphs with geometry, history and export`, async () => {
+		const headline: ImageEditorLayer = {
+			...renderLayer('headline', 20, 20, 300, 70),
+			type: 'text',
+			shape: undefined,
+			text: {
+				text: 'AUDIT café',
+				runs: [{ start: 0, end: 5, font_weight: 700 }],
+				font_family: 'Arial',
+				font_weight: 400,
+				font_style: 'normal',
+				underline: false,
+				strike: false,
+				wrap: 'word',
+				font_size: 48,
+				color: '#000000',
+				align: 'left',
+				line_height: 1,
+				letter_spacing: 0,
+				stroke_width: 0,
+				shadow: { color: '#00000000', blur: 0, offset_x: 0, offset_y: 0 }
+			}
+		};
+		const rectangle = renderLayer('rectangle', 200, 140, 60, 60);
+		const outside = renderLayer('outside', 20, 210, 30, 20);
+		const document = documentFixture(pageFixture([headline, rectangle, outside]));
+		const initial = {
+			id: 'design',
+			workspace_id: 'workspace',
+			created_by_id: 'user',
+			revision: 1,
+			can_edit: true,
+			created_at: '2026-07-25T00:00:00Z',
+			updated_at: '2026-07-25T00:00:00Z',
+			document
+		};
+		const editor = new ImageEditorController();
+		editor.load(initial);
+		editor.selectLayer('headline');
+		editor.selectLayer('rectangle', 'toggle');
+		editor.groupSelected();
+		editor.selectLayer('outside', 'toggle');
+		if (selection === 'group') editor.groupSelected();
+		// SAFETY: serialization clones the loaded, JSON-compatible document without changing its schema.
+		const before = JSON.parse(JSON.stringify(editor.document)) as ImageEditorDocument;
+		editor.updateSelectedTransform('width', 150, true);
+		// SAFETY: the transform mutation preserves the loaded document schema across this JSON clone.
+		const scaled = JSON.parse(JSON.stringify(editor.document)) as ImageEditorDocument;
+		const expectedHeadline: ImageEditorLayer = {
+			...headline,
+			transform: { ...headline.transform, width: 150, height: 35 },
+			text: { ...headline.text!, font_size: 24 }
+		};
+		const expectedRectangle = renderLayer('rectangle', 110, 80, 30, 30);
+		const expectedOutside = renderLayer('outside', 20, 115, 15, 10);
+		const expectedPage = pageFixture([expectedHeadline, expectedRectangle, expectedOutside]);
+		const expected = await mountAdapter(documentFixture(expectedPage), expectedPage, {
+			staticCanvas: true
+		});
+		const live = await mountAdapter(scaled, scaled.pages[0]);
+		try {
+			await settleCanvas();
+
+			const exported = await renderImageEditorPage(scaled, scaled.pages[0], 0);
+			const bitmap = await createImageBitmap(exported.blob);
+			const decoded = window.document.createElement('canvas');
+			decoded.width = bitmap.width;
+			decoded.height = bitmap.height;
+			decoded.getContext('2d')!.drawImage(bitmap, 0, 0);
+			bitmap.close();
+
+			expect(pixelDigest(decoded)).toBe(pixelDigest(expected.canvas));
+			expect(pixelDigest(live.canvas)).toBe(pixelDigest(expected.canvas));
+			expect(scaled.pages[0].layers.find((layer) => layer.id === 'headline')?.text?.font_size).toBe(
+				24
+			);
+			editor.undo();
+			expect(JSON.parse(JSON.stringify(editor.document))).toEqual(before);
+			editor.redo();
+			expect(JSON.parse(JSON.stringify(editor.document))).toEqual(scaled);
+			const cold = new ImageEditorController();
+			cold.load({ ...initial, document: scaled });
+			expect(cold.activePage?.layers.find((layer) => layer.id === 'headline')?.text).toEqual(
+				expectedHeadline.text
+			);
+		} finally {
+			live.adapter.dispose();
+			live.canvas.remove();
+			expected.adapter.dispose();
+			expected.canvas.remove();
+		}
+	});
+}

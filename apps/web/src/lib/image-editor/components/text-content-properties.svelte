@@ -5,11 +5,14 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import { m } from '$lib/paraglide/messages';
+	import { hasRegisteredImageEditorTextFont } from '../fonts';
 	import { useImageEditor } from '../editor.svelte';
 	import { textGraphemeOffset, textRunStyleAt, type ImageEditorTextEdit } from '../text-runs';
 
 	const editor = useImageEditor();
+	const textScopeID = $props.id();
 	let layer = $derived(editor.selectedLayers[0] ?? null);
+	let layerLocked = $derived(layer ? editor.isLayerLocked(layer.id) : false);
 	let textRange = $derived(
 		editor.textRange?.pageID === editor.activePageID && editor.textRange.layerID === layer?.id
 			? editor.textRange
@@ -22,7 +25,8 @@
 	let brandTextStyles = $derived(editor.brandKit?.text_styles ?? []);
 	let missingFontAsset = $derived(
 		layer?.text?.font_asset_id &&
-			!brandFonts.some((font) => font.media_id === layer?.text?.font_asset_id)
+			!brandFonts.some((font) => font.media_id === layer?.text?.font_asset_id) &&
+			!hasRegisteredImageEditorTextFont(layer.text)
 			? layer.text.font_asset_id
 			: ''
 	);
@@ -101,7 +105,7 @@
 				<AppSelect
 					value=""
 					ariaLabel={m.image_editor_apply_text_style()}
-					disabled={!editor.canEdit || layer.locked}
+					disabled={!editor.canEdit || layerLocked}
 					onValueChange={applyTextStyle}
 					options={brandTextStyles.map((style) => ({
 						value: style.id,
@@ -119,6 +123,7 @@
 					variant="outline"
 					size="xs"
 					class="mt-2"
+					disabled={!editor.canEdit || layerLocked}
 					onclick={() =>
 						editor.updateLayer(layer.id, {
 							text: {
@@ -137,8 +142,11 @@
 			<Textarea
 				class="min-h-20"
 				value={layer.text.text}
-				disabled={!editor.canEdit}
+				disabled={!editor.canEdit || layerLocked}
 				onselect={(event) => selectTextRange(event.currentTarget)}
+				onselectionchange={(event) => {
+					if (document.activeElement === event.currentTarget) selectTextRange(event.currentTarget);
+				}}
 				oncompositionstart={(event) => {
 					compositionStart = textGraphemeOffset(
 						event.currentTarget.value,
@@ -183,12 +191,16 @@
 					count: textRange.end - textRange.start
 				})}
 			</p>
+			<p id={textScopeID} class="text-xs text-muted-foreground">
+				{m.image_editor_text_range_scope()}
+			</p>
 		{/if}
 		<label class="grid gap-1 text-xs">
 			<span>{m.image_editor_font_family()}</span>
 			<ImageEditorFontPicker
 				value={layer.text.font_family}
-				disabled={!editor.canEdit}
+				ariaDescribedby={textRange ? textScopeID : undefined}
+				disabled={!editor.canEdit || layerLocked}
 				{brandFonts}
 				onChange={(font) =>
 					editor.updateLayer(layer.id, {
@@ -207,9 +219,10 @@
 				<span>{m.image_editor_size()}</span>
 				<Input
 					type="number"
+					aria-describedby={textRange ? textScopeID : undefined}
 					min="1"
 					value={layer.text.font_size}
-					disabled={!editor.canEdit}
+					disabled={!editor.canEdit || layerLocked}
 					oninput={(event) =>
 						editor.updateLayer(
 							layer.id,
@@ -228,7 +241,7 @@
 				<AppSelect
 					value={String(selectedStyle?.font_weight ?? layer.text.font_weight)}
 					ariaLabel={m.image_editor_weight()}
-					disabled={!editor.canEdit}
+					disabled={!editor.canEdit || layerLocked}
 					onValueChange={(value) => editor.updateTextStyle(layer.id, 'font_weight', Number(value))}
 					options={fontWeightOptions}
 					class="h-7 w-full"

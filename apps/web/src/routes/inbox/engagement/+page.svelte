@@ -214,7 +214,7 @@
 			string,
 			{
 				key: string;
-				kind: 'reconnect' | 'retry' | 'unavailable' | 'investigate';
+				kind: 'disabled' | 'reconnect' | 'retry' | 'unavailable' | 'investigate';
 				account?: SocialAccount;
 				platform: string;
 				states: EngagementSyncState[];
@@ -233,7 +233,13 @@
 			group.states.push(state);
 			groups.set(key, group);
 		}
-		const priority = { reconnect: 0, investigate: 1, retry: 2, unavailable: 3 } as const;
+		const priority = {
+			disabled: 0,
+			reconnect: 1,
+			investigate: 2,
+			retry: 3,
+			unavailable: 4
+		} as const;
 		return [...groups.values()].toSorted(
 			(left, right) => priority[left.kind] - priority[right.kind]
 		);
@@ -674,6 +680,7 @@
 
 	function recoveryKind(state: EngagementSyncState) {
 		const code = state.error_code.toLocaleLowerCase();
+		if (state.status === 'disabled' || code === 'feature_disabled') return 'disabled' as const;
 		if (
 			state.status === 'permission_required' ||
 			code.includes('permission') ||
@@ -693,13 +700,25 @@
 	}
 
 	function recoveryRecommendation(
-		kind: 'reconnect' | 'retry' | 'unavailable' | 'investigate',
+		kind: 'disabled' | 'reconnect' | 'retry' | 'unavailable' | 'investigate',
 		count: number
 	) {
-		if (kind === 'reconnect') return m.engagement_recovery_reconnect({ count });
-		if (kind === 'retry') return m.engagement_recovery_retry({ count });
-		if (kind === 'unavailable') return m.engagement_recovery_unavailable({ count });
-		return m.engagement_recovery_investigate({ count });
+		if (kind === 'disabled') return m.engagement_feature_disabled_title();
+		if (kind === 'reconnect')
+			return count === 1
+				? m.engagement_recovery_reconnect_one({ count })
+				: m.engagement_recovery_reconnect({ count });
+		if (kind === 'retry')
+			return count === 1
+				? m.engagement_recovery_retry_one({ count })
+				: m.engagement_recovery_retry({ count });
+		if (kind === 'unavailable')
+			return count === 1
+				? m.engagement_recovery_unavailable_one({ count })
+				: m.engagement_recovery_unavailable({ count });
+		return count === 1
+			? m.engagement_recovery_investigate_one({ count })
+			: m.engagement_recovery_investigate({ count });
 	}
 
 	function orderThread(source: EngagementItem[]) {
@@ -788,7 +807,16 @@
 									<p class="mt-1 text-xs leading-5 text-muted-foreground">
 										{syncStateMessage(state)}
 									</p>
-									{#if group.kind === 'reconnect'}
+									{#if group.kind === 'disabled'}
+										<Button
+											href="/settings?tab=accounts"
+											variant="link"
+											size="sm"
+											class="mt-1 h-auto min-h-8 px-0"
+										>
+											{m.feature_disabled_open_details()}
+										</Button>
+									{:else if group.kind === 'reconnect'}
 										<Button
 											href="/settings?tab=accounts"
 											variant="link"
@@ -841,7 +869,7 @@
 						}
 					}}
 				>
-					<Select.Trigger class="h-11 w-44 sm:h-9" aria-label={m.engagement_all_platforms()}>
+					<Select.Trigger class="h-11 w-44 sm:h-9">
 						{platformFilter ? getPlatformName(platformFilter) : m.engagement_all_platforms()}
 					</Select.Trigger>
 					<Select.Content>
@@ -1073,9 +1101,15 @@
 													{m.engagement_deleted_item()}
 												</p>
 											{:else}
-												<p class="mt-2 max-w-3xl text-sm leading-6 whitespace-pre-wrap">
-													{item.body}
-												</p>
+												{#if item.body.trim()}
+													<p class="mt-2 max-w-3xl text-sm leading-6 whitespace-pre-wrap">
+														{item.body}
+													</p>
+												{:else if attachments.length === 0}
+													<p class="mt-2 text-sm text-muted-foreground">
+														{m.engagement_empty_reply_content()}
+													</p>
+												{/if}
 												{#if attachments.length}
 													<div class="mt-3 flex flex-wrap gap-2">
 														{#each attachments as attachment, index (`${attachment.url}:${index}`)}

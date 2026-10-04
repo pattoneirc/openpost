@@ -119,7 +119,7 @@ func (a workflowActions) approval(ctx context.Context, input workflows.EffectReq
 			return nil, err
 		}
 		if publication.Revision != expected {
-			return nil, fmt.Errorf("%w: the post changed; review its current revision before approving", workflows.ErrConflict)
+			return nil, workflows.ErrPostRevision
 		}
 	}
 	if publication.Status != "draft" {
@@ -238,7 +238,17 @@ func (a workflowActions) build(ctx context.Context, input workflows.EffectReques
 			return workflows.EffectResult{}, err
 		}
 	case publicationbuilder.BuildStateFailed, publicationbuilder.BuildStateCancelled:
-		return workflows.EffectResult{}, errors.New("the AI build did not finish. Open the build to inspect its result")
+		message := build.ErrorMessage
+		if message == "" {
+			message = "the AI build did not finish"
+			if build.State == publicationbuilder.BuildStateCancelled {
+				message = "the AI build was cancelled"
+			}
+		}
+		return workflows.EffectResult{Output: map[string]any{
+			"build_id": build.ID, "state": build.State, "phase": build.Phase,
+			"error_code": build.ErrorCode, "error_message": message,
+		}}, errors.New(message)
 	}
 	publication, err := a.publications.publicationApplication().Get(ctx, input.Authority.UserID, build.PublicationID)
 	if err != nil {

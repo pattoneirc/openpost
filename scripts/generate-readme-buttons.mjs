@@ -1,12 +1,17 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { DITHER_BUTTON_OPACITY, gradientSvg } from "@openpost/dither";
 
-// Static CTA buttons for the README. They reuse the badge dither recipe from
-// scripts/generate-readme-badges.mjs: one background color with a white Bayer
-// dither overlay, icon plus label in a contrasting ink. Unlike the badges they
-// have no live counts, so the SVGs are checked in and only regenerated here.
+// Static README CTAs share the web button geometry and texture strength.
+// Regenerate the checked-in SVGs here when the shared recipe changes.
 
-export const BUTTON_NAMES = ["start-trial", "self-host", "report-bug", "join-discord"];
+export const BUTTON_NAMES = [
+  "start-trial",
+  "join-waitlist",
+  "self-host",
+  "report-bug",
+  "join-discord",
+];
 
 const BUTTON_HEIGHT = 36;
 const BUTTON_RADIUS = 8;
@@ -23,6 +28,10 @@ const COLORS = {
     light: ["#9ed9ad", "#102117"],
     dark: ["#72d18d", "#102117"],
   },
+  "join-waitlist": {
+    light: ["#9ed9ad", "#102117"],
+    dark: ["#72d18d", "#102117"],
+  },
   "self-host": {
     light: ["#d0d0d0", "#111111"],
     dark: ["#e8e8e8", "#111111"],
@@ -33,12 +42,13 @@ const COLORS = {
   },
   "join-discord": {
     light: ["#aeb4ff", "#1e2150"],
-    dark: ["#5662eb", "#ffffff"],
+    dark: ["#3d49c6", "#ffffff"],
   },
 };
 
 const LABELS = {
   "start-trial": "Start a 14-day trial",
+  "join-waitlist": "Join the waitlist",
   "self-host": "Get started with self-hosting",
   "report-bug": "Report a bug",
   "join-discord": "Join Discord",
@@ -48,37 +58,14 @@ const LABELS = {
 // at these bounds when an SVG renderer falls back to Arial or system sans.
 const LABEL_WIDTHS = {
   "start-trial": 128,
+  "join-waitlist": 108,
   "self-host": 200,
   "report-bug": 88,
   "join-discord": 86,
 };
 
-const BAYER = [
-  [0, 8, 2, 10],
-  [12, 4, 14, 6],
-  [3, 11, 1, 9],
-  [15, 7, 13, 5],
-];
-
-function ditherThreshold(x, y) {
-  return (BAYER[y % 4][x % 4] + 0.5) / 16;
-}
-
-function ditherPattern(height) {
-  const cell = 2;
-  const rows = height / cell;
-  const rects = [];
-  for (let row = 0; row < rows; row += 1) {
-    for (let column = 0; column < 4; column += 1) {
-      const density = row / (rows - 1);
-      const lit = ditherThreshold(column, row) < density;
-      const alpha = (0.08 + density * 0.42) * (lit ? 1 : 0.25);
-      rects.push(
-        `<rect x="${column * cell}" y="${row * cell}" width="${cell}" height="${cell}" fill="#fff" fill-opacity="${alpha.toFixed(3)}"/>`,
-      );
-    }
-  }
-  return `<pattern id="dither" width="8" height="${height}" patternUnits="userSpaceOnUse">${rects.join("")}</pattern>`;
+function ditherPattern(height, ink) {
+  return `<pattern id="dither" width="8" height="${height}" patternUnits="userSpaceOnUse">${gradientSvg({ length: height, kind: "button", direction: ink === "#ffffff" ? "down" : "up", ink })}</pattern>`;
 }
 
 function escapeXML(value) {
@@ -102,7 +89,7 @@ const DISCORD_PATH =
 function iconMarkup(kind, x, y, ink) {
   const scale = ICON_SIZE / 24;
   const open = `<g transform="translate(${x} ${y}) scale(${scale.toFixed(4)})">`;
-  if (kind === "start-trial") {
+  if (kind === "start-trial" || kind === "join-waitlist") {
     return `${open}<path d="M12 2l2.2 6.6L21 11l-6.8 2.4L12 20l-2.2-6.6L3 11l6.8-2.4z" fill="${ink}"/><path d="M19 1.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="${ink}"/></g>`;
   }
   if (kind === "self-host") {
@@ -128,7 +115,7 @@ export function renderButton(kind, mode) {
   const width = PADDING_LEFT + ICON_SIZE + ICON_GAP + labelWidth + PADDING_RIGHT;
   const iconY = (BUTTON_HEIGHT - ICON_SIZE) / 2;
   const textX = PADDING_LEFT + ICON_SIZE + ICON_GAP;
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${BUTTON_HEIGHT}" viewBox="0 0 ${width} ${BUTTON_HEIGHT}" role="img" aria-label="${escapeXML(label)}" shape-rendering="crispEdges"><defs><clipPath id="button-clip"><rect width="${width}" height="${BUTTON_HEIGHT}" rx="${BUTTON_RADIUS}"/></clipPath>${ditherPattern(BUTTON_HEIGHT)}</defs><g clip-path="url(#button-clip)"><rect width="${width}" height="${BUTTON_HEIGHT}" fill="${background}"/><rect width="${width}" height="${BUTTON_HEIGHT}" fill="url(#dither)"/></g><rect x='0.5' y='0.5' width='${width - 1}' height='${BUTTON_HEIGHT - 1}' rx='${BUTTON_RADIUS - 0.5}' fill='none' stroke='#000' stroke-opacity='0.12'/>${iconMarkup(kind, PADDING_LEFT, iconY, ink)}<text x="${textX}" y="${BUTTON_HEIGHT / 2 + 0.5}" textLength="${labelWidth}" lengthAdjust="spacingAndGlyphs" fill="${ink}" font-family="Geist,Arial,sans-serif" font-size="${FONT_SIZE}" font-weight="700" dominant-baseline="middle">${escapeXML(label)}</text></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${BUTTON_HEIGHT}" viewBox="0 0 ${width} ${BUTTON_HEIGHT}" role="img" aria-label="${escapeXML(label)}" shape-rendering="crispEdges"><defs><clipPath id="button-clip"><rect width="${width}" height="${BUTTON_HEIGHT}" rx="${BUTTON_RADIUS}"/></clipPath>${ditherPattern(BUTTON_HEIGHT, ink)}</defs><g clip-path="url(#button-clip)"><rect width="${width}" height="${BUTTON_HEIGHT}" fill="${background}"/><rect width="${width}" height="${BUTTON_HEIGHT}" fill="url(#dither)" opacity="${DITHER_BUTTON_OPACITY}"/></g><rect x='0.5' y='0.5' width='${width - 1}' height='${BUTTON_HEIGHT - 1}' rx='${BUTTON_RADIUS - 0.5}' fill='none' stroke='#000' stroke-opacity='0.12'/>${iconMarkup(kind, PADDING_LEFT, iconY, ink)}<text x="${textX}" y="${BUTTON_HEIGHT / 2 + 0.5}" textLength="${labelWidth}" lengthAdjust="spacingAndGlyphs" fill="${ink}" font-family="Geist,Arial,sans-serif" font-size="${FONT_SIZE}" font-weight="700" dominant-baseline="middle">${escapeXML(label)}</text></svg>`;
 }
 
 export async function writeButtons(outputDir) {

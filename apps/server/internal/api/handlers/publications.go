@@ -418,6 +418,10 @@ func (h *PublicationHandler) deleteRenditionTx(
 	if len(renditions) > 1 {
 		return false, huma.Error409Conflict("target_key is required when an account has multiple publication destinations")
 	}
+	before, err := h.loadPublicationRevisionResponseTx(ctx, tx, current)
+	if err != nil {
+		return false, err
+	}
 	renditionIDs := []string{renditions[0].ID}
 	if err := h.cancelPendingReplyJobsForDeletedTargetsTx(ctx, tx, publicationID, renditionIDs); err != nil {
 		return false, err
@@ -430,13 +434,14 @@ func (h *PublicationHandler) deleteRenditionTx(
 	if err != nil || count == 0 {
 		return false, err
 	}
-	return true, h.recordRenditionDeletionTx(ctx, tx, current, input.ExpectedRevision, userID)
+	return true, h.recordRenditionDeletionTx(ctx, tx, current, before, input.ExpectedRevision, userID)
 }
 
 func (h *PublicationHandler) recordRenditionDeletionTx(
 	ctx context.Context,
 	tx bun.Tx,
 	current *models.Publication,
+	before publicationRevisionSnapshot,
 	expectedRevision int,
 	userID string,
 ) error {
@@ -449,7 +454,11 @@ func (h *PublicationHandler) recordRenditionDeletionTx(
 	}
 	current.Revision = nextRevision
 	current.UpdatedAt = now
-	fields := []string{"destinations", "destination overrides", "media"}
+	after, err := h.loadPublicationRevisionResponseTx(ctx, tx, current)
+	if err != nil {
+		return err
+	}
+	fields := publicationservice.ChangedAuthoredDomains(before.authored, after.authored)
 	if err := h.syncTextPostRevisionsTx(ctx, tx, current.ID, expectedRevision, nextRevision, fields, userID, now); err != nil {
 		return err
 	}
@@ -746,38 +755,6 @@ func applyPublicationFieldUpdates(publication *models.Publication, input Publica
 	}
 }
 
-//nolint:gocyclo
-func publicationChangedDomains(input PublicationUpdateBody) []string {
-	var domains []string
-	if input.Title != nil || input.Intent != nil || input.CreationPreset != nil || input.ContentProfile != nil ||
-		input.SourceText != nil || input.SourceURL != nil || input.Goal != nil ||
-		input.Audience != nil || input.Segments != nil {
-		domains = append(domains, "content")
-	}
-	if input.Segments != nil {
-		domains = append(domains, "segments", "media")
-	}
-	if input.Renditions != nil {
-		domains = append(domains, "destinations", "destination overrides", "media")
-	}
-	if input.SocialSetID != nil {
-		domains = append(domains, "destinations")
-	}
-	if input.ScheduledAt != nil || input.ClearSchedule || input.RandomDelayMinutes != nil || input.InheritRandomDelay {
-		domains = append(domains, "schedule")
-	}
-	if input.Metadata != nil {
-		domains = append(domains, "settings")
-	}
-	if input.RepostOverride != nil {
-		domains = append(domains, "repost automation")
-	}
-	if len(domains) == 0 {
-		domains = append(domains, "draft")
-	}
-	return drafts.UniqueDomains(domains)
-}
-
 func (h *PublicationHandler) publicationRevisionConflict(
 	ctx context.Context,
 	db bun.IDB,
@@ -877,7 +854,7 @@ func (h *PublicationHandler) replaceAllPublicationRenditions(
 	if segmentInputs == nil {
 		segmentInputs = loadedInputs
 	}
-	return h.insertRenditions(ctx, tx, publication, segments, segmentInputs, renditionInputs, nil, accounts)
+	return h.insertRenditions(ctx, tx, publication, segments, segmentInputs, renditionInputs, nil, accounts, nil)
 }
 
 //nolint:gocyclo // The transaction preserves revision checks and both replacement and upsert semantics across renditions.
@@ -955,7 +932,16 @@ func (h *PublicationHandler) upsertRenditionsTx(
 	if publication.Revision != expectedRevision {
 		return PublicationResponse{}, h.publicationRevisionConflict(ctx, tx, publication, expectedRevision)
 	}
+	response, err := h.loadPublicationRevisionResponseTx(ctx, tx, publication)
+	if err != nil {
+		return PublicationResponse{}, err
+	}
+	before := response
 	if len(renditions) > 0 {
+		positions, err := renditionUpsertPositionsTx(ctx, tx, publication.ID, renditions, accountMap)
+		if err != nil {
+			return PublicationResponse{}, err
+		}
 		targets := make(map[renditionservice.TargetIdentity]struct{}, len(renditions))
 		for _, input := range renditions {
 			account := accountMap[input.SocialAccountID]
@@ -979,7 +965,7 @@ func (h *PublicationHandler) upsertRenditionsTx(
 		if err != nil {
 			return PublicationResponse{}, err
 		}
-		if err := h.insertRenditions(ctx, tx, publication, segments, segmentInputs, renditions, nil, accountMap); err != nil {
+		if err := h.insertRenditions(ctx, tx, publication, segments, segmentInputs, renditions, nil, accountMap, positions); err != nil {
 			return PublicationResponse{}, err
 		}
 		now := time.Now().UTC()
@@ -995,7 +981,11 @@ func (h *PublicationHandler) upsertRenditionsTx(
 		}
 		publication.Revision = nextRevision
 		publication.UpdatedAt = now
-		changedDomains := []string{"destinations", "destination overrides", "media"}
+		response, err = h.loadPublicationRevisionResponseTx(ctx, tx, publication)
+		if err != nil {
+			return PublicationResponse{}, err
+		}
+		changedDomains := publicationservice.ChangedAuthoredDomains(before.authored, response.authored)
 		if err := h.syncTextPostRevisionsTx(ctx, tx, publication.ID, expectedRevision, nextRevision, changedDomains, userID, now); err != nil {
 			return PublicationResponse{}, err
 		}
@@ -1003,14 +993,7 @@ func (h *PublicationHandler) upsertRenditionsTx(
 			return PublicationResponse{}, err
 		}
 	}
-	responses, err := h.loadPublicationResponsesWithDB(ctx, tx, []models.Publication{*publication})
-	if err != nil {
-		return PublicationResponse{}, err
-	}
-	if len(responses) != 1 {
-		return PublicationResponse{}, errors.New("failed to load updated publication")
-	}
-	return responses[0], nil
+	return response.response, nil
 }
 
 func (h *PublicationHandler) validatePublication(api huma.API) {
@@ -1814,6 +1797,7 @@ func (h *PublicationHandler) insertRenditions(
 	inputs []RenditionInput,
 	defaultMedia []PublicationMediaInput,
 	accounts map[string]models.SocialAccount,
+	positions map[renditionservice.TargetIdentity]int,
 ) error {
 	now := time.Now().UTC()
 	if len(canonicalSegments) == 0 {
@@ -1836,7 +1820,7 @@ func (h *PublicationHandler) insertRenditions(
 		}}
 	}
 	seenTargets := make(map[renditionservice.TargetIdentity]struct{}, len(inputs))
-	for _, input := range inputs {
+	for position, input := range inputs {
 		account, ok := accounts[input.SocialAccountID]
 		if !ok {
 			return huma.Error400BadRequest("one or more social accounts are invalid, disconnected, or outside this workspace")
@@ -1850,6 +1834,9 @@ func (h *PublicationHandler) insertRenditions(
 			return huma.Error400BadRequest("each social account target may appear only once")
 		}
 		seenTargets[identity] = struct{}{}
+		if assigned, exists := positions[identity]; exists {
+			position = assigned
+		}
 		resolved := h.resolveRenditionCapability(ctx, tx, publication, account, input, canonicalInputs)
 		// Unlocked formats follow the current source shape. Requested output profiles
 		// are preserved by the resolver, including when their source becomes invalid.
@@ -1872,6 +1859,7 @@ func (h *PublicationHandler) insertRenditions(
 		rendition := &models.Rendition{
 			ID:              uuid.New().String(),
 			PublicationID:   publication.ID,
+			Position:        position,
 			SocialAccountID: input.SocialAccountID,
 			TargetKey:       targetKey,
 			Platform:        account.Platform,
@@ -1924,6 +1912,11 @@ func (h *PublicationHandler) insertRenditions(
 				}
 			}
 		}
+		for position, segment := range segmentInputs {
+			if len(segment.SourceOverrides) > 0 && (position != 0 || resolved.SegmentStrategy != "join") {
+				return huma.Error400BadRequest("source overrides belong to the first joined destination output")
+			}
+		}
 		if err := h.insertRenditionSegments(ctx, tx, rendition, canonicalSegments, canonicalInputs, segmentInputs); err != nil {
 			return err
 		}
@@ -1954,6 +1947,13 @@ func (h *PublicationHandler) insertRenditionSegments(
 			canonicalSegments,
 			canonicalInputs,
 		)
+		if len(input.SourceOverrides) > 0 {
+			var err error
+			input, err = normalizeJoinedSourceOverrides(input, canonicalSegments, canonicalInputs)
+			if err != nil {
+				return err
+			}
+		}
 		bodyOverride, effectiveBody := renditionTextOverride(input.BodyOverride, input.Body, canonical.Body)
 		titleOverride, effectiveTitle := renditionTextOverride(input.TitleOverride, input.Title, canonical.Title)
 		descriptionOverride, effectiveDescription := renditionTextOverride(input.DescriptionOverride, input.Description, canonical.Description)
@@ -1962,16 +1962,23 @@ func (h *PublicationHandler) insertRenditionSegments(
 		_ = json.Unmarshal([]byte(canonical.SettingsJSON), &sourceSettings)
 		// Drafts keep incomplete poll choices. Validation and delivery reject them.
 		effectiveBody, effectiveSettings, _ := publicationpoll.Resolve(sourceSettings, rendition.SocialAccountID, rendition.Platform, rendition.OutputProfile, effectiveBody, input.Settings)
-		if len(inputs) == 1 && len(canonicalSegments) > 1 {
+		if (len(inputs) == 1 || len(input.SourceOverrides) > 0) && len(canonicalSegments) > 1 {
 			baseBody := joinedPublicationBody(canonicalSegments)
 			bodyOverride, baseBody = renditionTextOverride(input.BodyOverride, input.Body, baseBody)
 			effectiveBody, effectiveSettings, _ = publicationpoll.ResolveJoined(publicationPollSources(canonicalSegments), rendition.SocialAccountID, rendition.Platform, rendition.OutputProfile, baseBody, input.Settings)
 		}
 
+		if position == 0 && len(input.SourceOverrides) > 0 {
+			rendition.Body = effectiveBody
+			if _, err := tx.NewUpdate().Model(rendition).Column("body").Where("id = ?", rendition.ID).Exec(ctx); err != nil {
+				return err
+			}
+		}
 		segment := &models.RenditionSegment{
 			ID:                   uuid.New().String(),
 			RenditionID:          rendition.ID,
 			PublicationSegmentID: canonical.ID,
+			SourceOverridesJSON:  mustJSON(input.SourceOverrides),
 			Position:             position,
 			Body:                 effectiveBody,
 			Title:                effectiveTitle,
@@ -1999,6 +2006,9 @@ func (h *PublicationHandler) insertRenditionSegments(
 		canonicalMedia := []PublicationMediaInput{}
 		if position < len(canonicalInputs) {
 			canonicalMedia = canonicalInputs[position].Media
+		}
+		if len(input.SourceOverrides) > 0 {
+			canonicalMedia = input.Media
 		}
 		mediaInherited := input.MediaInherited == nil && (len(mediaInputs) == 0 || publicationMediaInputsEqual(mediaInputs, canonicalMedia))
 		if input.MediaInherited != nil {
@@ -2054,7 +2064,7 @@ func canonicalPublicationSegment(
 	inputs []PublicationSegmentInput,
 ) models.PublicationSegment {
 	canonical := models.PublicationSegment{}
-	if position < len(segments) {
+	if position >= 0 && position < len(segments) {
 		canonical = segments[position]
 	}
 	if requestedID == "" {
@@ -2433,6 +2443,7 @@ func (h *PublicationHandler) loadRenditionSegmentResponsesWithDB(
 		out = append(out, RenditionSegmentResponse{
 			ID:                   segment.ID,
 			PublicationSegmentID: segment.PublicationSegmentID,
+			SourceOverrides:      readRenditionSourceOverrides(segment.SourceOverridesJSON),
 			Position:             segment.Position,
 			Body:                 segment.Body,
 			Title:                segment.Title,
@@ -3619,7 +3630,7 @@ func (h *PublicationHandler) loadRenditionActionOutcomes(
 	var renditions []models.Rendition
 	if err := db.NewSelect().Model(&renditions).
 		Where("publication_id = ?", publicationID).
-		Order("created_at ASC", "id ASC").
+		Order("position ASC", "id ASC").
 		Scan(ctx); err != nil {
 		return nil, err
 	}
@@ -3856,7 +3867,7 @@ func (h *PublicationHandler) replacePublicationJobsTx(
 		var renditions []models.Rendition
 		if err := tx.NewSelect().Model(&renditions).
 			Where("publication_id = ?", publicationID).
-			Order("created_at ASC").Scan(ctx); err != nil {
+			Order("position ASC", "id ASC").Scan(ctx); err != nil {
 			return "", err
 		}
 		hasOverride := false
@@ -4373,6 +4384,11 @@ func allPublicationMediaIDs(
 			out = append(out, item.MediaID)
 		}
 		for _, segment := range rendition.Segments {
+			for _, source := range segment.SourceOverrides {
+				for _, item := range source.Media {
+					out = append(out, item.MediaID)
+				}
+			}
 			for _, item := range segment.Media {
 				out = append(out, item.MediaID)
 			}

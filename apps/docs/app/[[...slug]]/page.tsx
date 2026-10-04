@@ -5,7 +5,12 @@ import { source, documentationIcon } from "@/lib/source";
 import { openapi } from "@/lib/openapi";
 import { operationDocument } from "@/lib/api-document";
 import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/page";
-import { MarkdownCopyButton, ViewOptionsPopover } from "fumadocs-ui/layouts/docs/page";
+import {
+  DocumentationMarkdownCopyButton as MarkdownCopyButton,
+  DocumentationPre,
+  DocumentationHeading,
+} from "@/components/documentation-copy";
+import { PageOptions } from "@/components/page-options";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import { notFound } from "next/navigation";
 import type { Metadata } from "next";
@@ -58,13 +63,13 @@ export default async function Page({ params }: Props) {
             </MarkdownCopyButton>
           )}
           {!page.data._openapi && (
-            <ViewOptionsPopover
+            <PageOptions
               aria-label="Open page options"
               markdownUrl={`/${page.path.replace(/\.mdx?$/, ".md")}`}
               githubUrl={`https://github.com/getopenpost/openpost/edit/main/apps/docs/content/docs/${page.path}`}
             >
               Ask AI
-            </ViewOptionsPopover>
+            </PageOptions>
           )}
         </div>
       </div>
@@ -73,6 +78,13 @@ export default async function Page({ params }: Props) {
         <MDX
           components={{
             ...defaultMdxComponents,
+            pre: DocumentationPre,
+            h1: (props) => <DocumentationHeading {...props} as="h1" />,
+            h2: (props) => <DocumentationHeading {...props} as="h2" />,
+            h3: (props) => <DocumentationHeading {...props} as="h3" />,
+            h4: (props) => <DocumentationHeading {...props} as="h4" />,
+            h5: (props) => <DocumentationHeading {...props} as="h5" />,
+            h6: (props) => <DocumentationHeading {...props} as="h6" />,
             OpenAPIPage: async (props: OpenAPIPageProps) => {
               const schema = await openapi.getSchema("openpost");
               return (

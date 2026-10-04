@@ -1,7 +1,7 @@
 <script lang="ts">
 	import PublicationViewSwitch from '$lib/components/publication-view-switch.svelte';
 	import CopyButton from '$lib/components/copy-button.svelte';
-	import { goto, replaceState } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { ThemeIcon, ProtectedIcon } from '$lib/themes/icons';
 	import type { ThemeIconRole } from '$lib/themes';
 	import type { ProtectedIconRole } from '$lib/themes/icons';
@@ -13,6 +13,7 @@
 	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import { auth, type AuthIdentityToken } from '$lib/stores/auth';
 	import { ui } from '$lib/stores/ui.svelte';
+	import { publicationActivityOccurrence } from '$lib/publication-calendar';
 	import { publicationView, isPublicationListTab } from '$lib/stores/publication-view.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -103,11 +104,9 @@
 		publicationView.rememberListTab(value);
 		if (page.route.id !== '/publications') return;
 		const url = new URL(page.url);
-		const tab = url.searchParams.get('tab');
-		if (tab === value || (tab === null && value === 'scheduled')) return;
 		if (value === 'scheduled') url.searchParams.delete('tab');
 		else url.searchParams.set('tab', value);
-		replaceState(url, page.state);
+		void goto(url, { replaceState: true, noScroll: true, keepFocus: true });
 	}
 	const publicationPageSize = 40;
 	const jobPageSize = 50;
@@ -799,7 +798,7 @@
 							<div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
 								<span class={['font-medium', statusClass(post)]}>{statusLabel(post)}</span>
 								<span class="text-muted-foreground">
-									{formatDateTime(post.actual_run_at || post.scheduled_at || post.created_at)}
+									{formatDateTime(publicationActivityOccurrence(post))}
 								</span>
 								{#if post.isThread}
 									<span class="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
@@ -936,13 +935,14 @@
 <Tabs value={activeTab} onValueChange={selectActivityTab} class="min-w-0 flex-1">
 	<PageContainer
 		title={m.activity_title()}
-		description={m.activity_description()}
+		headerActionLayout="inline"
 		themeIconRole="publications"
 		loading={initialLoading}
 		loadingLayout="list"
 		loadingMessage={offlinePaused ? m.app_offline_title() : m.common_loading()}
 	>
 		{#snippet navigation()}
+			<div class="mb-3"><PublicationViewSwitch view="list" /></div>
 			<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
 				<TabsList
 					class="no-scrollbar w-full justify-start overflow-x-auto overflow-y-hidden sm:w-auto"
@@ -978,8 +978,6 @@
 			</div>
 		{/snippet}
 		{#snippet actions()}
-			<PublicationViewSwitch view="list" />
-
 			<Button variant="focal" size="sm" onclick={() => goto(resolveAppPath('/'))}>
 				<ThemeIcon role="add" class="mr-1.5 size-3.5" />
 				{m.activity_new_post()}

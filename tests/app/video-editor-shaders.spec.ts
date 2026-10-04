@@ -38,6 +38,12 @@ async function createShaderProject(
   resolution?: { width: number; height: number },
 ) {
   await page.addInitScript(() => {
+    if (!("showOpenFilePicker" in window)) {
+      Object.defineProperty(window, "showOpenFilePicker", {
+        configurable: true,
+        value: async () => [],
+      });
+    }
     Object.defineProperty(window, "showDirectoryPicker", {
       configurable: true,
       value: async () => {
@@ -125,7 +131,10 @@ test("shader clips preserve edits, seek and export an MP4", async ({ page }) => 
   );
   await speed.press("ArrowRight");
   await page.keyboard.press("ControlOrMeta+s");
-  await expect(page.getByRole("banner").getByRole("status")).toHaveAttribute("data-state", "saved");
+  await expect(page.getByRole("banner").locator('[role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+  );
   const projectURL = page.url();
   await page.goto("/video-editor");
   await page.goto(projectURL);
@@ -136,7 +145,10 @@ test("shader clips preserve edits, seek and export an MP4", async ({ page }) => 
   await page.getByRole("menuitem", { name: "Backgrounds", exact: true }).click();
   await expect(canvas).toBeVisible();
   await page.locator("header").getByRole("button", { name: "More actions" }).click();
-  await page.getByRole("menuitem", { name: "Export MP4", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Export", exact: true }).click();
+  await page.getByRole("dialog").getByText("WebM", { exact: true }).click();
+  await page.getByRole("option", { name: "MP4", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Render now", exact: true }).click();
   await expect(page.getByText("Saved Shader proof.mp4.", { exact: true })).toBeVisible({
     timeout: 60_000,
   });
@@ -283,7 +295,10 @@ test("Paper backgrounds and chained shader effects survive reopening and export"
     .toBeGreaterThan(100);
   await page.screenshot({ path: test.info().outputPath("paper-effect-controls.png") });
   await page.keyboard.press("ControlOrMeta+s");
-  await expect(page.getByRole("banner").getByRole("status")).toHaveAttribute("data-state", "saved");
+  await expect(page.getByRole("banner").locator('[role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+  );
   const projectURL = page.url();
   await page.goto("/video-editor");
   await page.goto(projectURL);
@@ -300,7 +315,10 @@ test("Paper backgrounds and chained shader effects survive reopening and export"
     "Dark areas",
   );
   await page.locator("header").getByRole("button", { name: "More actions" }).click();
-  await page.getByRole("menuitem", { name: "Export MP4", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Export", exact: true }).click();
+  await page.getByRole("dialog").getByText("WebM", { exact: true }).click();
+  await page.getByRole("option", { name: "MP4", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Render now", exact: true }).click();
   await expect(page.getByText("Saved Shader proof.mp4.", { exact: true })).toBeVisible({
     timeout: 60_000,
   });

@@ -157,7 +157,51 @@ for (const scheme of ["light", "dark"] as const) {
         .click();
       await page.getByRole("menuitem", { name: "Add at end of sequence", exact: true }).click();
       await expect(clips).toHaveCount(2);
+      for (const width of [390, 320]) {
+        await page.setViewportSize({ width, height: 844 });
+        const panels = page.getByRole("navigation", { name: "Editor panels" });
+        await panels.getByRole("button", { name: "Assets", exact: true }).click();
+        const sourceCard = page.getByRole("button", {
+          name: "Source: lisbon-tram.png",
+          exact: true,
+        });
+        if (width === 390) await sourceCard.click();
+        else {
+          await sourceCard.focus();
+          await sourceCard.press("Enter");
+        }
+        await expect(panels.getByRole("button", { name: "Program", exact: true })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
+        await expect(page.getByRole("region", { name: "Source", exact: true })).toBeVisible();
+        const close = page.getByRole("button", { name: "Close source monitor", exact: true });
+        await expect(close).toBeFocused();
+        await page.screenshot({ path: testInfo.outputPath(`source-open-${scheme}-${width}.png`) });
+        await close.click();
+      }
+      await page.setViewportSize({ width: 1280, height: 800 });
       await page.getByRole("button", { name: "Source: lisbon-tram.png", exact: true }).click();
+      const source = page.getByRole("region", { name: "Source", exact: true });
+      const position = source.getByRole("slider", { name: "Source position", exact: true });
+      const inPoint = source.getByRole("slider", { name: "Source in point", exact: true });
+      const outPoint = source.getByRole("slider", { name: "Source out point", exact: true });
+      await source.getByRole("button", { name: "Go to end", exact: true }).click();
+      await expect(position).toHaveAttribute("aria-valuenow", "89");
+      await position.focus();
+      await page.keyboard.press("Home");
+      await expect(position).toHaveAttribute("aria-valuenow", "0");
+      await inPoint.focus();
+      await page.keyboard.press("ArrowRight");
+      await expect(inPoint).toHaveAttribute("aria-valuenow", "1");
+      await page.keyboard.press("Home");
+      await expect(inPoint).toHaveAttribute("aria-valuenow", "0");
+      await outPoint.focus();
+      await page.keyboard.press("Home");
+      await expect(outPoint).toHaveAttribute("aria-valuenow", "1");
+      await page.keyboard.press("End");
+      await expect(outPoint).toHaveAttribute("aria-valuenow", "90");
+      await page.screenshot({ path: testInfo.outputPath(`source-keyboard-${scheme}.png`) });
       const append = page.getByRole("button", { name: "Add at end of sequence", exact: true });
       await expect(append).toHaveCount(1);
       await append.scrollIntoViewIfNeeded();
@@ -165,7 +209,7 @@ for (const scheme of ["light", "dark"] as const) {
       await append.click();
       await expect(clips).toHaveCount(3);
       await page.keyboard.press("ControlOrMeta+s");
-      await expect(page.getByRole("banner").getByRole("status")).toHaveAttribute(
+      await expect(page.getByRole("banner").locator('[role="status"][data-state]')).toHaveAttribute(
         "data-state",
         "saved",
       );

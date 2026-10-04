@@ -2,6 +2,14 @@ import { expect, test, type Page } from "@playwright/test";
 
 async function installLocalWorkspacePicker(page: Page): Promise<void> {
   await page.addInitScript(() => {
+    if (!("showOpenFilePicker" in window)) {
+      Object.defineProperty(window, "showOpenFilePicker", {
+        configurable: true,
+        value: async () => {
+          throw new Error("This local-project fixture does not provide file imports.");
+        },
+      });
+    }
     Object.defineProperty(window, "showDirectoryPicker", {
       configurable: true,
       value: async () => {
@@ -43,6 +51,79 @@ async function createProject(
   await expect(page).toHaveURL(/\/video-editor\/[0-9a-f-]+$/u);
   await expect(page.getByRole("tablist", { name: "Editor workspaces" })).toBeVisible();
 }
+
+test("animation application settings survive inspector tab switches without creating history", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await createProject(page, "Animation application settings");
+  await page.getByRole("button", { name: "Add layer", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Add text", exact: true }).click();
+  await page.keyboard.press("ControlOrMeta+s");
+  await expect(page.getByRole("banner").locator('[role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+  );
+  const inspector = page.locator("#video-editor-tools-panel");
+  const animation = inspector.locator('[data-edit-inspector-tab="motion"]');
+  const saveIndicator = page.getByRole("banner").locator('[role="status"][data-state]');
+  const duration = inspector.getByRole("slider", { name: "Duration", exact: true });
+  const intensity = inspector.getByRole("slider", { name: "Intensity", exact: true });
+  const stagger = inspector.getByRole("slider", { name: "Stagger frames", exact: true });
+  for (const scheme of ["light", "dark"] as const) {
+    await page.setViewportSize({ width: 1280, height: 844 });
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+    await page.evaluate((mode) => localStorage.setItem("mode-watcher-mode", mode), scheme);
+    await page.reload();
+    await page.locator("[data-timeline-item-id]").click();
+    await animation.click();
+    const originalSaveState = (await saveIndicator.getAttribute("data-state")) ?? "";
+    expect(["idle", "saved"]).toContain(originalSaveState);
+    await duration.press("End");
+    await intensity.press("Home");
+    await stagger.press("ArrowRight");
+    await stagger.press("ArrowRight");
+    await inspector.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(duration).toHaveAttribute("aria-valuenow", "3");
+    await expect(intensity).toHaveAttribute("aria-valuenow", "0");
+    await expect(stagger).toHaveAttribute("aria-valuenow", "2");
+    for (const width of [1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await animation.focus();
+      await animation.press("Home");
+      await expect(inspector.locator('[data-edit-inspector-tab="properties"]')).toBeFocused();
+      await page.keyboard.press("ArrowRight");
+      await expect(animation).toBeFocused();
+      await expect(duration).toHaveAttribute("aria-valuenow", "3");
+      await expect(intensity).toHaveAttribute("aria-valuenow", "0");
+      await expect(stagger).toHaveAttribute("aria-valuenow", "2");
+      await expect(inspector.getByRole("button", { name: "Add", exact: true })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+      await stagger.scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: testInfo.outputPath(`animation-settings-${scheme}-${width}.png`),
+      });
+    }
+    await expect(saveIndicator).toHaveAttribute("data-state", originalSaveState);
+  }
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await expect(
+    page.getByRole("banner").getByRole("button", { name: "Undo", exact: true }),
+  ).toBeDisabled();
+  await page.reload();
+  await page.locator("[data-timeline-item-id]").click();
+  await animation.click();
+  await expect(duration).toHaveAttribute("aria-valuenow", "1");
+  await expect(intensity).toHaveAttribute("aria-valuenow", "1");
+  await expect(stagger).toHaveAttribute("aria-valuenow", "0");
+  await expect(inspector.getByRole("button", { name: "Replace", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+});
 
 for (const scheme of ["light", "dark"] as const) {
   test(`Color keeps its viewer and complete wheels usable on a laptop in ${scheme}`, async ({
@@ -168,7 +249,7 @@ for (const scheme of ["light", "dark"] as const) {
       .getByRole("button", { name: "More actions", exact: true })
       .click();
     await page.getByRole("menuitem", { name: "Save", exact: true }).click();
-    await expect(page.getByRole("banner").getByRole("status")).toHaveAttribute(
+    await expect(page.getByRole("banner").locator('[role="status"][data-state]')).toHaveAttribute(
       "data-state",
       "saved",
     );
@@ -537,7 +618,7 @@ test("Color palettes explain their action and landscape workspaces retain a usab
 });
 
 for (const scheme of ["light", "dark"] as const) {
-  test(`Transcript has room to read and edit on phones in ${scheme}`, async ({
+  test(`Transcript fills the phone Assets pane and keeps its controls usable in ${scheme}`, async ({
     page,
   }, testInfo) => {
     test.setTimeout(90_000);
@@ -550,13 +631,37 @@ for (const scheme of ["light", "dark"] as const) {
       await page.getByRole("button", { name: "Assets", exact: true }).click();
       const transcript = page.getByRole("region", { name: "Transcript", exact: true });
       await expect(transcript).toBeVisible();
-      expect((await transcript.boundingBox())!.height).toBeGreaterThan(300);
+      const assetsBounds = (await page.locator("#video-editor-assets-panel").boundingBox())!;
+      const transcriptBounds = (await transcript.boundingBox())!;
+      expect(
+        Math.abs(
+          transcriptBounds.y + transcriptBounds.height - assetsBounds.y - assetsBounds.height,
+        ),
+      ).toBeLessThanOrEqual(1);
+      await expect(transcript.getByText("No captions yet.", { exact: true })).toBeInViewport({
+        ratio: 1,
+      });
       expect(
         await transcript.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
       ).toBe(true);
       await expect(page.getByRole("searchbox", { name: "Search transcript" })).toBeInViewport({
         ratio: 1,
       });
+      const search = transcript.getByRole("searchbox", { name: "Search transcript" });
+      await search.focus();
+      await page.keyboard.type("No caption fixture");
+      await expect(search).toHaveValue("No caption fixture");
+      await page.keyboard.press("Enter");
+      await expect(transcript.getByText("No matches", { exact: true })).toBeVisible();
+      await search.fill("");
+      const options = transcript.getByRole("button", { name: "Transcript options", exact: true });
+      await options.press("Enter");
+      await expect(options).toHaveAttribute("aria-expanded", "true");
+      await expect(
+        transcript.getByRole("button", { name: "Auto-scroll", exact: true }),
+      ).toBeInViewport({ ratio: 1 });
+      await options.press("Enter");
+      await expect(options).toHaveAttribute("aria-expanded", "false");
       await page.screenshot({ path: testInfo.outputPath(`transcript-${width}-${scheme}.png`) });
       await page.getByRole("button", { name: "Program", exact: true }).click();
       await expect(page.getByRole("button", { name: "Play", exact: true })).toBeInViewport({
@@ -580,7 +685,7 @@ test("Motion uses authored duration in its summary, transport, and export", asyn
     .getByRole("toolbar", { name: "Layer tools" })
     .getByRole("button", { name: "Text", exact: true })
     .click();
-  await expect(page.getByText(/320×240 · 30 fps · 0:12 · 1 clips/)).toBeVisible();
+  await expect(page.getByText(/320×240 · 30 fps · 0:12 · Clips: 1/)).toBeVisible();
   await expect(
     page.getByRole("img", { name: "00:00:00:00 / 00:00:12:00", exact: true }),
   ).toBeVisible();

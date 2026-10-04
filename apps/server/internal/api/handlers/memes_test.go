@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -258,9 +261,9 @@ func newMemeHandlerTestServer(t *testing.T, suggester memegeneration.Suggester) 
 
 func validMemePNG(t *testing.T) []byte {
 	t.Helper()
-	data, err := base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nWQAAAAASUVORK5CYII=")
-	require.NoError(t, err)
-	return data
+	var data bytes.Buffer
+	require.NoError(t, png.Encode(&data, image.NewNRGBA(image.Rect(0, 0, 1, 1))))
+	return data.Bytes()
 }
 
 func (s *memeHandlerTestServer) request(t *testing.T, method, path string, body any, token ...string) *httptest.ResponseRecorder {
@@ -369,19 +372,47 @@ func TestMemePreviewLoadsWorkspaceOverlayBytesWithoutPublicURLAndDoesNotPersist(
 func TestMemePreviewRejectsOversizedOverlayBeforeCallingProvider(t *testing.T) {
 	t.Parallel()
 
-	srv := newMemeHandlerTestServer(t, nil)
-	_, err := srv.db.NewInsert().Model(&models.MediaAttachment{
-		ID: "overlay-large", WorkspaceID: "ws-1", FilePath: "overlay-large.png",
-		MimeType: "image/png", ProcessingStatus: mediaReadyStatus,
-		Size: maxMemeOverlayBytes + 1, Width: 1, Height: 1,
-	}).Exec(t.Context())
-	require.NoError(t, err)
-	response := srv.request(t, http.MethodPost, "/api/v1/memes/preview", map[string]any{
-		"workspace_id": "ws-1", "template_id": "3hd",
-		"captions": []string{"one", "two", "three"}, "overlay_media_ids": []string{"overlay-large"},
-	})
-	require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
-	require.Empty(t, srv.provider.renderedRequests())
+	for _, testCase := range []struct {
+		name          string
+		size          int64
+		width, height int
+	}{
+		{name: "bytes", size: 10*1024*1024 + 1, width: 1, height: 1},
+		{name: "pixels", size: 100, width: 4000, height: 3250},
+		{name: "side", size: 100, width: 6001, height: 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			srv := newMemeHandlerTestServer(t, nil)
+			_, err := srv.db.NewInsert().Model(&models.MediaAttachment{
+				ID: "overlay-large", WorkspaceID: "ws-1", FilePath: "overlay-large.png",
+				MimeType: "image/png", ProcessingStatus: mediaReadyStatus,
+				Size: testCase.size, Width: testCase.width, Height: testCase.height,
+			}).Exec(t.Context())
+			require.NoError(t, err)
+			input := map[string]any{
+				"workspace_id": "ws-1", "template_id": "3hd",
+				"captions": []string{"one", "two", "three"}, "overlay_media_ids": []string{"overlay-large"},
+			}
+			response := srv.request(t, http.MethodPost, "/api/v1/memes/preview", input)
+			require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+			require.Contains(t, response.Body.String(), "at most 10 MiB, 6000 pixels per side, and 12 million pixels")
+			require.Contains(t, response.Body.String(), "Resize the image or choose a smaller one.")
+			require.Empty(t, srv.provider.renderedRequests())
+
+			data := validMemePNG(t)
+			_, err = srv.db.NewInsert().Model(&models.MediaAttachment{
+				ID: "overlay-small", WorkspaceID: "ws-1", FilePath: "overlay-small.png",
+				MimeType: "image/png", ProcessingStatus: mediaReadyStatus,
+				Size: int64(len(data)), Width: 1, Height: 1,
+			}).Exec(t.Context())
+			require.NoError(t, err)
+			srv.storage.objects["overlay-small.png"] = data
+			input["overlay_media_ids"] = []string{"overlay-small"}
+			response = srv.request(t, http.MethodPost, "/api/v1/memes/preview", input)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			require.Len(t, srv.provider.renderedRequests(), 1)
+		})
+	}
 }
 
 func TestMemeRenderImportsMediaPersistsImmutableRecipeAndAllowsRecipeRead(t *testing.T) {
@@ -458,6 +489,56 @@ func TestMemeRenderImportsMediaPersistsImmutableRecipeAndAllowsRecipeRead(t *tes
 		"workspace_id": "ws-1", "template_id": "drake", "captions": []string{"one", "two"},
 	})
 	require.Equal(t, http.StatusForbidden, forbiddenRender.Code)
+}
+
+func TestMemeRenderPreservesRequestedFilenameAndRejectsInvalidNames(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		filename string
+		format   string
+		want     string
+		status   int
+	}{
+		{name: "legacy", want: "meme-drake.png", status: http.StatusOK},
+		{name: "authored Unicode", filename: "Audit café named meme.png", want: "Audit café named meme.png", status: http.StatusOK},
+		{name: "extension inferred", filename: "Named meme", want: "Named meme.png", status: http.StatusOK},
+		{name: "JPEG canonical extension", filename: "Named meme.jpg", format: "jpeg", want: "Named meme.jpg", status: http.StatusOK},
+		{name: "JPEG noncanonical extension", filename: "Named meme.jpeg", format: "jpeg", status: http.StatusBadRequest},
+		{name: "path separator", filename: "../other.png", status: http.StatusBadRequest},
+		{name: "control character", filename: "bad\nname.png", status: http.StatusBadRequest},
+		{name: "wrong extension", filename: "named.gif", status: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newMemeHandlerTestServer(t, nil)
+			body := map[string]any{"workspace_id": "ws-1", "template_id": "drake", "captions": []string{"A", "B"}}
+			if tc.format != "" {
+				body["format"] = tc.format
+				var data bytes.Buffer
+				require.NoError(t, jpeg.Encode(&data, image.NewNRGBA(image.Rect(0, 0, 1, 1)), nil))
+				srv.provider.renderedData = data.Bytes()
+			}
+			if tc.filename != "" {
+				body["filename"] = tc.filename
+			}
+			response := srv.request(t, http.MethodPost, "/api/v1/memes/render", body)
+			require.Equal(t, tc.status, response.Code, response.Body.String())
+			if tc.status != http.StatusOK {
+				require.Empty(t, srv.provider.renderRequests, "invalid names must fail before rendering")
+				count, err := srv.db.NewSelect().Model((*models.MediaAttachment)(nil)).Count(t.Context())
+				require.NoError(t, err)
+				require.Zero(t, count)
+				return
+			}
+			var output RenderMemeOutput
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &output.Body))
+			require.Equal(t, tc.want, output.Body.Media.OriginalFilename)
+			var stored models.MediaAttachment
+			require.NoError(t, srv.db.NewSelect().Model(&stored).Where("id = ?", output.Body.Media.ID).Scan(t.Context()))
+			require.Equal(t, tc.want, stored.OriginalFilename)
+		})
+	}
 }
 
 func TestMemeRenderRollsBackImportedMediaWhenRecipeInsertFails(t *testing.T) {

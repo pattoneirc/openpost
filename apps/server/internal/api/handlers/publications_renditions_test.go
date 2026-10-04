@@ -52,6 +52,7 @@ func TestInsertRenditionsPersistsIndependentTargetsForOneAccount(t *testing.T) {
 			inputs,
 			nil,
 			map[string]models.SocialAccount{account.ID: account},
+			nil,
 		)
 	}))
 
@@ -70,6 +71,7 @@ func TestInsertRenditionsPersistsIndependentTargetsForOneAccount(t *testing.T) {
 				{SocialAccountID: account.ID, TargetKey: "pinterest:board:alpha"},
 				{SocialAccountID: account.ID, TargetKey: "pinterest:board:alpha"},
 			}, nil, map[string]models.SocialAccount{account.ID: account},
+			nil,
 		)
 	}), "each social account target may appear only once")
 
@@ -78,6 +80,7 @@ func TestInsertRenditionsPersistsIndependentTargetsForOneAccount(t *testing.T) {
 			txCtx, tx, publication, nil, nil,
 			[]RenditionInput{{SocialAccountID: account.ID, TargetKey: "telegram:chat:-100123"}},
 			nil, map[string]models.SocialAccount{account.ID: account},
+			nil,
 		)
 	}), "must belong to the selected social account provider")
 
@@ -86,6 +89,7 @@ func TestInsertRenditionsPersistsIndependentTargetsForOneAccount(t *testing.T) {
 			txCtx, tx, publication, nil, nil,
 			[]RenditionInput{{SocialAccountID: account.ID, TargetKey: "pinterest:board:alpha", Settings: map[string]interface{}{"board_id": "beta"}}},
 			nil, map[string]models.SocialAccount{account.ID: account},
+			nil,
 		)
 	}), "does not match the selected Pinterest board")
 }
@@ -297,6 +301,7 @@ func TestUpsertPublicationRenditionsPreservesOmittedRenditionsUntilExplicitDelet
 	_, err = db.NewInsert().Model(&[]models.Rendition{
 		{
 			ID:              "youtube-rendition",
+			Position:        1,
 			PublicationID:   "publication-1",
 			SocialAccountID: "youtube-account",
 			Platform:        "youtube",
@@ -343,6 +348,8 @@ func TestUpsertPublicationRenditionsPreservesOmittedRenditionsUntilExplicitDelet
 	require.NoError(t, db.NewSelect().Model(&persisted).Order("social_account_id ASC").Scan(ctx))
 	require.Len(t, persisted, 2)
 	require.Equal(t, "tiktok-account", persisted[0].SocialAccountID)
+	require.Equal(t, 0, persisted[0].Position)
+	require.Equal(t, 1, persisted[1].Position)
 	require.Equal(t, "old tiktok", persisted[0].Body)
 	require.Equal(t, "youtube-account", persisted[1].SocialAccountID)
 
@@ -369,7 +376,7 @@ func TestUpsertPublicationRenditionsPreservesOmittedRenditionsUntilExplicitDelet
 	require.Equal(t, "draft_revision_conflict", conflict.Code)
 	require.Equal(t, 1, conflict.Conflict.ExpectedRevision)
 	require.Equal(t, 2, conflict.Conflict.CurrentRevision)
-	require.Contains(t, conflict.Conflict.ChangedDomains, "destination overrides")
+	require.Equal(t, []string{"destination overrides"}, conflict.Conflict.ChangedDomains)
 
 	unconfirmedReq := httptest.NewRequestWithContext(ctx, http.MethodDelete, "/api/v1/publications/publication-1/renditions/youtube-account", nil)
 	unconfirmedReq.Header.Set("Authorization", "Bearer web-token")
@@ -382,6 +389,14 @@ func TestUpsertPublicationRenditionsPreservesOmittedRenditionsUntilExplicitDelet
 	deleteRec := httptest.NewRecorder()
 	e.ServeHTTP(deleteRec, deleteReq)
 	require.Equal(t, http.StatusOK, deleteRec.Code, deleteRec.Body.String())
+	afterDeleteConflict := httptest.NewRequestWithContext(ctx, http.MethodPut, "/api/v1/publications/publication-1/renditions", bytes.NewBufferString(`{"expected_revision":2,"renditions":[]}`))
+	afterDeleteConflict.Header.Set("Authorization", "Bearer web-token")
+	afterDeleteConflict.Header.Set("Content-Type", "application/json")
+	afterDeleteRec := httptest.NewRecorder()
+	e.ServeHTTP(afterDeleteRec, afterDeleteConflict)
+	require.Equal(t, http.StatusConflict, afterDeleteRec.Code, afterDeleteRec.Body.String())
+	require.NoError(t, json.Unmarshal(afterDeleteRec.Body.Bytes(), &conflict))
+	require.Equal(t, []string{"destination overrides", "destinations"}, conflict.Conflict.ChangedDomains)
 
 	persisted = nil
 	require.NoError(t, db.NewSelect().Model(&persisted).Order("social_account_id ASC").Scan(ctx))
@@ -514,6 +529,7 @@ func TestInsertRenditionsResolvesStaleLinkedInTextProfileAfterMediaIsAdded(t *te
 			}},
 			nil,
 			map[string]models.SocialAccount{account.ID: account},
+			nil,
 		)
 	})
 	require.NoError(t, err)
@@ -584,6 +600,7 @@ func TestPublicationMediaAltTextPersistsForCanonicalAndRenditionOverrides(t *tes
 			}},
 			nil,
 			map[string]models.SocialAccount{account.ID: account},
+			nil,
 		)
 	}))
 

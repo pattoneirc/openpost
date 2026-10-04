@@ -1,3 +1,4 @@
+import { appendReferencePath } from './reference-path';
 import { outputFields, type Reference } from './fields';
 import type { Definition, Step, Value, WorkflowData } from './api';
 import type { ThemeIconRole } from '$lib/themes';
@@ -444,6 +445,10 @@ export function exampleSource(kind: Definition['source']['kind']): WorkflowData 
 		url: 'https://example.com/update',
 		published_at: new Date().toISOString()
 	};
+	if (kind === 'publication_created') {
+		data.created_at = data.published_at;
+		delete data.published_at;
+	}
 	if (
 		kind === 'publication_created' ||
 		kind === 'rendition_published' ||
@@ -464,7 +469,7 @@ export function exampleSource(kind: Definition['source']['kind']): WorkflowData 
 export function availableReferences(
 	steps: Step[],
 	selectedID: string,
-	sourceData?: WorkflowData
+	sourceData?: WorkflowData[string]
 ): Reference[] {
 	const sources: Reference[] = (
 		sourceData === undefined
@@ -473,6 +478,7 @@ export function availableReferences(
 					'body',
 					'url',
 					'published_at',
+					'created_at',
 					'publication_id',
 					'rendition_id',
 					'id',
@@ -488,10 +494,10 @@ export function availableReferences(
 		function observe(data: object, path: string, depth: number) {
 			if (depth > 5) return;
 			for (const [key, value] of Object.entries(data).slice(0, 200)) {
-				const name = `${path}.${key}`;
+				const name = appendReferencePath(path, key);
 				sources.push({
 					value: name,
-					label: `${m.workflows_source()}: ${name.slice(7)}`
+					label: `${m.workflows_source()}: ${name.slice(6).replace(/^\./, '')}`
 				});
 				if (value && typeof value === 'object') observe(value, name, depth + 1);
 			}
@@ -512,7 +518,7 @@ export function availableReferences(
 			current = [
 				...current,
 				...fields.map(({ name, dynamic }) => ({
-					value: `${step.id}.${name}`,
+					value: appendReferencePath(step.id, name),
 					label: `${step.name}: ${name}`,
 					dynamic
 				}))

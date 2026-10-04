@@ -1,6 +1,6 @@
 {
   "name": "mobile",
-  "version": "0.2.48",
+  "version": "0.2.49",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
@@ -21,6 +21,7 @@
     "@expo/ui": "~57.0.21",
     "@noble/hashes": "^2.4.0",
     "@openpost/api-contract": "file:../../packages/api-contract",
+    "@openpost/dither": "file:../../packages/dither",
     "@openpost/query-catalog": "file:../../packages/query-catalog",
     "@openpost/video-project": "file:../../packages/video-project",
     "@react-native-community/datetimepicker": "9.1.0",
@@ -73,7 +74,8 @@
   },
   "packageManager": "bun@1.3.11",
   "patchedDependencies": {
-    "expo-modules-jsi@57.0.7": "patches/expo-modules-jsi@57.0.7.patch",
-    "expo-modules-core@57.0.15": "patches/expo-modules-core@57.0.15.patch"
+    "expo-modules-jsi@57.1.1": "patches/expo-modules-jsi@57.1.1.patch",
+    "expo-modules-core@57.0.20": "patches/expo-modules-core@57.0.20.patch",
+    "braces@3.0.3": "../../patches/braces@3.0.3.patch"
   }
 }

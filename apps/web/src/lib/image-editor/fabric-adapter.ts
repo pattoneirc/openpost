@@ -1,3 +1,5 @@
+import { renderCurvedText } from './curved-text';
+import { imageEditorTextFontFamily, loadImageEditorTextFont } from './fonts';
 import { hasEditorColorGrade } from '$lib/editor-color-grade/model';
 import { getAuthenticatedMediaURL } from '$lib/media-url';
 import type {
@@ -76,6 +78,8 @@ interface EditableFabricText extends FabricObject {
 	): { lineIndex: number; charIndex: number };
 	initDimensions(): void;
 	enterEditing(): void;
+	setSelectionStart(index: number): void;
+	setSelectionEnd(index: number): void;
 	selectAll?(): void;
 	isEditing?: boolean;
 }
@@ -434,6 +438,7 @@ export class OpenPostFabricAdapter {
 	private snapGridSize = 0;
 	private readonly staticMode: boolean;
 	private readonly renderScale: number;
+	private readonly curvedTextVersions = new WeakMap<FabricObject, number>();
 	private readonly selectionColor: string;
 	private readonly handleColor: string;
 	private onSelection: FabricAdapterOptions['onSelection'];
@@ -663,6 +668,8 @@ export class OpenPostFabricAdapter {
 					layerIsLockedIn(previous, previousLayers) !== layerIsLockedIn(layer, page.layers)
 				) {
 					this.updateObject(object, previous, layer);
+					await this.refreshCurvedText(object, layer);
+					if (sequence !== this.renderSequence) return;
 					this.refreshDecorations(layer, object);
 				}
 				this.layerSnapshots.set(layer.id, layer);
@@ -1067,20 +1074,31 @@ export class OpenPostFabricAdapter {
 		const object = this.objectByLayerID.get(id);
 		const geometry = this.layerLocalGeometry(id, point);
 		if (!object || !geometry) return null;
-		const canvas = object.toCanvasElement({
-			withoutTransform: true,
-			withoutShadow: true,
-			enableRetinaScaling: false
-		});
-		const context = canvas.getContext('2d', { willReadFrequently: true });
-		if (!context || canvas.width <= 0 || canvas.height <= 0) return null;
-		return {
-			image: context.getImageData(0, 0, canvas.width, canvas.height),
-			point: {
-				x: (geometry.point.x / geometry.width) * canvas.width,
-				y: (geometry.point.y / geometry.height) * canvas.height
+		const paint = this.page.layers.find((layer) => layer.id === id)?.paint;
+		const displaySize = { width: object.width, height: object.height };
+		try {
+			// Erase masks address authored paint pixels, independently of the layer's display size.
+			if (paint) object.set({ width: paint.source_width, height: paint.source_height });
+			const canvas = object.toCanvasElement({
+				withoutTransform: true,
+				withoutShadow: true,
+				enableRetinaScaling: false
+			});
+			const context = canvas.getContext('2d', { willReadFrequently: true });
+			if (!context || canvas.width <= 0 || canvas.height <= 0) return null;
+			return {
+				image: context.getImageData(0, 0, canvas.width, canvas.height),
+				point: {
+					x: (geometry.point.x / geometry.width) * canvas.width,
+					y: (geometry.point.y / geometry.height) * canvas.height
+				}
+			};
+		} finally {
+			if (paint) {
+				object.set(displaySize);
+				object.setCoords();
 			}
-		};
+		}
 	}
 
 	localEraseStroke(
@@ -1472,7 +1490,15 @@ export class OpenPostFabricAdapter {
 		const edit = this.activeTextInput?.target === target ? this.activeTextInput.edit : undefined;
 		if (this.activeTextInput) this.activeTextInput.edit = undefined;
 		const value = this.onTextChange(layerID, target.text, edit);
-		if (value) this.applyTextRuns(target, value);
+		if (value) {
+			this.applyTextRuns(target, value);
+			const layer = this.page.layers.find((candidate) => candidate.id === layerID);
+			if (layer?.text?.curve) {
+				void this.refreshCurvedText(target, { ...layer, text: value })
+					.then(() => this.canvas?.requestRenderAll())
+					.catch(() => this.onRenderError(layerID));
+			}
+		}
 		this.onTextSelectionChange(layerID, target.selectionStart, target.selectionEnd);
 		const layer = this.page.layers.find((candidate) => candidate.id === layerID);
 		if (layer && (layer.effects?.stroke || layer.effects?.inner_shadow)) {
@@ -1776,6 +1802,12 @@ export class OpenPostFabricAdapter {
 			});
 		}
 		if (layer.type === 'text' && layer.text) {
+			try {
+				await loadImageEditorTextFont(layer.text);
+			} catch {
+				if (layer.text.font_asset_id && (!layer.text.curve || layer.text.curve.type === 'none'))
+					this.onMissingMedia(layer.text.font_asset_id, layer.id);
+			}
 			const curve = layer.text.curve;
 			const pathData = curve
 				? createTextCurvePath(layer.transform.width, layer.transform.height, curve)
@@ -1783,7 +1815,7 @@ export class OpenPostFabricAdapter {
 			const textOptions = {
 				...options,
 				width: layer.transform.width,
-				fontFamily: layer.text.font_family,
+				fontFamily: imageEditorTextFontFamily(layer.text),
 				fontWeight: layer.text.font_weight,
 				fontStyle: layer.text.font_style,
 				underline: layer.text.underline,
@@ -1815,6 +1847,7 @@ export class OpenPostFabricAdapter {
 				object = new this.fabric.Textbox(layer.text.text, textOptions);
 			}
 			if (isEditableFabricText(object)) this.applyTextRuns(object, layer.text);
+			await this.refreshCurvedText(object, layer);
 		}
 		if (layer.type === 'shape' && layer.shape) {
 			const shapeOptions = {
@@ -1851,9 +1884,13 @@ export class OpenPostFabricAdapter {
 				...options,
 				width,
 				height,
+				strokeWidth: 0,
 				objectCaching: false
 			});
-			setFabricRenderer(object, (context: CanvasRenderingContext2D) => {
+			const paintObject = object;
+			setFabricRenderer(paintObject, (context: CanvasRenderingContext2D) => {
+				const width = Math.max(1, paintObject.width);
+				const height = Math.max(1, paintObject.height);
 				context.save();
 				context.translate(-width / 2, -height / 2);
 				context.scale(
@@ -1870,9 +1907,11 @@ export class OpenPostFabricAdapter {
 				context.strokeStyle = paint.color;
 				context.globalAlpha = paint.opacity;
 				if (paint.kind === 'fill') {
+					context.beginPath();
 					for (const span of paint.spans) {
-						context.fillRect(span.x, span.y, span.width, 1);
+						context.rect(span.x, span.y, span.width, 1);
 					}
+					context.fill();
 				} else if (paint.points.length === 1) {
 					const point = paint.points[0];
 					context.beginPath();
@@ -1962,12 +2001,52 @@ export class OpenPostFabricAdapter {
 		return object;
 	}
 
+	private async refreshCurvedText(object: FabricObject, layer: ImageEditorLayer): Promise<void> {
+		if (!layer.text?.curve || layer.text.curve.type === 'none' || !('path' in object)) return;
+		// SAFETY: curved text is created as Fabric IText by this adapter.
+		const textObject = object as InstanceType<FabricModule['IText']>;
+		const version = (this.curvedTextVersions.get(object) ?? 0) + 1;
+		this.curvedTextVersions.set(object, version);
+		const rendered = await renderCurvedText(layer.text, textObject, {
+			onMissingFont: (assetID) => this.onMissingMedia(assetID, layer.id)
+		});
+		if (this.curvedTextVersions.get(object) !== version) return;
+		Object.assign(textObject, {
+			_renderText: (context: CanvasRenderingContext2D) => {
+				context.drawImage(
+					rendered.image,
+					rendered.left,
+					rendered.top,
+					rendered.width,
+					rendered.height
+				);
+			},
+			_renderTextDecoration: () => {}
+		});
+		textObject.dirty = true;
+	}
+
 	private requiresObjectRebuild(previous: ImageEditorLayer, next: ImageEditorLayer): boolean {
 		if (previous.type !== next.type) return true;
 		if (next.type === 'shape') return previous.shape?.kind !== next.shape?.kind;
 		if (next.type === 'paint') return JSON.stringify(previous.paint) !== JSON.stringify(next.paint);
 		if (next.type === 'text') {
-			return JSON.stringify(previous.text?.curve) !== JSON.stringify(next.text?.curve);
+			return (
+				JSON.stringify(previous.text?.curve) !== JSON.stringify(next.text?.curve) ||
+				Boolean(
+					next.text?.curve &&
+					next.text.curve.type !== 'none' &&
+					(previous.transform.width !== next.transform.width ||
+						previous.transform.height !== next.transform.height)
+				) ||
+				previous.text?.font_asset_id !== next.text?.font_asset_id ||
+				Boolean(
+					next.text?.font_asset_id &&
+					(previous.text?.font_family !== next.text.font_family ||
+						previous.text?.font_weight !== next.text.font_weight ||
+						previous.text?.font_style !== next.text.font_style)
+				)
+			);
 		}
 		if (next.type !== 'image') return false;
 		return (
@@ -2027,6 +2106,11 @@ export class OpenPostFabricAdapter {
 		} else if (layer.type === 'text' && layer.text) {
 			if (!isEditableFabricText(object)) return;
 			const textObject = object;
+			const text =
+				layer.text.curve && layer.text.curve.type !== 'none'
+					? curvedTextContent(layer.text.text)
+					: layer.text.text;
+			const textChanged = textObject.text !== text;
 			textObject.set({
 				...common,
 				scaleX: 1,
@@ -2034,8 +2118,8 @@ export class OpenPostFabricAdapter {
 				left: layer.transform.x,
 				top: layer.transform.y,
 				width: layer.transform.width,
-				text: layer.text.curve ? curvedTextContent(layer.text.text) : layer.text.text,
-				fontFamily: layer.text.font_family,
+				text,
+				fontFamily: imageEditorTextFontFamily(layer.text),
 				fontWeight: layer.text.font_weight,
 				fontStyle: layer.text.font_style,
 				underline: layer.text.underline,
@@ -2051,6 +2135,17 @@ export class OpenPostFabricAdapter {
 				backgroundColor: layer.text.highlight_color
 			});
 			this.applyTextRuns(textObject, layer.text);
+			if (textChanged && textObject.isEditing && textObject.hiddenTextarea) {
+				// Fabric's model setter does not update the input that owns the next canvas edit.
+				textObject.hiddenTextarea.value = text;
+				const length = textGraphemes(text).length;
+				textObject.setSelectionStart(Math.min(textObject.selectionStart, length));
+				textObject.setSelectionEnd(Math.min(textObject.selectionEnd, length));
+				if (this.activeTextInput?.target === textObject) {
+					this.activeTextInput.edit = undefined;
+					this.activeTextInput.compositionRange = null;
+				}
+			}
 		} else if (layer.type === 'shape' && layer.shape) {
 			object.set({
 				...common,

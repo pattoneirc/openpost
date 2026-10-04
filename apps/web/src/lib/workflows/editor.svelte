@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { z } from 'zod';
+	import { stringify } from 'safe-stable-stringify';
 	import { beforeNavigate, goto } from '$app/navigation';
-	import { onMount, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 
 	import { createQuery } from '@tanstack/svelte-query';
 	import { workflowRunQueryOptions, workflowRunsQueryOptions } from '@openpost/query-catalog';
@@ -16,6 +17,7 @@
 		testNode,
 		sampleSource,
 		type Workflow,
+		type Definition,
 		type Step,
 		type Connection,
 		type WorkflowData,
@@ -38,9 +40,11 @@
 	import RunInspector from './run-inspector.svelte';
 	import NodePicker from './node-picker.svelte';
 	import DataView from './data-view.svelte';
+	import BuildInspection from './build-inspection.svelte';
 	import GraphPreview from './graph-preview.svelte';
 	import { workflowIssues } from './validation';
-	import type { Port } from './graph';
+	import { stepFields } from './fields';
+	import { connectionWouldLoop, type Port } from './graph';
 	import InlineNotice from '$lib/components/inline-notice.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
@@ -50,13 +54,15 @@
 	import { Label } from '$lib/components/ui/label';
 	import { ThemeIcon } from '$lib/themes/icons';
 	import { m } from '$lib/paraglide/messages';
+	import { readCanvasPositions, writeCanvasPositions, type CanvasPositions } from './view-storage';
 	let {
 		initial,
 		accounts,
 		connections
 	}: { initial: Workflow; accounts: SocialAccount[]; connections: Connection[] } = $props();
 
-	type InspectorInputs = WorkflowData & { source: Run['source'] };
+	type InspectorInputs = WorkflowData;
+	type ParsedSample = { value: WorkflowData[string]; error: string };
 	let record = $state.raw(untrack(() => initial));
 	let doc = $state.raw(
 		untrack(() => ({
@@ -76,12 +82,20 @@
 		saveFailed = $state(false),
 		busy = $state(false),
 		saving = $state(false);
-	let positions = $state.raw<Record<string, { x: number; y: number }>>({});
+	let positions = $state.raw<CanvasPositions>(
+		untrack(() => readCanvasPositions(initial.workspace_id, initial.id))
+	);
+	let layoutStored = $state(true);
+	$effect(() => {
+		if (workspaceCtx.currentWorkspace?.id !== initial.workspace_id) return;
+		layoutStored = writeCanvasPositions(initial.workspace_id, record.id, positions);
+	});
 	let history = $state.raw<string[]>([]),
 		future = $state.raw<string[]>([]);
 	let sample = $state(
 		untrack(() => JSON.stringify(exampleSource(initial.definition.source.kind), null, 2))
 	);
+	let sampleRejected = $state(false);
 	const sourceKind = $derived(doc.definition.source.kind);
 	$effect(() => {
 		const kind = sourceKind;
@@ -92,11 +106,27 @@
 	let selectedRun = $state('');
 	let canvas = $state<Canvas>();
 	let inspectorOrigin: HTMLElement | null = null;
-	let testInputs = $state.raw<Record<string, WorkflowData>>({});
+	let inspectorElement = $state<HTMLDivElement | null>(null);
+	let runContexts = $state.raw<Record<string, { definition: Definition; data: WorkflowData }>>({});
 	let pendingSave: Promise<void> | undefined;
 	const canEdit = $derived(workspaceCtx.currentWorkspace?.role !== 'viewer');
 	const canAdmin = $derived(workspaceCtx.currentWorkspace?.role === 'admin');
 	const dirty = $derived(JSON.stringify(doc) !== saved);
+	// Only a matching published revision identifies the live interval; drafts may differ.
+	const scheduledInterval = $derived(
+		record.revision === record.published_revision && record.definition.source.kind === 'interval'
+			? record.definition.source.interval_minutes
+			: undefined
+	);
+	const noRunsHelp = $derived(
+		!record.enabled
+			? m.workflows_no_runs_help()
+			: record.source_error
+				? m.workflows_source_error()
+				: scheduledInterval
+					? m.workflows_no_runs_schedule_help({ minutes: scheduledInterval })
+					: m.workflows_no_runs_active_help()
+	);
 	const step = $derived(findStep(doc.definition.steps ?? [], selectedID));
 	const runQuery = createQuery(() => ({
 		...workflowRunQueryOptions(workflowQueryAPI, initial.workspace_id, selectedRun),
@@ -116,28 +146,57 @@
 	const selectedResult = $derived(
 		inspectedRun?.steps?.find((result) => result.step_id === selectedID)
 	);
-	const inputData = $derived.by(() => {
-		let source: Run['source'];
+	const selectedBuildID = $derived(
+		inspectedStep?.kind === 'build_draft'
+			? z.string().catch('').parse(selectedResult?.output?.build_id)
+			: ''
+	);
+	const parsedSample = $derived.by((): ParsedSample => {
 		try {
-			source = JSON.parse(sample);
+			const value = JSON.parse(sample);
+			// Keep the decoded value; record-schema clones omit prototype-named data keys.
+			z.json().parse(value);
+			return { value, error: '' };
 		} catch {
-			source = {};
+			return { value: undefined, error: m.workflows_invalid_json() };
 		}
+	});
+	const inputData = $derived.by(() => {
 		const upstream = new Set(
 			availableReferences(doc.definition.steps ?? [], selectedID).map(
 				(reference) => reference.value.split('.')[0]
 			)
 		);
-		const priorInputs = inspectedRun?.mode === 'test' ? testInputs[inspectedRun.id] : undefined;
+		const priorInputs =
+			inspectedRun?.mode === 'test' ? runContexts[inspectedRun.id]?.data : undefined;
 		const data: InspectorInputs = {
 			...Object.fromEntries(Object.entries(priorInputs ?? {}).filter(([id]) => upstream.has(id))),
-			source: panel === 'runs' ? (inspectedRun?.source ?? source) : source
+			source: panel === 'runs' ? (inspectedRun?.source ?? parsedSample.value) : parsedSample.value
 		};
 		for (const result of inspectedRun?.steps ?? []) {
 			if (result.step_id === selectedID) break;
 			if (result.state === 'succeeded') data[result.step_id] = result.output;
 		}
 		return data;
+	});
+	const outputOutdated = $derived.by(() => {
+		if (panel === 'runs' || !selectedResult || !inspectedRun) return false;
+		const context = runContexts[inspectedRun.id];
+		if (inspectedRun.mode === 'test') {
+			// Node tests snapshot one step and omit its branches; its output proves only the supplied inputs.
+			const testedStep = findStep(inspectedRun.definition.steps ?? [], selectedID);
+			if (!step || !testedStep) return true;
+			const current = { kind: step.kind, inputs: step.inputs ?? {} };
+			const tested = { kind: testedStep.kind, inputs: testedStep.inputs ?? {} };
+			return (
+				stringify(current) !== stringify(tested) ||
+				Boolean(context && stringify(inputData) !== stringify(context.data))
+			);
+		}
+		return (
+			stringify(doc.definition) !== stringify(context?.definition ?? inspectedRun.definition) ||
+			stringify(parsedSample.value) !== stringify(context?.data.source ?? inspectedRun.source)
+		);
 	});
 	const issues = $derived(workflowIssues(doc.definition, inputData.source));
 	const references = $derived(
@@ -173,7 +232,12 @@
 		doc = next;
 	}
 	function moveNodes(next: typeof positions) {
-		if (!canEdit || JSON.stringify(next) === JSON.stringify(positions)) return;
+		if (
+			!canEdit ||
+			workspaceCtx.currentWorkspace?.id !== initial.workspace_id ||
+			JSON.stringify(next) === JSON.stringify(positions)
+		)
+			return;
 		remember(snapshot());
 		positions = next;
 	}
@@ -365,15 +429,44 @@
 				step.kind
 			)
 	);
+	async function showSampleError(message: string) {
+		sampleRejected = true;
+		error = message;
+		panel = 'test';
+		inspector = true;
+		await tick();
+		document.getElementById('workflow-sample-json')?.focus();
+	}
 	async function executeNode() {
 		if (!step) return;
+		if (parsedSample.error) return showSampleError(parsedSample.error);
+		const issue = issues.find((issue) => issue.node === step.id);
+		if (issue) {
+			const field = stepFields(step.kind, step.inputs).find((field) => field.key === issue.field);
+			const origin = document.activeElement;
+			const stepID = step.id;
+			error = field ? `${field.label}: ${issue.message}` : issue.message;
+			dataTab = 'configure';
+			await tick();
+			if (
+				inspector &&
+				panel === 'configure' &&
+				selectedID === stepID &&
+				workspaceCtx.currentWorkspace?.id === initial.workspace_id &&
+				document.activeElement === origin
+			)
+				document.getElementById(`workflow-${issue.field}`)?.focus();
+			return;
+		}
+		sampleRejected = false;
 		busy = true;
 		error = '';
 		try {
 			await save();
 			const data = inputData;
+			const definition = structuredClone($state.snapshot(doc.definition));
 			const run = await testNode(initial.workspace_id, initial.id, record.revision, step.id, data);
-			testInputs = { ...testInputs, [run.id]: data };
+			runContexts = { ...runContexts, [run.id]: { definition, data } };
 			selectedRun = run.id;
 			dataTab = 'output';
 		} catch (cause) {
@@ -383,6 +476,16 @@
 		}
 	}
 	async function action(kind: 'publish' | 'pause' | 'preview' | 'live' | 'sample') {
+		const parsed = z
+			.instanceof(Object)
+			.refine((value) => !Array.isArray(value))
+			.transform((value) => Object.fromEntries(Object.entries(value)))
+			.safeParse(parsedSample.value);
+		if (kind === 'preview' || kind === 'live') {
+			if (parsedSample.error) return showSampleError(parsedSample.error);
+			if (!parsed.success) return showSampleError(m.workflows_sample_object());
+			sampleRejected = false;
+		}
 		busy = true;
 		error = '';
 		try {
@@ -401,9 +504,8 @@
 				const items = await sampleSource(initial.workspace_id, doc.definition.source);
 				if (items?.length) sample = JSON.stringify(items[0], null, 2);
 				else error = m.workflows_no_source_items();
-			} else {
-				const parsed = z.record(z.string(), z.json()).safeParse(JSON.parse(sample));
-				if (!parsed.success) throw new Error(m.workflows_sample_object());
+			} else if (parsed.success) {
+				const definition = structuredClone($state.snapshot(doc.definition));
 				const run = await startRun(
 					initial.workspace_id,
 					initial.id,
@@ -411,6 +513,7 @@
 					kind,
 					parsed.data
 				);
+				runContexts = { ...runContexts, [run.id]: { definition, data: { source: parsed.data } } };
 				selectedRun = run.id;
 				inspector = false;
 				panel = 'runs';
@@ -552,13 +655,21 @@
 								onclick={() => (selectedRun = run.id)}
 								><GraphPreview definition={run.definition} {run} /><span
 									class="mt-2 block text-sm font-medium">{runStateLabel(run.state)}</span
+								><span class="mt-1 block text-xs text-muted-foreground"
+									>{run.mode === 'preview'
+										? m.workflows_preview()
+										: run.mode === 'test'
+											? m.workflows_test_node()
+											: m.workflows_live()}</span
+								><span class="block text-xs text-muted-foreground"
+									>{m.workflows_run_revision({ revision: run.workflow_revision })}</span
 								><span class="block text-xs text-muted-foreground"
 									>{new Date(run.created_at).toLocaleString()}</span
 								></button
 							>{/each}{#if !runsQuery.data?.length}<p
 								class="text-sm leading-6 text-muted-foreground"
 							>
-								{m.workflows_no_runs_help()}
+								{noRunsHelp}
 							</p>{/if}
 					</aside>
 					<div class="min-h-0 overflow-auto p-4">
@@ -566,19 +677,20 @@
 								>{m.workflows_runs()}</Button
 							>
 							<div class="h-60 overflow-hidden rounded-lg border">
-								{#if inspectedRun}<Canvas
-										definition={inspectedRun.definition}
+								<!-- Keep the immutable run alive while its canvas is torn down after query selection changes. -->
+								{#each inspectedRun ? [inspectedRun] : [] as run (run.id)}<Canvas
+										definition={run.definition}
 										{selectedID}
-										run={inspectedRun}
+										{run}
 										readonly
 										onselect={(id) => {
 											selectedID = id;
 											inspector = true;
 										}}
-									/>{/if}
+									/>{/each}
 							</div>
 							<div class="mt-4">
-								<RunInspector workspaceID={initial.workspace_id} runID={selectedRun} />
+								<RunInspector workspaceID={initial.workspace_id} runID={selectedRun} {accounts} />
 							</div>{/if}
 					</div>
 				</div>
@@ -593,6 +705,7 @@
 					{issues}
 					{selectedID}
 					run={inspectedRun}
+					onselection={(id) => (selectedID = id)}
 					readonly={!canEdit}
 					onselect={(id) => {
 						selectedID = id;
@@ -607,9 +720,9 @@
 						inspector = false;
 					}}
 					onconnect={(source, target, port) => {
-						if (source === target || target === 'source') return;
+						if (target === 'source' || connectionWouldLoop(doc.definition, source, target)) return;
 						const moving = findStep(doc.definition.steps ?? [], target);
-						if (!moving || findStep([moving], source)) return;
+						if (!moving) return;
 						change((next) => {
 							let moved: Step | undefined;
 							editSteps(next.definition.steps ?? [], target, (step, siblings, index) => {
@@ -634,6 +747,13 @@
 					<Button variant="outline" size="sm" onclick={() => canvas?.organize()}
 						><ThemeIcon role="repeat" class="size-4" />{m.workflows_organize()}</Button
 					>
+					{#if Object.keys(positions).length}<span
+							class="max-w-sm rounded bg-background/90 px-2 py-1 text-xs text-muted-foreground"
+							role="status"
+							>{layoutStored
+								? m.version_saved_in_browser()
+								: m.workflows_layout_session_only()}</span
+						>{/if}
 					{#if issues.length}<Button
 							variant="outline"
 							size="sm"
@@ -699,13 +819,22 @@
 			/>{/if}
 		<Dialog.Root bind:open={inspector}>
 			<Dialog.Content
+				bind:ref={inspectorElement}
 				data-workflow-inspector
 				showCloseButton={false}
 				class="top-auto bottom-0 left-0 flex h-[calc(100dvh-0.75rem)] max-h-none w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-t-xl rounded-b-none p-0 sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:h-[min(900px,calc(100dvh-3rem))] sm:w-[calc(100vw-3rem)] sm:max-w-[1600px] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl"
-				onOpenAutoFocus={() => {
+				onOpenAutoFocus={(event) => {
+					// A delayed initial focus can interrupt typing in a field the user already chose.
+					event.preventDefault();
 					dataTab = panel === 'runs' ? 'output' : 'configure';
+					if (inspectorElement?.contains(document.activeElement)) return;
 					inspectorOrigin =
 						document.activeElement instanceof HTMLElement ? document.activeElement : null;
+					inspectorElement
+						?.querySelector<HTMLElement>(
+							'input:not([disabled]), textarea:not([disabled]), button:not([disabled]), [contenteditable="true"]'
+						)
+						?.focus();
 				}}
 				onCloseAutoFocus={(event) => {
 					event.preventDefault();
@@ -762,7 +891,7 @@
 						onclick={() => (inspector = false)}><ThemeIcon role="close" class="size-4" /></Button
 					>
 				</header>
-				{#if error}<div class="border-b p-3">
+				{#if error}<div id="workflow-inspector-error" class="border-b p-3">
 						<InlineNotice tone="error" message={error} />
 					</div>{/if}
 				<div class="flex border-b p-1 lg:hidden">
@@ -803,6 +932,12 @@
 									id="workflow-sample-json"
 									rows={14}
 									bind:value={sample}
+									aria-invalid={Boolean(parsedSample.error) || sampleRejected}
+									aria-describedby={sampleRejected ? 'workflow-inspector-error' : undefined}
+									oninput={() => {
+										error = '';
+										sampleRejected = false;
+									}}
 								/>{#if doc.definition.source.kind !== 'manual'}<Button
 										variant="outline"
 										disabled={busy}
@@ -875,6 +1010,13 @@
 					>
 						<DataView
 							label={m.workflows_output()}
+							caption={selectedResult && inspectedRun
+								? m.workflows_run_revision({ revision: inspectedRun.workflow_revision })
+								: ''}
+							notice={outputOutdated ? m.workflows_output_outdated() : ''}
+							empty={inspectedStep?.kind === 'wait' && !selectedResult
+								? m.workflows_no_preview_output()
+								: m.workflows_no_output()}
 							value={selectedID === 'source'
 								? inputData.source
 								: selectedResult?.state === 'running'
@@ -882,6 +1024,7 @@
 									: selectedResult?.output}
 							status={selectedResult ? runStateLabel(selectedResult.state) : ''}
 							error={selectedResult?.error ?? ''}
+							actions={selectedBuildID ? inspectBuildAction : undefined}
 						/>
 					</div>
 				</div>
@@ -889,3 +1032,10 @@
 		</Dialog.Root>
 	</main>
 </div>
+
+{#snippet inspectBuildAction()}
+	{#key `${initial.workspace_id}:${selectedBuildID}`}<BuildInspection
+			workspaceID={initial.workspace_id}
+			buildID={selectedBuildID}
+		/>{/key}
+{/snippet}

@@ -1,22 +1,61 @@
 import { test, expect } from "@playwright/test";
 
-test("page options provide working document and assistant links", async ({ page }) => {
-  await page.goto("/docs/mcp/cursor");
-  const trigger = page.getByRole("button", { name: "Open page options" });
-  await trigger.click();
-  const chatGPT = page.getByRole("link", { name: "Open in ChatGPT" });
-  const href = new URL((await chatGPT.getAttribute("href"))!);
-  expect(href.origin).toBe("https://chatgpt.com");
-  expect(href.searchParams.get("prompt")).toContain("/mcp/cursor");
-  await expect(page.getByRole("link", { name: "Open in Claude" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open in Cursor" })).toBeVisible();
-  const markdown = page.getByRole("link", { name: "View as Markdown" });
-  const response = await page.request.get((await markdown.getAttribute("href"))!);
-  expect(response.ok()).toBe(true);
-  expect(await response.text()).toContain("# Connect Cursor");
-  await page.keyboard.press("Escape");
-  await expect(chatGPT).not.toBeVisible();
-  await expect(trigger).toBeFocused();
+test("page options provide working document and assistant links", async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  for (const width of [1280, 390, 320]) {
+    for (const scheme of ["light", "dark"] as const) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.emulateMedia({ colorScheme: scheme });
+      for (const [route, title] of [
+        ["/docs/mcp/coding-assistants", "Coding assistants"],
+        ["/docs/video-editor/quick-cut-and-recorder", "Quick Cut and Recorder"],
+      ]) {
+        await page.goto(route);
+        const trigger = page.getByRole("button", { name: "Open page options" });
+        await trigger.focus();
+        await page.keyboard.press("Enter");
+        for (const [name, origin, parameter] of [
+          ["Scira AI", "https://scira.ai", "q"],
+          ["ChatGPT", "https://chatgpt.com", "prompt"],
+          ["Claude", "https://claude.ai", "q"],
+          ["Cursor", "https://cursor.com", "text"],
+        ]) {
+          const link = page.getByRole("link", {
+            name: new RegExp(`Open in ${name}$`),
+          });
+          await expect(link).toBeVisible();
+          const href = new URL((await link.getAttribute("href"))!);
+          expect(href.origin).toBe(origin);
+          expect(href.searchParams.get(parameter)).toContain(
+            `${new URL(page.url()).origin}${route}`,
+          );
+        }
+        const document = await page.request.get(route);
+        expect(document.ok()).toBe(true);
+        expect(await document.text()).toContain(title);
+        const markdown = page.getByRole("link", { name: "View as Markdown" });
+        const response = await page.request.get((await markdown.getAttribute("href"))!);
+        expect(response.ok()).toBe(true);
+        expect(new URL(response.url()).pathname).toBe(`${route}.md`);
+        expect(await response.text()).toContain(`# ${title}`);
+        if (route.includes("quick-cut")) {
+          await page.screenshot({
+            path: testInfo.outputPath(`options-${width}-${scheme}.png`),
+          });
+        }
+        await page.keyboard.press("Escape");
+        await expect(page.getByRole("link", { name: "Open in ChatGPT" })).not.toBeVisible();
+        await expect(trigger).toBeFocused();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(
+          false,
+        );
+      }
+    }
+  }
+  expect(errors).toEqual([]);
 });
 
 for (const width of [320, 390]) {
@@ -48,6 +87,7 @@ test("top navigation keeps the requested section order and active state", async 
     "Guides",
     "Self-hosting",
     "AI assistants",
+    "Workflows",
     "Automate",
     "Video Editor",
     "Image Editor",
@@ -65,6 +105,7 @@ test("top navigation keeps the requested section order and active state", async 
     ["/", "Guides", "OpenPost documentation"],
     ["/self-hosting", "Self-hosting", "Self-host OpenPost"],
     ["/mcp", "AI assistants", "AI assistants"],
+    ["/workflows", "Workflows", "Workflows"],
     ["/automate", "Automate", "Automate"],
     ["/video-editor", "Video Editor", "Video Editor"],
     ["/image-editor", "Image Editor", "Image Editor"],
@@ -87,6 +128,7 @@ test("search filters keep guides, automation, and API reference separate", async
     "Guides",
     "Self-hosting",
     "AI assistants",
+    "Workflows",
     "Automate",
     "Video Editor",
     "Image Editor",
@@ -145,24 +187,22 @@ test("moved Markdown guides keep their agent-readable routes", async ({ request 
   }
 });
 
-test("AI client picker opens every guide and renders its logo", async ({ page }) => {
+test("AI client links open the matching setup heading", async ({ page }) => {
   await page.goto("/docs/mcp");
-  const picker = page.locator(".mcp-clients");
-  await expect(picker.getByRole("link")).toHaveCount(16);
-  const clients = await picker
-    .getByRole("link")
+  const clients = await page
+    .locator(
+      '#nd-page a[href^="/docs/mcp/chat-assistants#"], #nd-page a[href^="/docs/mcp/coding-assistants#"]',
+    )
     .evaluateAll((links) =>
       links.map((link) => ({ href: link.getAttribute("href")!, name: link.textContent!.trim() })),
     );
+  expect(clients.length).toBeGreaterThan(0);
   for (const client of clients) {
     await page.goto("/docs/mcp");
-    const link = picker.getByRole("link", { name: client.name, exact: true });
-    await expect
-      .poll(() => link.locator("img").evaluate((image: HTMLImageElement) => image.naturalWidth))
-      .toBeGreaterThan(0);
-    await link.click();
+    await page.locator(`#nd-page a[href="${client.href}"]`).click();
     await expect(page).toHaveURL(new RegExp(`${client.href}$`));
-    await expect(page.getByRole("heading", { level: 1 })).toContainText("Connect");
+    const anchor = new URL(client.href, "https://openpo.st").hash;
+    await expect(page.locator(anchor)).toBeVisible();
     await expect(page.locator("#nd-page")).toContainText("OpenPost");
   }
 });
@@ -170,11 +210,16 @@ test("AI client picker opens every guide and renders its logo", async ({ page })
 test("mobile anchor links leave the heading below sticky navigation", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/docs/mcp");
-  await page.locator("#choose-a-setup").getByRole("link", { name: "Choose a setup" }).click();
-  await expect(page).toHaveURL(/#choose-a-setup$/);
+  await page
+    .locator("#choose-your-client")
+    .getByRole("link", { name: "Choose your client" })
+    .click();
+  await expect(page).toHaveURL(/#choose-your-client$/);
   await expect
     .poll(() =>
-      page.locator("#choose-a-setup").evaluate((heading) => heading.getBoundingClientRect().top),
+      page
+        .locator("#choose-your-client")
+        .evaluate((heading) => heading.getBoundingClientRect().top),
     )
     .toBeGreaterThanOrEqual(144);
 });
@@ -198,13 +243,11 @@ const socialNetworks = [
   "pinterest",
 ];
 
-test("social integration directory opens a separate illustrated guide for every network", async ({
-  page,
-}) => {
+test("social integration directory opens each network setup guide", async ({ page }) => {
   await page.goto("/docs/self-hosting/integrations");
   await expect(page.getByRole("link", { name: "Image credits" })).toHaveCount(0);
   await expect(page.locator("main")).not.toContainText("images from Postiz");
-  const directory = page.locator(".provider-directory");
+  const directory = page.locator("#nd-page table").first();
   await expect(directory.getByRole("link")).toHaveCount(socialNetworks.length);
   for (const network of socialNetworks) {
     await page.goto("/docs/self-hosting/integrations");
@@ -214,27 +257,12 @@ test("social integration directory opens a separate illustrated guide for every 
     await expect
       .poll(() => icon.evaluate((image: HTMLImageElement) => image.naturalWidth))
       .toBeGreaterThan(0);
-    await expect(page.locator(".setup-screenshot").first()).toBeAttached();
-    for (const figure of await page.locator(".setup-screenshot").all()) {
-      await figure.scrollIntoViewIfNeeded();
-      await expect(figure.locator("figcaption")).not.toBeEmpty();
-      await expect(figure.locator("figcaption")).not.toContainText("Postiz");
-      await expect(figure.locator("figcaption")).not.toContainText("edited with AI");
-      await expect
-        .poll(() =>
-          figure
-            .locator("img:visible")
-            .first()
-            .evaluate((image: HTMLImageElement) => image.naturalWidth),
-        )
-        .toBeGreaterThan(0);
-    }
   }
 });
 
 for (const scheme of ["light", "dark"] as const) {
   for (const width of [320, 390, 1440]) {
-    test(`integration screenshots expand with the keyboard in ${scheme} at ${width}px`, async ({
+    test(`export screenshots expand with the keyboard in ${scheme} at ${width}px`, async ({
       page,
     }) => {
       const errors: string[] = [];
@@ -244,11 +272,14 @@ for (const scheme of ["light", "dark"] as const) {
         colorScheme: scheme,
         reducedMotion: width === 1440 ? "no-preference" : "reduce",
       });
-      await page.goto("/docs/self-hosting/integrations/bluesky");
+      await page.goto("/docs/image-editor/export-and-publish");
       const screenshot = page.locator(".setup-screenshot");
       await screenshot.scrollIntoViewIfNeeded();
       const image = screenshot.locator("img:visible").first();
-      await expect(image).toHaveAttribute("src", new RegExp(`connect-bluesky-${scheme}\\.webp`));
+      await expect(image).toHaveAttribute(
+        "src",
+        new RegExp(`image-export-detail-${scheme}\\.webp`),
+      );
       const expand = screenshot.getByRole("button", { name: /Expand image/ });
       await expect(expand).toBeVisible();
       await expand.focus();

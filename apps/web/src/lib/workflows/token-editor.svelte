@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { referenceTokens } from './reference-path';
 	import { onMount } from 'svelte';
 	import { EditorState, Compartment } from '@codemirror/state';
 	import {
@@ -30,8 +31,10 @@
 		multiline = true,
 		invalid = false,
 		placeholder = '',
-		readonly = false
+		readonly = false,
+		variableInsertion = 'selection'
 	}: {
+		variableInsertion?: 'selection' | 'replace';
 		readonly?: boolean;
 		id: string;
 		label: string;
@@ -79,7 +82,7 @@
 	function extensions() {
 		const refs = references;
 		const matcher = new MatchDecorator({
-			regexp: /\{\{\s*([a-zA-Z][a-zA-Z0-9_.-]*)\s*\}\}/g,
+			regexp: referenceTokens(),
 			decoration: (match) =>
 				Decoration.replace({
 					widget: new Token(
@@ -125,7 +128,7 @@
 						autocompletion({
 							override: [
 								(context) => {
-									const match = context.matchBefore(/\{\{[\w. -]*/);
+									const match = context.matchBefore(/\{\{[^\n{}]*/);
 									if (!match && !context.explicit) return null;
 									return {
 										from: match?.from ?? context.pos,
@@ -200,7 +203,15 @@
 	});
 	function insert(reference: string) {
 		if (!view || readonly) return;
-		view.dispatch(view.state.replaceSelection(`{{${reference}}}`));
+		const token = `{{${reference}}}`;
+		view.dispatch(
+			variableInsertion === 'replace'
+				? {
+						changes: { from: 0, to: view.state.doc.length, insert: token },
+						selection: { anchor: token.length }
+					}
+				: view.state.replaceSelection(token)
+		);
 		returnToEditor = true;
 		variablesOpen = false;
 	}
@@ -239,7 +250,7 @@
 							aria-label={m.workflows_search_variables()}
 						/>
 						<Command.List>
-							<Command.Empty>{m.workflows_no_match()}</Command.Empty>
+							<Command.Empty>{m.workflows_no_variable_match()}</Command.Empty>
 							<Command.Group>
 								{#each references as ref (ref.value)}
 									<Command.Item

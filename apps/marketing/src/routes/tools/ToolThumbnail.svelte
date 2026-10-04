@@ -1,10 +1,8 @@
 <script lang="ts">
 	import {
-		ArrowRight,
 		AtSign,
 		CalendarClock,
 		ClipboardPaste,
-		FileImage,
 		Flower2,
 		LetterText,
 		Link,
@@ -14,20 +12,15 @@
 		Type,
 		WandSparkles
 	} from '@lucide/svelte';
-	import { previewTools, imageConversions, imageFormats } from '@openpost/social-images';
+	import { previewTools, mediaToolThumbnailTone } from '@openpost/social-images';
 	import { PlatformGlyph } from '@openpost/social-preview';
 	import ThemeImage from '../_components/ThemeImage.svelte';
+	import MediaToolThumbnail from './MediaToolThumbnail.svelte';
 	import type { MarketingToolSlug } from '../_marketing';
 
 	let { slug }: { slug: MarketingToolSlug } = $props();
 	const platform = $derived(previewTools.find((tool) => tool.slug === slug)?.platform);
-	const conversion = $derived(imageConversions.find((tool) => tool.slug === slug));
-	const inputFormat = $derived(
-		imageFormats.find((format) => format.id === conversion?.input)?.name
-	);
-	const outputFormat = $derived(
-		imageFormats.find((format) => format.id === conversion?.output)?.name
-	);
+	const tone = $derived(mediaToolThumbnailTone(slug));
 	const editor = $derived(
 		slug === 'social-media-image-editor'
 			? 'image-editor'
@@ -38,7 +31,6 @@
 	const icons = new Map([
 		['background-remover', WandSparkles],
 		['paste-image', ClipboardPaste],
-		['image-converter', FileImage],
 		['multi-platform-character-counter', LetterText],
 		['thread-splitter', Split],
 		['fediverse-handle-checker', AtSign],
@@ -53,8 +45,9 @@
 	class="thumbnail"
 	class:screenshot={editor}
 	class:checkerboard={slug === 'background-remover'}
-	class:mint={slug === 'image-color-picker' || slug === 'logo-maker'}
-	class:blue={slug === 'quick-cut'}
+	class:mint={slug === 'image-color-picker' || slug === 'logo-maker' || tone === 'mint'}
+	class:blue={slug === 'quick-cut' || tone === 'blue'}
+	class:lilac={tone === 'lilac'}
 	aria-hidden="true"
 >
 	{#if editor}
@@ -67,8 +60,8 @@
 		/>
 	{:else if platform}
 		<PlatformGlyph {platform} />
-	{:else if conversion}
-		<span class="formats">{inputFormat}<ArrowRight size={16} />{outputFormat}</span>
+	{:else if tone}
+		<MediaToolThumbnail {slug} />
 	{:else if slug === 'image-color-picker'}
 		<div class="palette">
 			<img
@@ -101,11 +94,13 @@
 
 <style>
 	.thumbnail {
+		position: relative;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		width: 100%;
 		height: 100%;
+		container-type: inline-size;
 		overflow: hidden;
 		background: var(--marketing-section);
 		color: var(--foreground);
@@ -145,12 +140,9 @@
 		background: var(--marketing-blue);
 		color: var(--marketing-blue-ink);
 	}
-	.formats {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 12px;
-		font-weight: 650;
+	.lilac {
+		background: var(--marketing-lilac);
+		color: var(--marketing-lilac-ink);
 	}
 	.palette {
 		width: 56%;
@@ -231,16 +223,6 @@
 		height: 20px;
 	}
 	@media (max-width: 599px) {
-		.formats {
-			flex-direction: column;
-			gap: 0;
-			font-size: 11px;
-		}
-		.formats :global(svg) {
-			width: 12px;
-			height: 12px;
-			transform: rotate(90deg);
-		}
 		.screenshot {
 			padding: 0;
 		}

@@ -12,6 +12,7 @@ import PromptsPage from './+page.svelte';
 
 const getMock = vi.spyOn(client, 'GET');
 const postMock = vi.spyOn(client, 'POST');
+const putMock = vi.spyOn(client, 'PUT');
 const deleteMock = vi.spyOn(client, 'DELETE');
 let promptReadWorkspaces: string[] = [];
 
@@ -20,6 +21,7 @@ describe('prompts page', () => {
 		queryClient.clear();
 		getMock.mockReset();
 		postMock.mockReset();
+		putMock.mockReset();
 		deleteMock.mockReset();
 		promptReadWorkspaces = [];
 		auth.setUser(user('user-a'));
@@ -40,6 +42,108 @@ describe('prompts page', () => {
 	});
 
 	afterEach(() => vi.useRealTimers());
+
+	it.each(['Workspace', 'category'])(
+		'ignores a random choice after its %s changes',
+		async (scope) => {
+			const choice = deferred<{ data: Prompt; error: undefined; response: Response }>();
+			getMock.mockImplementation(async (path, request) => {
+				if (path === '/prompts/random') {
+					// SAFETY: The fixture matches the random prompt response consumed by this page.
+					return choice.promise as never;
+				}
+				if (path === '/prompts/categories') {
+					// SAFETY: The fixture contains every response field consumed by the component.
+					return response({ categories: ['Ideas'] }) as never;
+				}
+				if (path !== '/prompts') throw new Error(`Unexpected GET ${path}`);
+				const workspaceID = requestWorkspaceID(request);
+				promptReadWorkspaces.push(workspaceID);
+				// SAFETY: The fixture contains every response field consumed by the component.
+				return response([prompt(workspaceID)]) as never;
+			});
+			const screen = await render(
+				PromptsPage,
+				{},
+				{
+					wrapper: QueryClientProvider,
+					wrapperProps: { client: queryClient }
+				}
+			);
+			const random = screen.getByRole('button', { name: 'Random', exact: true });
+			await random.click();
+			await expect.element(random).toHaveAttribute('aria-busy', 'true');
+			if (scope === 'Workspace') {
+				queryClient.setQueryData(promptQueryKeys.list('workspace-b'), [prompt('workspace-b')]);
+				selectWorkspace('workspace-b');
+				await expect.element(screen.getByText('workspace-b prompt')).toBeVisible();
+			} else {
+				await screen.getByRole('button', { name: 'All categories', exact: true }).click();
+				await screen.getByRole('option', { name: 'Ideas', exact: true }).click();
+			}
+			choice.resolve({
+				data: { ...prompt('workspace-a'), text: 'Old random choice' },
+				error: undefined,
+				response: new Response(null, { status: 200 })
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			await expect
+				.element(screen.getByRole('region', { name: 'Writing prompt', exact: true }))
+				.not.toBeInTheDocument();
+			await expect.element(random).toBeEnabled();
+			expect(postMock).not.toHaveBeenCalled();
+		}
+	);
+
+	it.each(['Workspace', 'actor'])('ignores an old edit after its %s changes', async (scope) => {
+		const update = deferred<{ data: Prompt; error: undefined; response: Response }>();
+		// SAFETY: The deferred value matches the prompt update endpoint response.
+		putMock.mockReturnValue(update.promise as never);
+		queryClient.setQueryData(promptQueryKeys.list('workspace-a'), [prompt('workspace-a')]);
+		const screen = await render(
+			PromptsPage,
+			{},
+			{ wrapper: QueryClientProvider, wrapperProps: { client: queryClient } }
+		);
+		await screen.getByRole('button', { name: 'Edit prompt', exact: true }).click();
+		const dialog = screen.getByRole('dialog', { name: 'Edit prompt', exact: true });
+		await dialog
+			.getByRole('textbox', { name: 'Prompt text', exact: true })
+			.fill('Corrected old prompt');
+		await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+		expect(putMock).toHaveBeenCalledWith('/prompts/{id}', {
+			params: { path: { id: 'workspace-a-prompt' } },
+			body: { text: 'Corrected old prompt', example: '', category: 'Ideas' }
+		});
+		if (scope === 'Workspace') {
+			queryClient.setQueryData(promptQueryKeys.list('workspace-b'), [prompt('workspace-b')]);
+			selectWorkspace('workspace-b');
+		} else auth.setUser(user('user-b'));
+		await expect.element(dialog).not.toBeInTheDocument();
+		if (scope === 'Workspace') {
+			await screen.getByRole('button', { name: 'Edit prompt', exact: true }).click();
+			await screen
+				.getByRole('dialog', { name: 'Edit prompt', exact: true })
+				.getByRole('textbox', { name: 'Prompt text', exact: true })
+				.fill('Workspace B unsaved');
+		}
+		update.resolve({
+			data: { ...prompt('workspace-a'), text: 'Corrected old prompt' },
+			error: undefined,
+			response: new Response(null, { status: 200 })
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		if (scope === 'Workspace') {
+			await expect
+				.element(
+					screen
+						.getByRole('dialog', { name: 'Edit prompt', exact: true })
+						.getByRole('textbox', { name: 'Prompt text', exact: true })
+				)
+				.toHaveValue('Workspace B unsaved');
+		} else await expect.element(dialog).not.toBeInTheDocument();
+		expect(postMock).not.toHaveBeenCalled();
+	});
 
 	it('does not refresh or report an old prompt creation in a new Workspace', async () => {
 		const creation = deferred<{ data: Prompt; error: undefined; response: Response }>();

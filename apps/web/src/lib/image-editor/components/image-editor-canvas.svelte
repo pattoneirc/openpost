@@ -144,6 +144,7 @@
 	let spacePressed = $state(false);
 	let lastAutoEditingLayerID = '';
 	let panning = $state(false);
+	let zoomGesture: { pointerID: number; x: number; y: number } | null = null;
 	let selectionGesture = $state<SelectionGesture | null>(null);
 	let polygonalSelection = $state<PolygonalSelection | null>(null);
 	let magicPulse = $state<SelectionPoint | null>(null);
@@ -496,7 +497,8 @@
 			editor.activeTool === 'magic_eraser' ||
 			editor.activeTool === 'bucket' ||
 			editor.activeTool === 'gradient' ||
-			editor.activeTool === 'eyedropper'
+			editor.activeTool === 'eyedropper' ||
+			editor.activeTool === 'zoom'
 		);
 	}
 
@@ -624,7 +626,7 @@
 		const document = editor.document;
 		const id = editor.selectedLayerIDs.at(-1);
 		const layer = editor.activePage?.layers.find((candidate) => candidate.id === id);
-		if (!document || !id || !layer || layer.locked || !adapter) return false;
+		if (!document || !id || !layer || editor.isLayerLocked(id) || !adapter) return false;
 		const mask = adapter.layerAlphaPixelMask(
 			id,
 			editor.activePageDimensions.width,
@@ -790,11 +792,15 @@
 	function erasableTargetID(point: SelectionPoint): string | null {
 		const selectedID = editor.selectedLayerIDs.at(-1);
 		const selected = editor.activePage?.layers.find((layer) => layer.id === selectedID);
-		if (selected && ['image', 'paint'].includes(selected.type) && !selected.locked)
+		if (
+			selected &&
+			['image', 'paint'].includes(selected.type) &&
+			!editor.isLayerLocked(selected.id)
+		)
 			return selected.id;
 		const hitID = adapter?.topmostLayerIDAtPoint(point);
 		const hit = editor.activePage?.layers.find((layer) => layer.id === hitID);
-		if (!hit || !['image', 'paint'].includes(hit.type) || hit.locked) return null;
+		if (!hit || !['image', 'paint'].includes(hit.type) || editor.isLayerLocked(hit.id)) return null;
 		editor.selectLayer(hit.id);
 		return hit.id;
 	}
@@ -967,7 +973,7 @@
 	function selectionTargetIDs(point: SelectionPoint): string[] {
 		const activeID = editor.selectedLayerIDs.at(-1);
 		const active = editor.activePage?.layers.find((layer) => layer.id === activeID);
-		if (activeID && active && !active.locked) return [activeID];
+		if (activeID && active && !editor.isLayerLocked(active.id)) return [activeID];
 		const hitID = adapter?.topmostLayerIDAtPoint(point);
 		if (!hitID) return [];
 		editor.selectLayer(hitID);
@@ -990,7 +996,9 @@
 	function hasLockedMagicTarget(point: SelectionPoint): boolean {
 		const activeID = editor.selectedLayerIDs.at(-1);
 		const active = editor.activePage?.layers.find((layer) => layer.id === activeID);
-		return Boolean(active?.locked || adapter?.lockedLayerIDAtPoint(point));
+		return Boolean(
+			(active && editor.isLayerLocked(active.id)) || adapter?.lockedLayerIDAtPoint(point)
+		);
 	}
 
 	function magicNoTargetMessage(point: SelectionPoint, fallback: string): string {
@@ -1109,13 +1117,15 @@
 			target instanceof Element &&
 			Boolean(
 				target.closest(
-					'[data-testid="image-editor-selection-options"], button, input, textarea, select, [role="slider"], [contenteditable="true"]'
+					'[data-testid="image-editor-selection-options"], button, [role="button"], input, textarea, select, [role="slider"], [contenteditable="true"]'
 				)
 			)
 		);
 	}
 
 	function startAreaSelection(event: PointerEvent): boolean {
+		// Stage controls own their gesture, even when the viewport sees it during capture.
+		if (targetsPasteboardChrome(event.target)) return false;
 		const tool = editor.activeTool;
 		if (event.pointerType === 'touch' && stylusPointerID >= 0) {
 			event.preventDefault();
@@ -1161,7 +1171,8 @@
 					points: [point],
 					current: point,
 					mode,
-					targetLayerIDs: selectedID && selected && !selected.locked ? [selectedID] : [],
+					targetLayerIDs:
+						selectedID && selected && !editor.isLayerLocked(selected.id) ? [selectedID] : [],
 					pageID: editor.activePageID
 				};
 			} else if (event.detail >= 2) {
@@ -1614,6 +1625,30 @@
 		}
 	}
 
+	function zoomAtPointer(event: PointerEvent): void {
+		if (
+			editor.activeTool !== 'zoom' ||
+			spacePressed ||
+			event.button !== 0 ||
+			targetsPasteboardChrome(event.target)
+		)
+			return;
+		const bounds = viewport?.getBoundingClientRect();
+		if (!bounds) return;
+		const nextZoom = Math.max(0.1, Math.min(4, editor.zoom + (event.altKey ? -0.1 : 0.1)));
+		const nextPan = panForZoomAnchor({
+			panX: editor.panX,
+			panY: editor.panY,
+			zoom: editor.zoom,
+			nextZoom,
+			anchorX: event.clientX - (bounds.left + bounds.width / 2),
+			anchorY: event.clientY - (bounds.top + bounds.height / 2)
+		});
+		editor.panX = nextPan.panX;
+		editor.panY = nextPan.panY;
+		editor.zoom = nextZoom;
+	}
+
 	function handleWheel(event: WheelEvent): void {
 		if (event.ctrlKey || event.metaKey) {
 			event.preventDefault();
@@ -1700,6 +1735,7 @@
 				y: event.clientY
 			});
 			if (touchPointers.size === 2) {
+				zoomGesture = null;
 				selectionGesture = null;
 				const [first, second] = [...touchPointers.values()];
 				pinchStart = {
@@ -1727,6 +1763,12 @@
 			event.preventDefault();
 			return;
 		}
+		if (editor.activeTool === 'zoom' && event.button === 0) {
+			zoomGesture = { pointerID: event.pointerId, x: event.clientX, y: event.clientY };
+			capturePointer(event.currentTarget, event.pointerId);
+			event.preventDefault();
+			return;
+		}
 		if (startAreaSelection(event)) return;
 	}
 
@@ -1738,9 +1780,8 @@
 	}
 
 	function startPasteboardPointer(event: PointerEvent): void {
-		if (targetsToolSurface(event)) return;
-		// A touch that lands on pasteboard chrome still belongs to viewport navigation.
-		// Route it before object hit-testing so the second contact can always start a pinch.
+		if (targetsToolSurface(event) || targetsPasteboardChrome(event.target)) return;
+		// Route viewport touches before object hit-testing so a second contact can start a pinch.
 		if (event.pointerType === 'touch') {
 			startPan(event);
 			return;
@@ -1827,6 +1868,19 @@
 	}
 
 	function stopPan(event: PointerEvent): void {
+		if (zoomGesture?.pointerID === event.pointerId) {
+			const gesture = zoomGesture;
+			zoomGesture = null;
+			if (Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) <= 4) {
+				zoomAtPointer(event);
+			}
+			if (
+				event.currentTarget instanceof Element &&
+				event.currentTarget.hasPointerCapture(event.pointerId)
+			) {
+				event.currentTarget.releasePointerCapture(event.pointerId);
+			}
+		}
 		if (event.pointerType === 'touch') touchPointers.delete(event.pointerId);
 		if (eyedropperPointerID === event.pointerId) {
 			const point = documentPoint(event, 'clamp');
@@ -1856,6 +1910,7 @@
 	}
 
 	function cancelPointer(event: PointerEvent): void {
+		if (zoomGesture?.pointerID === event.pointerId) zoomGesture = null;
 		if (event.pointerType === 'touch') touchPointers.delete(event.pointerId);
 		if (eyedropperPointerID === event.pointerId) eyedropperPointerID = -1;
 		if (stylusPointerID === event.pointerId) stylusPointerID = -1;
@@ -1873,6 +1928,8 @@
 	}
 
 	function handleCanvasKeydown(event: KeyboardEvent): void {
+		if ((event.key === 'Enter' || event.code === 'Space') && targetsPasteboardChrome(event.target))
+			return;
 		if (event.key === 'Escape' && (layerPickerRef?.dismiss() ?? false)) {
 			event.preventDefault();
 			return;
@@ -2017,7 +2074,9 @@
 	class:cursor-grab={(editor.activeTool === 'hand' || spacePressed) && !panning}
 	class:cursor-grabbing={panning}
 	class:cursor-move={Boolean(editor.floatingPixelSelection) && !panning}
-	class:cursor-crosshair={(usesCanvasSurface() || selectionGesture?.tool === 'select') &&
+	class:cursor-zoom-in={editor.activeTool === 'zoom' && !panning}
+	class:cursor-crosshair={((usesCanvasSurface() && editor.activeTool !== 'zoom') ||
+		selectionGesture?.tool === 'select') &&
 		!editor.floatingPixelSelection &&
 		!panning}
 	onwheel={handleWheel}
@@ -2223,7 +2282,7 @@
 		{/if}
 		{#if isAreaSelectionTool() || editor.activeTool === 'pencil' || editor.activeTool === 'eraser' || editor.activeTool === 'magic_eraser' || editor.activeTool === 'bucket' || editor.activeTool === 'gradient'}
 			<div
-				class="absolute bottom-3 left-1/2 z-30 no-scrollbar flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 flex-nowrap items-center justify-start gap-0.5 overflow-x-auto rounded-lg border border-[var(--editor-border)] bg-[color-mix(in_oklch,var(--editor-canvas)_88%,transparent)] p-1 text-[var(--editor-text)] shadow-lg backdrop-blur sm:top-3 sm:bottom-auto [&>*]:shrink-0"
+				class="absolute bottom-3 left-1/2 z-30 flex max-h-[calc(100%-1.5rem)] w-max max-w-[calc(100%-1.5rem)] -translate-x-1/2 flex-wrap items-center justify-start gap-0.5 overflow-y-auto rounded-lg border border-[var(--editor-border)] bg-[color-mix(in_oklch,var(--editor-canvas)_88%,transparent)] p-1 text-[var(--editor-text)] shadow-lg backdrop-blur sm:top-3 sm:bottom-auto [&>*]:max-w-full [&>*]:shrink-0 [@media(pointer:coarse)]:[&_button]:min-h-11 [@media(pointer:coarse)]:[&_button]:min-w-11"
 				data-testid="image-editor-selection-options"
 			>
 				{#if editor.activeTool === 'polygonal_lasso' && polygonalSelection}
@@ -2272,7 +2331,7 @@
 				{/if}
 				{#if isAreaSelectionTool()}
 					<div
-						class="flex items-center gap-0.5"
+						class="flex flex-wrap items-center gap-0.5"
 						role="group"
 						aria-label={m.image_editor_selection_mode()}
 					>
@@ -2578,9 +2637,9 @@
 							{m.image_editor_cut_pixels()}
 						</Button>
 						<Button
-							variant="ghost"
+							variant="destructive"
 							size="sm"
-							class="h-7 px-1.5 text-xs text-red-200 hover:text-destructive"
+							class="h-7 px-1.5 text-xs"
 							onclick={() => commitPixelContent('delete')}
 						>
 							{m.image_editor_delete_pixels()}
@@ -2733,7 +2792,8 @@
 					<div
 						class="absolute inset-0 z-10 touch-none"
 						class:cursor-move={Boolean(editor.floatingPixelSelection)}
-						class:cursor-crosshair={!editor.floatingPixelSelection}
+						class:cursor-crosshair={!editor.floatingPixelSelection && editor.activeTool !== 'zoom'}
+						class:cursor-zoom-in={editor.activeTool === 'zoom'}
 						data-testid="image-editor-selection-surface"
 						aria-hidden="true"
 						onpointerdown={startPan}

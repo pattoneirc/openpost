@@ -33,7 +33,7 @@ import { snapshotTimelineState } from '../utils/state-snapshot.svelte';
 import { canJoinMultipleItems, joinedTimelineItem } from '../join-items';
 import { clonePropertyRuntime } from './property-runtime';
 import { hasPathVertexKeyframes } from '../path-vertex-keyframes';
-import { effectiveMediaTracks } from '../utils/track-groups';
+import { effectiveMediaTracks, isTrackEffectivelyLocked } from '../utils/track-groups';
 import { sequenceStore } from '../../sequences/sequence-store.svelte';
 import { scaleItemKeyframes } from '../edit-constraints';
 import { scaleItemVectorKeyframes } from '../vector-keyframes';
@@ -424,11 +424,17 @@ export function updateItemProperties(
 	id: string,
 	patch: Partial<TimelineItem>,
 	commandType = 'UPDATE_ITEM'
-): void {
-	execute(commandType, () => {
-		const item = timelineStore.itemById.get(id);
-		if (item && pathTopologyChangeIsLocked(item, patch)) return;
+): boolean {
+	const item = timelineStore.itemById.get(id);
+	if (
+		!item ||
+		isTrackEffectivelyLocked(item.trackId, timelineStore.tracks) ||
+		pathTopologyChangeIsLocked(item, patch)
+	)
+		return false;
+	return execute(commandType, () => {
 		timelineStore._updateItems([{ id, patch }]);
+		return true;
 	});
 }
 
@@ -1159,6 +1165,7 @@ export function setItemsSpeedLive(itemIds: string[], speed: number): SetItemsSpe
 
 export interface SpeedRampEditResult {
 	changed: string[];
+	occupied?: number;
 	locked: number;
 	pointId?: string;
 }
@@ -1228,6 +1235,7 @@ export function addItemsSpeedPoint(itemIds: string[], timelineFrame: number): Sp
 	const startId = crypto.randomUUID();
 	const endId = crypto.randomUUID();
 	const updates: Array<{ id: string; patch: Partial<TimelineItem> }> = [];
+	let occupied = 0;
 	for (const candidate of targets) {
 		if (
 			timelineFrame < candidate.from ||
@@ -1248,7 +1256,10 @@ export function addItemsSpeedPoint(itemIds: string[], timelineFrame: number): Sp
 			)
 		);
 		const existing = candidate.speedRamp ?? [];
-		if (existing.some((point) => point.sourceFrame === sourceFrame)) continue;
+		if (existing.some((point) => point.sourceFrame === sourceFrame)) {
+			occupied += 1;
+			continue;
+		}
 		const baseSpeed = candidate.speed ?? 1;
 		const initial =
 			existing.length > 0
@@ -1283,18 +1294,37 @@ export function addItemsSpeedPoint(itemIds: string[], timelineFrame: number): Sp
 			patch: speedRampUpdate(candidate, speedRamp)
 		});
 	}
-	if (updates.length === 0) return { changed: [], locked, pointId };
+	if (updates.length === 0) return { changed: [], locked, pointId, occupied };
 	execute('ADD_ITEMS_SPEED_POINT', () => {
 		timelineStore._updateItems(updates);
 		pruneInvalidTransitions();
 	});
-	return { changed: updates.map((update) => update.id), locked, pointId };
+	return { changed: updates.map((update) => update.id), locked, pointId, occupied };
+}
+
+export function speedPointSourceFrameRange(
+	item: TimelineItem,
+	pointId: string
+): { min: number; max: number } | null {
+	const points = [...(item.speedRamp ?? [])].sort((a, b) => a.sourceFrame - b.sourceFrame);
+	const index = points.findIndex((point) => point.id === pointId);
+	if (index < 0) return null;
+	const min = Math.ceil(
+		Math.max(item.sourceStart ?? 0, index > 0 ? points[index - 1]!.sourceFrame + 1 : 0)
+	);
+	const max = Math.floor(
+		Math.min(
+			item.sourceEnd ?? points.at(-1)!.sourceFrame,
+			index < points.length - 1 ? points[index + 1]!.sourceFrame - 1 : Infinity
+		)
+	);
+	return min <= max ? { min, max } : null;
 }
 
 export function updateItemsSpeedPoint(
 	itemIds: string[],
 	pointId: string,
-	patch: { speed?: number; easing?: EasingType }
+	patch: { sourceFrame?: number; speed?: number; easing?: EasingType }
 ): SpeedRampEditResult {
 	const { targets, locked } = speedRampTargets(itemIds);
 	if (targets.length === 0 || locked > 0) return { changed: [], locked, pointId };
@@ -1303,11 +1333,25 @@ export function updateItemsSpeedPoint(
 		const current = candidate.speedRamp ?? [];
 		const currentPoint = current.find((point) => point.id === pointId);
 		if (!currentPoint) continue;
+		if (patch.sourceFrame !== undefined && !Number.isFinite(patch.sourceFrame)) continue;
+		const range = speedPointSourceFrameRange(candidate, pointId);
+		if (patch.sourceFrame !== undefined && !range) continue;
+		const nextSourceFrame =
+			patch.sourceFrame === undefined
+				? currentPoint.sourceFrame
+				: Math.max(range!.min, Math.min(range!.max, Math.round(patch.sourceFrame)));
 		const nextSpeed = patch.speed === undefined ? currentPoint.speed : clampSpeed(patch.speed);
 		const nextEasing = patch.easing ?? currentPoint.easing;
-		if (nextSpeed === currentPoint.speed && nextEasing === currentPoint.easing) continue;
+		if (
+			nextSourceFrame === currentPoint.sourceFrame &&
+			nextSpeed === currentPoint.speed &&
+			nextEasing === currentPoint.easing
+		)
+			continue;
 		const speedRamp = current.map((point) =>
-			point.id === pointId ? { ...point, speed: nextSpeed, easing: nextEasing } : point
+			point.id === pointId
+				? { ...point, sourceFrame: nextSourceFrame, speed: nextSpeed, easing: nextEasing }
+				: point
 		);
 		updates.push({
 			id: candidate.id,

@@ -128,35 +128,50 @@ function mergeServerAssignedDraftIdentity(
 ): PublicationDraft {
 	const merged = structuredClone(current);
 	const serverSegments = created.segments ?? [];
+	const canonicalIDs = new Map<string, string>();
+	for (const [index, segment] of (current.segments ?? []).entries()) {
+		const serverID = serverSegments[index]?.id;
+		if (segment.id && serverID) canonicalIDs.set(segment.id, serverID);
+	}
 	merged.segments = (merged.segments ?? []).map((segment, index) => {
 		const serverSegment = serverSegments[index];
 		return serverSegment?.id ? { ...segment, id: serverSegment.id } : segment;
 	});
 
 	const serverRenditions = created.renditions ?? [];
-	merged.renditions = (merged.renditions ?? []).map((rendition, index) => {
-		const serverRendition =
-			serverRenditions.find(
-				(candidate) =>
-					candidate.social_account_id === rendition.social_account_id &&
-					candidate.target_key === rendition.target_key
-			) ?? serverRenditions[index];
-		if (!serverRendition) return rendition;
+	merged.renditions = (merged.renditions ?? []).map((rendition) => {
+		const serverRendition = serverRenditions.find(
+			(candidate) =>
+				candidate.social_account_id === rendition.social_account_id &&
+				(candidate.target_key || 'default') === (rendition.target_key || 'default')
+		);
 
-		const serverRenditionSegments = serverRendition.segments ?? [];
+		const serverRenditionSegments = serverRendition?.segments ?? [];
 		return {
 			...rendition,
-			id: serverRendition.id ?? rendition.id,
+			id: serverRendition?.id ?? rendition.id,
 			segments: (rendition.segments ?? []).map((segment, segmentIndex) => {
 				const serverSegment = serverRenditionSegments[segmentIndex];
+				const sourceOverrides = segment.source_overrides?.map((source) => ({
+					...source,
+					publication_segment_id:
+						canonicalIDs.get(source.publication_segment_id) ?? source.publication_segment_id
+				}));
 				return serverSegment?.id
 					? {
 							...segment,
+							source_overrides: sourceOverrides,
 							id: serverSegment.id,
 							publication_segment_id:
 								serverSegment.publication_segment_id ?? segment.publication_segment_id
 						}
-					: segment;
+					: {
+							...segment,
+							source_overrides: sourceOverrides,
+							publication_segment_id:
+								canonicalIDs.get(segment.publication_segment_id ?? '') ??
+								segment.publication_segment_id
+						};
 			})
 		};
 	});
@@ -367,7 +382,9 @@ export class ComposerSession {
 			}
 			this.#allowWorkspaceSwitch(pending);
 		} catch (cause) {
-			this.#patch({ workspaceSwitch: { ...state, intent: null, error: errorMessage(cause) } });
+			this.#patch({
+				workspaceSwitch: { ...state, intent: null, error: errorMessage(cause) }
+			});
 		}
 	}
 

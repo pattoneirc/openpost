@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { Input } from '$lib/components/ui/input';
+	import { parseNumeric } from './editor-density/scrub-math';
 	const SCRUB_THRESHOLD_PX = 3;
 
 	let {
 		ariaLabel,
+		ariaDescribedBy,
 		value,
 		min,
 		max,
@@ -18,6 +20,7 @@
 		oncancel
 	}: {
 		ariaLabel: string;
+		ariaDescribedBy?: string;
 		value: number | null;
 		min?: number;
 		max?: number;
@@ -124,10 +127,10 @@
 		if (!(event.currentTarget instanceof HTMLInputElement)) return;
 		const raw = event.currentTarget.value;
 		draft = raw;
-		if (raw.trim() === '') return;
-		const parsed = Number(raw);
-		// fallow-ignore-next-line code-duplication
-		if (Number.isFinite(parsed)) setLive(parsed);
+		const parsed = parseNumeric(raw);
+		if (parsed === null) return;
+		beginGesture();
+		onlive(clamp(parsed));
 	}
 
 	function handleKeydown(event: KeyboardEvent): void {
@@ -141,7 +144,7 @@
 			event.currentTarget.blur();
 		} else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
 			event.preventDefault();
-			const current = Number(draft ?? value ?? 0);
+			const current = parseNumeric(draft ?? '') ?? value ?? 0;
 			const direction = event.key === 'ArrowUp' ? 1 : -1;
 			setLive(current + direction * step * (event.shiftKey ? 10 : 1));
 		}
@@ -160,6 +163,7 @@
 	autocomplete="off"
 	{disabled}
 	aria-label={ariaLabel}
+	aria-describedby={ariaDescribedBy}
 	{placeholder}
 	value={displayValue}
 	class="cursor-ew-resize touch-none select-none focus:cursor-text focus:select-auto {className}"

@@ -1,12 +1,15 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { tick } from 'svelte';
 	import { createQuery } from '@tanstack/svelte-query';
 	import {
 		repostAutomationQueryOptions,
 		workflowsQueryOptions,
-		workflowRunsQueryOptions
+		workflowRunsQueryOptions,
+		workspaceAccountsQueryOptions
 	} from '@openpost/query-catalog';
 	import { workflowQueryAPI } from '$lib/query/workflows';
+	import { queryAPI } from '$lib/query/api';
 	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import { saveWorkflow, deleteWorkflow, type Workflow, type Definition } from '$lib/workflows/api';
 	import { templates, sourceLabel, runStateLabel } from '$lib/workflows/catalog';
@@ -24,6 +27,7 @@
 	let deleting = $state<Workflow | null>(null),
 		deleteOpen = $state(false);
 	const workspaceID = $derived(workspaceCtx.currentWorkspace?.id ?? '');
+	const accountsQuery = createQuery(() => workspaceAccountsQueryOptions(queryAPI, workspaceID));
 	const workflowsQuery = createQuery(() => workflowsQueryOptions(workflowQueryAPI, workspaceID));
 	const repostsQuery = createQuery(() =>
 		repostAutomationQueryOptions(schedulingQueryAPI, workspaceID)
@@ -33,6 +37,20 @@
 		selectedRun = $state(''),
 		busy = $state(false),
 		error = $state('');
+	let runList = $state<HTMLDivElement | null>(null);
+	async function returnToRuns(event: MouseEvent) {
+		const action = event.currentTarget;
+		const ownedFocus = document.activeElement === action;
+		const origin = selectedRun;
+		const originWorkspace = workspaceID;
+		selectedRun = '';
+		await tick();
+		if (!ownedFocus || !(action instanceof HTMLElement)) return;
+		if (workspaceID !== originWorkspace || tab !== 'runs' || selectedRun) return;
+		if (document.activeElement !== action && document.activeElement !== document.body) return;
+		const card = runList?.querySelector<HTMLButtonElement>(`#workflow-run-${CSS.escape(origin)}`);
+		(card ?? runList)?.focus();
+	}
 	async function create(
 		name: string = m.workflows_untitled(),
 		definition: Definition = { schema: 1, source: { kind: 'manual' }, steps: [] }
@@ -62,7 +80,8 @@
 	themeIconRole="repeat"
 	loading={[
 		workflowsQuery.isPending && !workflowsQuery.error,
-		repostsQuery.isPending && !repostsQuery.error
+		repostsQuery.isPending && !repostsQuery.error,
+		accountsQuery.isPending && !accountsQuery.error
 	].some(Boolean)}
 >
 	{#snippet actions()}<Button
@@ -84,9 +103,9 @@
 		</div>{/snippet}
 	<div class="space-y-6">
 		{#if repostsQuery.error}<InlineNotice tone="error" message={String(repostsQuery.error)} />{/if}
-		{#if error || workflowsQuery.error}<InlineNotice
+		{#if error || workflowsQuery.error || accountsQuery.error}<InlineNotice
 				tone="error"
-				message={error || String(workflowsQuery.error)}
+				message={error || String(workflowsQuery.error || accountsQuery.error)}
 			/>{/if}
 		{#if tab === 'workflows'}
 			{#if workflowsQuery.data?.length || repostsQuery.data?.policies?.length}<div
@@ -184,17 +203,29 @@
 					</div>
 				{/each}
 			</div>
-		{:else if selectedRun}<Button variant="ghost" onclick={() => (selectedRun = '')}
+		{:else if selectedRun}<Button variant="ghost" onclick={returnToRuns}
 				><ThemeIcon role="arrow-left" class="size-4" />{m.workflows_runs()}</Button
-			><RunInspector {workspaceID} runID={selectedRun} />
+			>
+			{#if accountsQuery.data}<RunInspector
+					{workspaceID}
+					runID={selectedRun}
+					accounts={accountsQuery.data}
+				/>{/if}
 		{:else}
 			<details class="rounded-lg border p-4">
 				<summary class="min-h-11 cursor-pointer text-sm font-medium">{m.repost_heading()}</summary
 				><RepostHistory {workspaceID} />
 			</details>
 			{#if runsQuery.error}<InlineNotice tone="error" message={String(runsQuery.error)} />{/if}
-			<div class="divide-y rounded-lg border bg-card">
+			<div
+				bind:this={runList}
+				role="region"
+				tabindex="-1"
+				aria-label={m.workflows_runs()}
+				class="divide-y rounded-lg border bg-card focus-visible:outline-2 focus-visible:outline-ring"
+			>
 				{#each runsQuery.data ?? [] as run (run.id)}<button
+						id={`workflow-run-${run.id}`}
 						type="button"
 						class="flex w-full flex-wrap items-center justify-between gap-3 p-4 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
 						onclick={() => (selectedRun = run.id)}
@@ -215,7 +246,9 @@
 			{#if !runsQuery.data?.length && !runsQuery.isPending}<EmptyState
 					themeIconRole="history"
 					title={m.workflows_no_runs()}
-					description={m.workflows_no_runs_help()}
+					description={workflowsQuery.data?.some((workflow) => workflow.enabled)
+						? m.workflows_no_runs_active_help()
+						: m.workflows_no_runs_help()}
 				/>{/if}
 		{/if}
 	</div>

@@ -1505,6 +1505,7 @@ type PublicationSegmentMedia struct {
 type Rendition struct {
 	bun.BaseModel `bun:"table:renditions"`
 
+	Position         int       `bun:"position,notnull,default:0" json:"-"`
 	ID               string    `bun:",pk" json:"id"`
 	PublicationID    string    `bun:"publication_id,notnull" json:"publication_id"`
 	SocialAccountID  string    `bun:"social_account_id,notnull" json:"social_account_id"`
@@ -1548,6 +1549,7 @@ type RenditionSegment struct {
 	DescriptionOverride  *string   `bun:"description_override" json:"description_override,omitempty"`
 	URLOverride          *string   `bun:"url_override" json:"url_override,omitempty"`
 	MediaInherited       bool      `bun:"media_inherited,notnull,default:true" json:"media_inherited"`
+	SourceOverridesJSON  string    `bun:"source_overrides_json,notnull,default:'[]'" json:"source_overrides_json"`
 	SettingsJSON         string    `bun:"settings_json,notnull,default:'{}'" json:"settings_json"`
 	Status               string    `bun:"status,notnull,default:'draft'" json:"status"`
 	ExternalID           string    `bun:"external_id,notnull,default:''" json:"external_id"`
@@ -1866,7 +1868,7 @@ type UserNotification struct {
 	Href        string               `bun:",notnull,default:''" json:"href"`
 	PayloadJSON string               `bun:"payload_json,notnull,default:'{}'" json:"payload_json"`
 	DedupKey    string               `bun:"dedup_key,notnull,default:''" json:"-"`
-	ReadAt      time.Time            `bun:"read_at,nullzero" json:"read_at"`
+	ReadAt      time.Time            `bun:"read_at,nullzero" json:"read_at,omitempty,omitzero"`
 	CreatedAt   time.Time            `bun:",nullzero,notnull,default:current_timestamp" json:"created_at"`
 	Actions     []NotificationAction `bun:"-" json:"actions,omitempty"`
 }

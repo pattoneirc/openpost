@@ -238,12 +238,12 @@
 		let next: number | null = null;
 		const current = targetDb(target);
 		const step = event.shiftKey ? 0.1 : 1;
-		if (event.key === 'ArrowUp') next = current + step;
-		if (event.key === 'ArrowDown') next = current - step;
+		if (event.key === 'ArrowUp' || event.key === 'ArrowRight') next = current + step;
+		if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') next = current - step;
 		if (event.key === 'PageUp') next = current + 6;
 		if (event.key === 'PageDown') next = current - 6;
-		if (event.key === 'Home') next = MIXER_MAX_DB;
-		if (event.key === 'End') next = MIXER_MIN_DB;
+		if (event.key === 'Home') next = MIXER_MIN_DB;
+		if (event.key === 'End') next = MIXER_MAX_DB;
 		if (event.key === '0') next = 0;
 		if (next === null) return;
 		event.preventDefault();
@@ -409,12 +409,15 @@
 					<span class="min-w-0 flex-1 truncate text-[10px] font-medium" title={track.name}
 						>{track.name}</span
 					>
-					{#if locked}<ThemeIcon role="lock" class="size-3 shrink-0 text-amber-300/80" />{/if}
+					{#if locked}<ThemeIcon
+							role="lock"
+							class="size-3 shrink-0 text-[var(--video-editor-muted)]"
+						/>{/if}
 				</div>
 				<div class="grid grid-cols-3 gap-1">
 					<button
 						type="button"
-						class="channel-button data-[active=true]:border-amber-300/60 data-[active=true]:bg-amber-400/20 data-[active=true]:text-amber-100"
+						class="channel-button"
 						data-active={track.solo}
 						aria-pressed={track.solo}
 						aria-label={track.solo
@@ -425,7 +428,7 @@
 					>
 					<button
 						type="button"
-						class="channel-button data-[active=true]:border-red-300/60 data-[active=true]:bg-red-500/25 data-[active=true]:text-red-100"
+						class="channel-button"
 						data-active={track.muted}
 						aria-pressed={track.muted}
 						aria-label={track.muted
@@ -436,7 +439,7 @@
 					>
 					<button
 						type="button"
-						class="channel-button px-1 data-[active=true]:border-sky-300/60 data-[active=true]:bg-sky-400/20 data-[active=true]:text-sky-100"
+						class="channel-button px-1"
 						data-active={eqIsActive(track.audioEq)}
 						aria-expanded={eqTarget?.kind === 'track' && eqTarget.trackId === track.id}
 						aria-controls="mixer-eq-panel"
@@ -458,12 +461,13 @@
 						class="fader disabled:cursor-not-allowed disabled:opacity-40"
 						class:pointer-events-none={locked}
 						role="slider"
+						aria-orientation="vertical"
 						tabindex={locked ? -1 : 0}
 						aria-label={m.video_editor_mixer_track_volume({ name: track.name })}
 						aria-valuemin={MIXER_MIN_DB}
 						aria-valuemax={MIXER_MAX_DB}
 						aria-valuenow={db}
-						aria-valuetext={formatMixerDb(db)}
+						aria-valuetext={`${formatMixerDb(db)} dB`}
 						onpointerdown={(event) => startFader(event, target)}
 						onpointermove={moveFader}
 						onpointerup={finishFader}
@@ -494,13 +498,13 @@
 		{/each}
 
 		<div class="channel-strip master-strip" data-mixer-master>
-			<div class="truncate text-[10px] font-semibold tracking-wide text-amber-100 uppercase">
+			<div class="truncate text-[10px] font-semibold tracking-wide uppercase">
 				{m.video_editor_mixer_master()}
 			</div>
 			<div class="grid grid-cols-2 gap-1">
 				<button
 					type="button"
-					class="channel-button data-[active=true]:border-red-300/60 data-[active=true]:bg-red-500/25 data-[active=true]:text-red-100"
+					class="channel-button"
 					data-active={timelineStore.masterMuted}
 					aria-pressed={timelineStore.masterMuted}
 					aria-label={timelineStore.masterMuted
@@ -510,7 +514,7 @@
 				>
 				<button
 					type="button"
-					class="channel-button px-1 data-[active=true]:border-sky-300/60 data-[active=true]:bg-sky-400/20 data-[active=true]:text-sky-100"
+					class="channel-button px-1"
 					data-active={eqIsActive(timelineStore.busAudioEq)}
 					aria-expanded={eqTarget?.kind === 'master'}
 					aria-controls="mixer-eq-panel"
@@ -530,12 +534,13 @@
 				<div
 					class="fader"
 					role="slider"
+					aria-orientation="vertical"
 					tabindex="0"
 					aria-label={m.video_editor_mixer_master_volume()}
 					aria-valuemin={MIXER_MIN_DB}
 					aria-valuemax={MIXER_MAX_DB}
 					aria-valuenow={timelineStore.masterVolumeDb}
-					aria-valuetext={formatMixerDb(timelineStore.masterVolumeDb)}
+					aria-valuetext={`${formatMixerDb(timelineStore.masterVolumeDb)} dB`}
 					onpointerdown={(event) => startFader(event, MASTER_TARGET)}
 					onpointermove={moveFader}
 					onpointerup={finishFader}
@@ -547,14 +552,14 @@
 					<div class="fader-rail"></div>
 					<div class="fader-unity" style:bottom={`${mixerDbToFaderPercent(0)}%`}></div>
 					<div
-						class="fader-knob bg-amber-100"
+						class="fader-knob"
 						data-fader-knob="master"
 						style:bottom={`${mixerDbToFaderPercent(timelineStore.masterVolumeDb)}%`}
 					></div>
 				</div>
 			</div>
 			<div class="flex items-center justify-center gap-1">
-				<span class="db-readout text-amber-100" data-fader-readout="master"
+				<span class="db-readout" data-fader-readout="master"
 					>{formatMixerDb(timelineStore.masterVolumeDb)}</span
 				>
 				<span
@@ -625,6 +630,7 @@
 		border-right: 0;
 		border-left: 1px solid var(--video-editor-focus-border);
 		background: var(--video-editor-selection);
+		color: var(--video-editor-selection-text);
 	}
 	.channel-button {
 		min-height: 1.75rem;
@@ -635,6 +641,11 @@
 		font-size: 0.625rem;
 		font-weight: 700;
 		color: var(--video-editor-muted);
+	}
+	.channel-button[data-active='true'] {
+		border-color: var(--video-editor-focus-border);
+		background: var(--video-editor-selection);
+		color: var(--video-editor-selection-text);
 	}
 	.channel-button:focus-visible,
 	.fader:focus-visible {

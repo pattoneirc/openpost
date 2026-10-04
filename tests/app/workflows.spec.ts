@@ -39,6 +39,8 @@ async function addStep(page: import("@playwright/test").Page, name: string) {
     .getByRole("complementary", { name: "What happens next?" })
     .getByRole("button", { name: new RegExp("^" + name) })
     .click();
+  await expect(page.locator("[data-workflow-inspector]")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Step name", exact: true })).toHaveValue(name);
 }
 async function releaseTemplate(page: import("@playwright/test").Page) {
   await page.getByRole("button", { name: "Start from a template", exact: true }).first().click();
@@ -489,7 +491,7 @@ test("missing source variables mark both the field and its canvas node", async (
       .soft(page.getByRole("button", { name: /^Create draft.*Needs attention/ }))
       .toBeVisible();
     await page
-      .getByRole("button", { name: /^Create draft/ })
+      .getByRole("button", { name: /^Create draft / })
       .first()
       .click();
   }
@@ -500,6 +502,40 @@ test("missing source variables mark both the field and its canvas node", async (
   );
   await page.getByRole("button", { name: "Back to canvas", exact: true }).click();
   await expect(page.getByRole("button", { name: /^Needs attention/ })).toHaveCount(0);
+});
+
+test("picker handoff keeps the new step editable across layouts and keyboard input", async ({
+  page,
+}, testInfo) => {
+  await openWorkflows(page);
+  for (const width of [1280, 390, 320]) {
+    for (const scheme of ["light", "dark"] as const) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+      await page.goto("/workflows");
+      await page.getByRole("button", { name: "New workflow", exact: true }).click();
+      const add = page.getByRole("button", { name: "Add step", exact: true });
+      await add.focus();
+      await add.press("Enter");
+      const choice = page
+        .getByRole("complementary", { name: "What happens next?" })
+        .getByRole("button", { name: /^Create draft / });
+      await choice.focus();
+      await choice.press("Enter");
+      await expect(page.getByRole("textbox", { name: "Step name", exact: true })).toHaveValue(
+        "Create draft",
+      );
+      const text = page.getByLabel("Post text", { exact: true });
+      const authored = `Audit picker ${width} ${scheme}`;
+      await text.fill(authored);
+      await page.getByRole("button", { name: "Back to canvas", exact: true }).click();
+      const node = page.getByRole("button", { name: /^Create draft / });
+      await node.focus();
+      await node.press("Enter");
+      await expect(text).toHaveText(authored);
+      await page.screenshot({ path: testInfo.outputPath(`picker-${width}-${scheme}.png`) });
+    }
+  }
 });
 
 test("inserting a variable preserves JSON and its nested outputs remain usable", async ({
@@ -565,7 +601,7 @@ test("inserting a variable preserves JSON and its nested outputs remain usable",
       .getByText("A new release", { exact: true }),
   ).toBeVisible({ timeout: 30000 });
   await page.getByRole("button", { name: "Back to canvas", exact: true }).click();
-  await page.getByRole("button", { name: /^Announcement/ }).click();
+  await page.getByRole("button", { name: /^Announcement / }).click();
   await expect(page.getByLabel("Post text", { exact: true })).toHaveAttribute(
     "aria-invalid",
     "false",

@@ -347,6 +347,7 @@
 									step="0.1"
 									value={trimStart}
 									oninput={(event) => updateStart(event.currentTarget.valueAsNumber)}
+									onchange={(event) => (event.currentTarget.value = String(trimStart))}
 								/>
 							</label>
 							<label class="space-y-1 text-xs text-muted-foreground">
@@ -358,6 +359,7 @@
 									step="0.1"
 									value={trimEnd}
 									oninput={(event) => updateEnd(event.currentTarget.valueAsNumber)}
+									onchange={(event) => (event.currentTarget.value = String(trimEnd))}
 								/>
 							</label>
 						</div>
@@ -380,8 +382,8 @@
 							/>
 						</div>
 						<p class="text-xs text-muted-foreground">
-							{formatSeconds(trimStart)} – {formatSeconds(trimEnd)} ·
-							{formatSeconds(currentTime)}
+							{m.video_upload_editor_trim()}: {formatSeconds(trimStart)} – {formatSeconds(trimEnd)} ·
+							{m.video_editor_source_position()}: {formatSeconds(currentTime)}
 						</p>
 					</fieldset>
 

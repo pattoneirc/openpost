@@ -6,6 +6,12 @@ import { authenticatePage, createWorkspace, registerUser } from "./helpers";
 
 async function installLocalWorkspacePicker(page: Page): Promise<void> {
   await page.addInitScript(() => {
+    if (!("showOpenFilePicker" in window)) {
+      Object.defineProperty(window, "showOpenFilePicker", {
+        configurable: true,
+        value: async () => [],
+      });
+    }
     Object.defineProperty(window, "showDirectoryPicker", {
       configurable: true,
       value: async () => {
@@ -161,14 +167,17 @@ async function seedDistinctSequences(page: Page): Promise<void> {
   });
 }
 
-test("Video Editor quick export saves an MP4 in the workspace", async ({ page }) => {
+test("Video Editor renders and saves an MP4 in the workspace", async ({ page }) => {
   test.setTimeout(90_000);
   const projectName = "Quick export proof";
   await createProject(page, projectName);
   await addTextItem(page);
 
   await openHeaderMoreMenu(page);
-  await page.getByRole("menuitem", { name: "Export MP4" }).click();
+  await page.getByRole("menuitem", { name: "Export", exact: true }).click();
+  await page.getByRole("dialog").getByText("WebM", { exact: true }).click();
+  await page.getByRole("option", { name: "MP4", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Render now", exact: true }).click();
   await expect(page.getByText(`Saved ${projectName}.mp4.`)).toBeVisible({
     timeout: 60_000,
   });
@@ -562,7 +571,10 @@ test("imports video and a photo, places both, and reopens the timeline", async (
   }
   await expect(page.locator("[data-timeline-item-id]")).toHaveCount(2);
   await page.keyboard.press("ControlOrMeta+s");
-  await expect(page.getByRole("banner").getByRole("status")).toHaveAttribute("data-state", "saved");
+  await expect(page.getByRole("banner").locator('[role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+  );
   await page.reload();
   await expect(page.getByRole("tablist", { name: "Editor workspaces" })).toBeVisible({
     timeout: 20_000,

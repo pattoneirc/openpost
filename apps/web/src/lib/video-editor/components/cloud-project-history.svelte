@@ -7,9 +7,11 @@
 	import { m } from '$lib/paraglide/messages';
 	import {
 		CloudVideoProjectRepository,
+		CloudProjectSourceUploadsPendingError,
 		type CloudVideoProjectConflict,
 		type CloudVideoProjectRevision
 	} from '$lib/video-editor/cloud/project-repository';
+	import CloudRevisionDetails from './cloud-revision-details.svelte';
 	import type { Project } from '$lib/video-editor/project/types';
 
 	let {
@@ -30,9 +32,14 @@
 	let loading = $state(false);
 	let working = $state(false);
 	let error = $state('');
+	let inspectedRevision = $state<number | null>(null);
 
 	$effect(() => {
-		if (!open || !projectId || !workspaceId) return;
+		if (!open) {
+			inspectedRevision = null;
+			return;
+		}
+		if (!projectId || !workspaceId) return;
 		void load();
 	});
 
@@ -136,17 +143,26 @@
 		error = '';
 		try {
 			const copyName = m.video_editor_project_copy_name({ name: conflict.document.name });
-			const copy = await repository().create(copyName, {
-				...conflict.document,
-				id: crypto.randomUUID(),
-				name: copyName,
-				createdAt: Date.now(),
-				updatedAt: Date.now()
-			});
+			const copy = await repository().create(
+				copyName,
+				{
+					...conflict.document,
+					id: crypto.randomUUID(),
+					name: copyName,
+					createdAt: Date.now(),
+					updatedAt: Date.now()
+				},
+				{ sourceProjectId: projectId }
+			);
 			await repository().resolveConflict(projectId, conflict.id, 'keep_current');
+			await onreload();
+			open = false;
 			await goto(resolveAppPath(`/video-editor/${copy.id}?storage=cloud`));
-		} catch {
-			error = m.video_editor_restore_failed();
+		} catch (cause) {
+			error =
+				cause instanceof CloudProjectSourceUploadsPendingError
+					? m.video_editor_conflict_copy_uploads_pending()
+					: m.video_editor_restore_failed();
 		} finally {
 			working = false;
 		}
@@ -197,7 +213,33 @@
 					<p class="text-xs text-muted-foreground">{m.video_editor_conflict_preserved()}</p>
 					{#each conflicts as conflict (conflict.id)}
 						<div class="rounded-lg border p-3">
-							<p class="text-sm font-medium">{conflict.name}</p>
+							<p class="text-sm font-medium break-words">{conflict.document.name}</p>
+							<p class="text-xs text-muted-foreground">
+								{m.video_editor_conflict_saved_revision({
+									revision: String(conflict.headRevision)
+								})}
+							</p>
+							{#if conflict.origin !== 'unknown'}
+								<p class="text-xs text-muted-foreground">
+									{conflict.origin === 'this_browser'
+										? m.video_editor_conflict_origin_this_browser()
+										: m.video_editor_conflict_origin_another_device()} ·
+									<code>{conflict.deviceId.slice(0, 8)}</code>
+								</p>
+							{/if}
+							<details class="mt-2 text-sm">
+								<summary
+									class="cursor-pointer rounded-sm py-1 focus-visible:outline-2 focus-visible:outline-ring [@media(pointer:coarse)]:min-h-11"
+									>{m.video_editor_details()}</summary
+								>
+								{#if conflict.deviceId}<p class="font-mono text-xs break-all">
+										{conflict.deviceId}
+									</p>{/if}
+								{#if revisions[0]}<CloudRevisionDetails
+										current={revisions[0].document}
+										document={conflict.document}
+									/>{/if}
+							</details>
 							<p class="mt-1 text-xs text-muted-foreground">
 								{new Date(conflict.createdAt).toLocaleString()}
 							</p>
@@ -238,34 +280,49 @@
 				{:else}
 					<ul class="divide-y rounded-lg border">
 						{#each revisions as revision (revision.revision)}
-							<li class="flex items-center justify-between gap-4 p-3">
-								<div class="min-w-0">
-									<p class="truncate text-sm font-medium">{revisionLabel(revision)}</p>
-									<p class="text-xs text-muted-foreground">
-										{new Date(revision.createdAt).toLocaleString()}
-									</p>
-								</div>
-								<div class="flex flex-wrap justify-end gap-1">
-									{#each revision.checkpoints as checkpoint (checkpoint.id)}
+							<li class="space-y-3 p-3">
+								<div class="flex flex-wrap items-center justify-between gap-3">
+									<div class="min-w-0">
+										<p class="truncate text-sm font-medium">{revisionLabel(revision)}</p>
+										<p class="text-xs text-muted-foreground">
+											{new Date(revision.createdAt).toLocaleString()}
+										</p>
+									</div>
+									<div class="flex flex-wrap justify-end gap-1">
+										<Button
+											size="sm"
+											variant="outline"
+											aria-expanded={inspectedRevision === revision.revision}
+											onclick={() =>
+												(inspectedRevision =
+													inspectedRevision === revision.revision ? null : revision.revision)}
+											>{m.video_editor_history_inspect()}</Button
+										>
+										{#each revision.checkpoints as checkpoint (checkpoint.id)}
+											<Button
+												size="sm"
+												variant="ghost"
+												disabled={working}
+												onclick={() => void deleteCheckpoint(checkpoint.id)}
+											>
+												{m.common_delete()}
+												{checkpoint.name}
+											</Button>
+										{/each}
 										<Button
 											size="sm"
 											variant="ghost"
-											disabled={working}
-											onclick={() => void deleteCheckpoint(checkpoint.id)}
+											disabled={working || revision.revision === revisions[0]?.revision}
+											onclick={() => void restoreRevision(revision.revision)}
 										>
-											{m.common_delete()}
-											{checkpoint.name}
+											{m.video_editor_restore()}
 										</Button>
-									{/each}
-									<Button
-										size="sm"
-										variant="ghost"
-										disabled={working || revision.revision === revisions[0]?.revision}
-										onclick={() => void restoreRevision(revision.revision)}
-									>
-										{m.video_editor_restore()}
-									</Button>
+									</div>
 								</div>
+								{#if inspectedRevision === revision.revision && revisions[0]}<CloudRevisionDetails
+										current={revisions[0].document}
+										document={revision.document}
+									/>{/if}
 							</li>
 						{/each}
 					</ul>

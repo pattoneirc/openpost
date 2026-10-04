@@ -425,6 +425,10 @@ func (commands publicationApplication) updateTx(
 	if publication.Revision != prepared.input.ExpectedRevision {
 		return PublicationResponse{}, commands.handler.publicationRevisionConflict(ctx, tx, publication, prepared.input.ExpectedRevision)
 	}
+	before, err := commands.handler.loadPublicationRevisionResponseTx(ctx, tx, publication)
+	if err != nil {
+		return PublicationResponse{}, err
+	}
 	clearQueuedSchedule, rescheduleQueuedJob, err := applyPublicationScheduleUpdate(
 		publication,
 		prepared.input.ScheduledAt,
@@ -434,7 +438,6 @@ func (commands publicationApplication) updateTx(
 	if err != nil {
 		return PublicationResponse{}, err
 	}
-	changedDomains := publicationChangedDomains(prepared.input)
 	applyPublicationFieldUpdates(publication, prepared.input)
 	publication.UpdatedAt = prepared.now
 	publication.Revision++
@@ -501,6 +504,11 @@ func (commands publicationApplication) updateTx(
 			return PublicationResponse{}, err
 		}
 	}
+	response, err := commands.handler.loadPublicationRevisionResponseTx(ctx, tx, publication)
+	if err != nil {
+		return PublicationResponse{}, err
+	}
+	changedDomains := publicationservice.ChangedAuthoredDomains(before.authored, response.authored)
 	if err := commands.handler.syncTextPostRevisionsTx(
 		ctx,
 		tx,
@@ -544,14 +552,7 @@ func (commands publicationApplication) updateTx(
 	}); err != nil {
 		return PublicationResponse{}, err
 	}
-	responses, err := commands.handler.loadPublicationResponsesWithDB(ctx, tx, []models.Publication{*publication})
-	if err != nil {
-		return PublicationResponse{}, err
-	}
-	if len(responses) != 1 {
-		return PublicationResponse{}, errors.New("failed to load updated publication")
-	}
-	return responses[0], nil
+	return response.response, nil
 }
 
 func (commands publicationApplication) ReplaceRenditions(
@@ -1160,7 +1161,7 @@ func (commands publicationApplication) retryFailedRenditionsTx(
 		Where("rendition.status = ?", models.RenditionStatusFailed).
 		Where("delivery.state = ?", providerwrite.DeliveryRejected).
 		Where("delivery.retry_safety IN (?, ?)", platform.PublishRetrySafe, platform.PublishRetryIdempotent).
-		Order("rendition.created_at ASC", "rendition.id ASC").
+		Order("rendition.position ASC", "rendition.id ASC").
 		Scan(ctx); err != nil {
 		return err
 	}

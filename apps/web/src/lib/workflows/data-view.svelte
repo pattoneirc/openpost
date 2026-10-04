@@ -1,8 +1,10 @@
 <script lang="ts">
 	/* oxlint-disable anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters -- The inspector renders arbitrary source and node-output JSON, preserving each value's actual type instead of imposing a node schema. */
+	import type { Snippet } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import InlineNotice from '$lib/components/inline-notice.svelte';
 	import Choice from './choice.svelte';
+	import { appendReferencePath } from './reference-path';
 	import { m } from '$lib/paraglide/messages';
 	let {
 		label,
@@ -10,7 +12,10 @@
 		empty = m.workflows_no_output(),
 		draggable = false,
 		status = '',
-		error = ''
+		error = '',
+		caption = '',
+		notice = '',
+		actions
 	}: {
 		label: string;
 		value?: unknown;
@@ -18,6 +23,9 @@
 		draggable?: boolean;
 		status?: string;
 		error?: string;
+		caption?: string;
+		notice?: string;
+		actions?: Snippet;
 	} = $props();
 	let mode = $state<'schema' | 'table' | 'json'>('schema');
 	const fields = $derived.by(() => {
@@ -26,7 +34,7 @@
 			if (result.length >= 200 || !value || typeof value !== 'object' || depth >= 5) return;
 			for (const [key, child] of Object.entries(value)) {
 				if (result.length >= 200) break;
-				const next = path ? `${path}.${key}` : key;
+				const next = appendReferencePath(path, key);
 				result.push({
 					path: next,
 					value: child,
@@ -74,7 +82,10 @@
 			/>
 		</div>{/if}
 	<div class="min-h-0 flex-1 overflow-auto p-3">
+		{#if caption}<p class="mb-3 text-xs text-muted-foreground">{caption}</p>{/if}
+		{#if notice}<InlineNotice tone="info" message={notice} class="mb-3" />{/if}
 		{#if error}<InlineNotice tone="error" message={error} class="mb-3" />{/if}
+		{#if actions}<div class="mb-3">{@render actions()}</div>{/if}
 		{#if value === undefined || value === null}<p
 				class="mx-auto max-w-60 py-12 text-center text-sm leading-6 text-muted-foreground"
 			>

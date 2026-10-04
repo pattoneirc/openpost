@@ -34,6 +34,13 @@
 
 	const editor = useImageEditor();
 	let layer = $derived(editor.selectedLayers[0] ?? null);
+	let layerLocked = $derived(layer ? editor.isLayerLocked(layer.id) : false);
+	let selectionLocked = $derived(
+		editor.selectedLayers.every((item) => editor.isLayerLocked(item.id))
+	);
+	let anySelectionLocked = $derived(
+		editor.selectedLayers.some((item) => editor.isLayerLocked(item.id))
+	);
 	let textRange = $derived(
 		editor.textRange?.pageID === editor.activePageID && editor.textRange.layerID === layer?.id
 			? editor.textRange
@@ -167,7 +174,7 @@
 	}
 
 	function setTextCurveType(type: ImageEditorTextCurveType): void {
-		if (!layer?.text || !editor.document) return;
+		if (!layer?.text || !editor.document || layerLocked) return;
 		editor.mutate('Change text curve', (document) => {
 			const current = document.pages
 				.find((page) => page.id === editor.activePageID)
@@ -400,6 +407,7 @@
 											{...props}
 											variant="destructive"
 											size="icon-sm"
+											disabled={selectionLocked}
 											onclick={() => editor.deleteSelected()}
 											aria-label={m.image_editor_delete_layer()}><ThemeIcon role="delete" /></Button
 										>
@@ -439,28 +447,45 @@
 									{m.image_editor_transform_layers()}
 								</p>
 								<div class="grid grid-cols-3 gap-1">
-									<Button variant="outline" size="xs" onclick={() => editor.alignSelected('left')}
+									<Button
+										variant="outline"
+										size="xs"
+										disabled={anySelectionLocked}
+										onclick={() => editor.alignSelected('left')}
 										>{m.image_editor_align_left()}</Button
 									>
 									<Button
 										variant="outline"
 										size="xs"
+										disabled={anySelectionLocked}
 										onclick={() => editor.alignSelected('center_x')}
 										>{m.image_editor_align_center()}</Button
-									>
-									<Button variant="outline" size="xs" onclick={() => editor.alignSelected('right')}
-										>{m.image_editor_align_right()}</Button
-									>
-									<Button variant="outline" size="xs" onclick={() => editor.alignSelected('top')}
-										>{m.image_editor_align_top()}</Button
 									>
 									<Button
 										variant="outline"
 										size="xs"
+										disabled={anySelectionLocked}
+										onclick={() => editor.alignSelected('right')}
+										>{m.image_editor_align_right()}</Button
+									>
+									<Button
+										variant="outline"
+										size="xs"
+										disabled={anySelectionLocked}
+										onclick={() => editor.alignSelected('top')}>{m.image_editor_align_top()}</Button
+									>
+									<Button
+										variant="outline"
+										size="xs"
+										disabled={anySelectionLocked}
 										onclick={() => editor.alignSelected('center_y')}
 										>{m.image_editor_align_middle()}</Button
 									>
-									<Button variant="outline" size="xs" onclick={() => editor.alignSelected('bottom')}
+									<Button
+										variant="outline"
+										size="xs"
+										disabled={anySelectionLocked}
+										onclick={() => editor.alignSelected('bottom')}
 										>{m.image_editor_align_bottom()}</Button
 									>
 								</div>
@@ -469,12 +494,14 @@
 										<Button
 											variant="outline"
 											size="xs"
+											disabled={anySelectionLocked}
 											onclick={() => editor.distributeSelected('horizontal')}
 											>{m.image_editor_distribute_x()}</Button
 										>
 										<Button
 											variant="outline"
 											size="xs"
+											disabled={anySelectionLocked}
 											onclick={() => editor.distributeSelected('vertical')}
 											>{m.image_editor_distribute_y()}</Button
 										>
@@ -492,7 +519,7 @@
 										value={Math.round(
 											selectedTransform?.[key as 'x' | 'y' | 'width' | 'height'] ?? 0
 										)}
-										disabled={!editor.canEdit}
+										disabled={!editor.canEdit || selectionLocked}
 										oninput={(event) =>
 											updateNumericTransform(key as 'x' | 'y' | 'width' | 'height', event)}
 									/>
@@ -518,7 +545,7 @@
 										max="180"
 										value={Math.round(selectedTransform?.rotation ?? 0)}
 										class="h-7 w-16 px-1.5 text-right text-xs"
-										disabled={!editor.canEdit}
+										disabled={!editor.canEdit || selectionLocked}
 										oninput={(event) =>
 											updateSelectedTransform(
 												'rotation',
@@ -529,7 +556,7 @@
 										variant="ghost"
 										size="icon-xs"
 										onclick={() => updateSelectedTransform('rotation', 0)}
-										disabled={!editor.canEdit}
+										disabled={!editor.canEdit || selectionLocked}
 										aria-label={m.image_editor_reset_rotation()}
 										title={m.image_editor_reset_rotation()}
 									>
@@ -542,7 +569,7 @@
 								min={-180}
 								max={180}
 								step={1}
-								disabled={!editor.canEdit}
+								disabled={!editor.canEdit || selectionLocked}
 								ariaLabel={m.image_editor_rotation()}
 								onValueChange={(rotation) => updateSelectedTransform('rotation', rotation)}
 							/>
@@ -580,7 +607,7 @@
 								max={1}
 								step={0.01}
 								value={layer.opacity}
-								disabled={!editor.canEdit}
+								disabled={!editor.canEdit || selectionLocked}
 								ariaLabel={m.image_editor_opacity({
 									value: Math.round(layer.opacity * 100)
 								})}
@@ -608,7 +635,7 @@
 								<AppSelect
 									value={selectedTextStyle?.font_style ?? layer.text.font_style}
 									ariaLabel={m.image_editor_style()}
-									disabled={!editor.canEdit}
+									disabled={!editor.canEdit || layerLocked}
 									onValueChange={(value) =>
 										editor.updateTextStyle(layer.id, 'font_style', value as 'normal' | 'italic')}
 									options={[
@@ -626,7 +653,7 @@
 									max="4"
 									step="0.05"
 									value={layer.text.line_height}
-									disabled={!editor.canEdit}
+									disabled={!editor.canEdit || layerLocked}
 									oninput={(event) =>
 										editor.updateLayer(
 											layer.id,
@@ -648,7 +675,7 @@
 									: 'outline'}
 								size="sm"
 								aria-pressed={Boolean(selectedTextStyle?.underline ?? layer.text.underline)}
-								disabled={!editor.canEdit || layer.locked}
+								disabled={!editor.canEdit || layerLocked}
 								onclick={() =>
 									editor.updateTextStyle(
 										layer.id,
@@ -662,7 +689,7 @@
 								variant={layer.text.strike ? 'secondary' : 'outline'}
 								size="sm"
 								aria-pressed={Boolean(layer.text.strike)}
-								disabled={!editor.canEdit || layer.locked}
+								disabled={!editor.canEdit || layerLocked}
 								onclick={() =>
 									editor.updateLayer(layer.id, {
 										text: { ...layer.text!, strike: !layer.text!.strike }
@@ -676,7 +703,7 @@
 							<AppSelect
 								value={layer.text.wrap ?? 'word'}
 								ariaLabel={m.image_editor_text_wrapping()}
-								disabled={!editor.canEdit || layer.locked}
+								disabled={!editor.canEdit || layerLocked}
 								onValueChange={(value) =>
 									editor.updateLayer(layer.id, {
 										text: {
@@ -702,7 +729,7 @@
 								max="100"
 								step="0.1"
 								value={layer.text.letter_spacing}
-								disabled={!editor.canEdit}
+								disabled={!editor.canEdit || layerLocked}
 								oninput={(event) =>
 									editor.updateLayer(
 										layer.id,
@@ -721,7 +748,7 @@
 							<ColorPicker
 								label={m.image_editor_color()}
 								value={selectedTextStyle?.color ?? layer.text.color}
-								disabled={!editor.canEdit}
+								disabled={!editor.canEdit || layerLocked}
 								{brandColors}
 								recentColors={editor.recentColors}
 								onChange={(value) =>
@@ -750,7 +777,7 @@
 								<AppSelect
 									value={layer.text.curve?.type ?? 'none'}
 									ariaLabel={m.image_editor_text_curve()}
-									disabled={!editor.canEdit}
+									disabled={!editor.canEdit || layerLocked}
 									onValueChange={(value) => setTextCurveType(value as ImageEditorTextCurveType)}
 									options={[
 										{ value: 'none', label: m.image_editor_curve_none() },
@@ -779,7 +806,7 @@
 											min={0.05}
 											max={1}
 											step={0.01}
-											disabled={!editor.canEdit}
+											disabled={!editor.canEdit || layerLocked}
 											ariaLabel={m.image_editor_curve_strength()}
 											onValueChange={(strength) =>
 												editor.updateLayer(
@@ -806,7 +833,7 @@
 										min={-1}
 										max={1}
 										step={0.01}
-										disabled={!editor.canEdit}
+										disabled={!editor.canEdit || layerLocked}
 										ariaLabel={m.image_editor_curve_offset()}
 										onValueChange={(offset) =>
 											editor.updateLayer(
@@ -845,7 +872,7 @@
 								<ColorPicker
 									label={m.image_editor_highlight()}
 									value={layer.text.highlight_color?.slice(0, 7) || '#ffffff'}
-									disabled={!editor.canEdit}
+									disabled={!editor.canEdit || layerLocked}
 									{brandColors}
 									recentColors={editor.recentColors}
 									onChange={(value) =>
@@ -860,7 +887,7 @@
 								<ColorPicker
 									label={m.image_editor_stroke()}
 									value={layer.text.stroke_color?.slice(0, 7) || '#000000'}
-									disabled={!editor.canEdit}
+									disabled={!editor.canEdit || layerLocked}
 									{brandColors}
 									recentColors={editor.recentColors}
 									onChange={(value) =>
@@ -879,7 +906,7 @@
 								max="32"
 								step="0.5"
 								value={layer.text.stroke_width}
-								disabled={!editor.canEdit}
+								disabled={!editor.canEdit || layerLocked}
 								oninput={(event) =>
 									editor.updateLayer(layer.id, {
 										text: {
@@ -922,7 +949,7 @@
 							<AppSelect
 								value={layer.shape.kind}
 								ariaLabel={m.image_editor_shape_kind()}
-								disabled={!editor.canEdit}
+								disabled={!editor.canEdit || layerLocked}
 								onValueChange={(value) =>
 									editor.updateLayer(layer.id, {
 										shape: {
@@ -951,7 +978,7 @@
 							<ColorPicker
 								label={m.image_editor_fill()}
 								value={layer.shape.fill}
-								disabled={!editor.canEdit}
+								disabled={!editor.canEdit || layerLocked}
 								{brandColors}
 								recentColors={editor.recentColors}
 								onChange={(value) =>
@@ -966,7 +993,7 @@
 						<Button
 							variant={layer.shape.fill === '#00000000' ? 'secondary' : 'ghost'}
 							size="xs"
-							disabled={!editor.canEdit || layer.locked || layer.shape.kind === 'line'}
+							disabled={!editor.canEdit || layerLocked || layer.shape.kind === 'line'}
 							onclick={() =>
 								editor.updateLayer(layer.id, {
 									shape: { ...layer.shape!, fill: '#00000000' }
@@ -980,7 +1007,7 @@
 								<ColorPicker
 									label={m.image_editor_stroke()}
 									value={layer.shape.stroke}
-									disabled={!editor.canEdit}
+									disabled={!editor.canEdit || layerLocked}
 									{brandColors}
 									recentColors={editor.recentColors}
 									onChange={(value) =>
@@ -997,7 +1024,7 @@
 									min="0"
 									max="64"
 									value={layer.shape.stroke_width}
-									disabled={!editor.canEdit}
+									disabled={!editor.canEdit || layerLocked}
 									oninput={(event) =>
 										editor.updateLayer(layer.id, {
 											shape: {
@@ -1011,7 +1038,7 @@
 						<Button
 							variant={layer.shape.stroke_width === 0 ? 'secondary' : 'ghost'}
 							size="xs"
-							disabled={!editor.canEdit || layer.locked}
+							disabled={!editor.canEdit || layerLocked}
 							onclick={() =>
 								editor.updateLayer(layer.id, {
 									shape: { ...layer.shape!, stroke_width: 0 }
@@ -1026,6 +1053,7 @@
 								min="0"
 								value={layer.shape.radius}
 								disabled={!editor.canEdit ||
+									layerLocked ||
 									!['rectangle', 'rounded_rectangle'].includes(layer.shape.kind)}
 								oninput={(event) =>
 									editor.updateLayer(layer.id, {
@@ -1053,7 +1081,7 @@
 							<AppSelect
 								value={layer.image.fit}
 								ariaLabel={m.image_editor_fit()}
-								disabled={!editor.canEdit}
+								disabled={!editor.canEdit || layerLocked}
 								onValueChange={(value) =>
 									editor.updateLayer(layer.id, {
 										image: {
@@ -1098,7 +1126,7 @@
 									variant="ghost"
 									size="xs"
 									onclick={() => (editor.activeTool = 'crop')}
-									disabled={!editor.canEdit || layer.locked}
+									disabled={!editor.canEdit || layerLocked}
 								>
 									{m.image_editor_edit_crop()}
 								</Button>
@@ -1127,7 +1155,7 @@
 												max="100"
 												step="1"
 												value={Math.round(cropValue(key as 'x' | 'y' | 'width' | 'height') * 100)}
-												disabled={!editor.canEdit}
+												disabled={!editor.canEdit || layerLocked}
 												oninput={(event) =>
 													updateCrop(
 														key as 'x' | 'y' | 'width' | 'height',
@@ -1145,7 +1173,7 @@
 								variant="outline"
 								size="sm"
 								class="w-full"
-								disabled={!editor.canEdit || layer.locked}
+								disabled={!editor.canEdit || layerLocked}
 								onclick={() => editor.restoreImageEraseMask(layer.id)}
 							>
 								{m.image_editor_restore_erased_image()}
@@ -1214,7 +1242,7 @@
 													{max}
 													step={0.01}
 													value={layer.image.adjustments[key]}
-													disabled={!editor.canEdit}
+													disabled={!editor.canEdit || layerLocked}
 													ariaLabel={label}
 													onValueChange={(value) => setAdjustment(key, value)}
 												/>

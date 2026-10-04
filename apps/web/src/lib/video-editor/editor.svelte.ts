@@ -21,10 +21,16 @@ import { sceneBrowser } from './media/scene-search/scene-browser.svelte';
 import { sequenceStore } from './sequences/sequence-store.svelte';
 import { readSequenceView, writeSequenceView } from './sequences/sequence-view-storage';
 import { editorSettings } from './settings/editor-settings.svelte';
+import {
+	DEFAULT_MOTION_GENERATOR_SETTINGS,
+	type MotionGeneratorSettings
+} from './timeline/motion-generator';
+import type { MotionPresetApplyMode } from './timeline/actions/motion-presets';
 import { mediaRecovery } from './media/media-recovery.svelte';
 import { PeriodicAutosaveController } from './settings/periodic-autosave';
 import { getNextShuttleRate, type ShuttleDirection } from './preview/shuttle';
 import { unsupportedProjectSchemaVersion } from './project/project-editability';
+import { migrateProjectDocument } from './project/defaults';
 import { loadProjectFontAssets } from './typography/project-font-assets';
 import { m } from '$lib/paraglide/messages';
 import {
@@ -43,6 +49,7 @@ const logger = createLogger('EditorSession');
 
 class EditorSession {
 	private projectState = $state<Project | null>(null);
+	private unsubscribePlayhead: (() => void) | null = null;
 	loading = $state(true);
 	loadError = $state('');
 	saving = $state(false);
@@ -50,6 +57,13 @@ class EditorSession {
 	saveConflict = $state(false);
 	projectDirty = $state(false);
 	missingFontAssetIds = $state<string[]>([]);
+	motionPresetApplication = $state<{
+		mode: MotionPresetApplyMode;
+		settings: MotionGeneratorSettings;
+	}>({
+		mode: 'replace',
+		settings: { ...DEFAULT_MOTION_GENERATOR_SETTINGS }
+	});
 
 	clock = new Clock({ fps: 30, canSeek: () => !timelineStore.seekLocked });
 	private transport = $state<ReactiveTransportState>({
@@ -81,6 +95,14 @@ class EditorSession {
 	}
 
 	set project(project: Project | null) {
+		if (project && !this.unsubscribePlayhead) {
+			this.unsubscribePlayhead = commandHistory.onPlayheadReconciled((frame) =>
+				this.clock.seek(frame)
+			);
+		} else if (!project) {
+			this.unsubscribePlayhead?.();
+			this.unsubscribePlayhead = null;
+		}
 		this.projectState = project;
 		if (project) sequenceStore._setRootResolution(project.metadata);
 	}
@@ -94,6 +116,10 @@ class EditorSession {
 			this.clock.setRate(1);
 			this.transport.mode = 'normal';
 		});
+	}
+
+	get storageWorkspaceId(): string {
+		return this.projectState ? this.cloudWorkspaceId : '';
 	}
 
 	get isPlaying(): boolean {
@@ -127,6 +153,10 @@ class EditorSession {
 			}
 		}
 		this.stopAutosaveTimers();
+		this.motionPresetApplication = {
+			mode: 'replace',
+			settings: { ...DEFAULT_MOTION_GENERATOR_SETTINGS }
+		};
 		this.project = null;
 		this.projectId = projectId;
 		this.cloudWorkspaceId = cloudWorkspaceId;
@@ -146,7 +176,7 @@ class EditorSession {
 			mediaPool.clear();
 			mediaRecovery.reset();
 			const cloudProject = this.cloudRepository ? await this.cloudRepository.get(projectId) : null;
-			const project = cloudProject?.document ?? (await getProject(projectId));
+			let project = cloudProject?.document ?? (await getProject(projectId));
 			if (!project) {
 				this.loadError = 'Project not found';
 				return;
@@ -159,6 +189,8 @@ class EditorSession {
 				});
 				return;
 			}
+			const migration = cloudProject ? migrateProjectDocument(project) : null;
+			if (migration) project = migration.project;
 			this.project = {
 				...project,
 				animationPresets: normalizeAnimationPresets(project.animationPresets)
@@ -193,6 +225,10 @@ class EditorSession {
 			}
 			await mediaRecovery.scan(media, timelineStore.items);
 			this.configurePeriodicAutosave();
+			if (migration?.migrated) {
+				this.projectDirty = true;
+				this.scheduleAutosave();
+			}
 		} catch (error) {
 			this.loadError = error instanceof Error ? error.message : String(error);
 		} finally {

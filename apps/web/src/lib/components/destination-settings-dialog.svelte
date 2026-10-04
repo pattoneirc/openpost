@@ -6,6 +6,7 @@
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
+	import { countPlatformText, YOUTUBE_DESCRIPTION_MAX_BYTES } from '@openpost/platform-text';
 	import AppSelect from './app-select.svelte';
 	import DestinationOptionCombobox from './destination-option-combobox.svelte';
 	import SocialAccountIdentity from './social-account-identity.svelte';
@@ -49,6 +50,7 @@
 		optionsLoading?: boolean;
 		optionsError?: string;
 		scopeLabel?: string;
+		emptySettingsHint?: string;
 		formatValue?: string;
 		formatOptions?: Array<{ value: string; label: string }>;
 		formatRequired?: boolean;
@@ -63,6 +65,11 @@
 			file: File,
 			metadata?: GeneratedCoverFrame
 		) => void | Promise<void>;
+		onEditCover?: (
+			setting: SettingDefinition,
+			file: File,
+			metadata: GeneratedCoverFrame
+		) => Promise<void>;
 		onRemove?: () => void;
 	}
 
@@ -78,6 +85,7 @@
 		optionsLoading = false,
 		optionsError = '',
 		scopeLabel = '',
+		emptySettingsHint = '',
 		formatValue = '',
 		formatOptions = [],
 		formatRequired = false,
@@ -88,6 +96,7 @@
 		onOptionLoadMore,
 		onRetry,
 		onFileChange,
+		onEditCover,
 		onRemove
 	}: Props = $props();
 
@@ -145,6 +154,12 @@
 		mediaItems.find((item) => item.mimeType.startsWith('video/')) ??
 			(mediaItems.length === 1 ? mediaItems[0] : undefined)
 	);
+
+	function youtubeDescriptionInvalid(setting: SettingDefinition): boolean {
+		if (account?.platform !== 'youtube' || setting.key !== 'description') return false;
+		const text = valueAsString(setting.key).trim();
+		return countPlatformText('youtube', text) > YOUTUBE_DESCRIPTION_MAX_BYTES || /[<>]/.test(text);
+	}
 
 	function valueAsString(key: string, scopedValues = values): string {
 		const value = scopedValues[key];
@@ -414,6 +429,7 @@
 		</Dialog.Header>
 
 		<div class="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
+			{#if emptySettingsHint}<InlineNotice tone="info" message={emptySettingsHint} />{/if}
 			{#if validationMessage}
 				<InlineNotice tone="error" message={validationMessage}>
 					{#snippet actions()}
@@ -676,13 +692,15 @@
 											onChange={(value) => onChange(setting.key, value)}
 										/>
 									{:else if control === 'cover_frame' && videoMediaItem}
-										<VideoCoverFramePicker
-											mediaId={videoMediaItem.id}
-											value={values[setting.key]}
-											mode="timestamp"
-											label={settingLabel(setting)}
-											onTimestampChange={(timestampMs) => onChange(setting.key, timestampMs)}
-										/>
+										{#key videoMediaItem.id}
+											<VideoCoverFramePicker
+												mediaId={videoMediaItem.id}
+												value={values[setting.key]}
+												mode="timestamp"
+												label={settingLabel(setting)}
+												onTimestampChange={(timestampMs) => onChange(setting.key, timestampMs)}
+											/>
+										{/key}
 									{:else if ['media_picker', 'captions_file'].includes(control) && onFileChange}
 										<Input
 											id="destination-setting-{setting.key}"
@@ -705,22 +723,57 @@
 											</p>
 										{/if}
 										{#if supportsGeneratedCover(setting) && videoMediaItem}
-											<VideoCoverFramePicker
-												mediaId={videoMediaItem.id}
-												value={values[setting.key]}
-												mode="image"
-												label={settingLabel(setting)}
-												onFileChange={(file, metadata) => onFileChange?.(setting, file, metadata)}
-											/>
+											{#key videoMediaItem.id}
+												<VideoCoverFramePicker
+													mediaId={videoMediaItem.id}
+													value={values[setting.key]}
+													mode="image"
+													label={settingLabel(setting)}
+													onFileChange={(file, metadata) => onFileChange?.(setting, file, metadata)}
+													onEditFrame={onEditCover
+														? (file, metadata) => onEditCover!(setting, file, metadata)
+														: undefined}
+												/>
+											{/key}
 										{/if}
 									{:else if setting.type === 'textarea' || control === 'follow_up'}
 										<Textarea
 											id="destination-setting-{setting.key}"
-											class="mt-1 min-h-24"
+											class={account?.platform === 'youtube' && setting.key === 'description'
+												? 'mt-1 max-h-48 min-h-24 overflow-y-auto'
+												: 'mt-1 min-h-24'}
 											value={valueAsString(setting.key)}
+											aria-invalid={youtubeDescriptionInvalid(setting)}
+											aria-describedby={account?.platform === 'youtube' &&
+											setting.key === 'description'
+												? /[<>]/.test(valueAsString(setting.key))
+													? 'youtube-description-usage youtube-description-character-error'
+													: 'youtube-description-usage'
+												: undefined}
 											disabled={Boolean(setting.unavailable_reason)}
 											oninput={(event) => onChange(setting.key, event.currentTarget.value)}
 										/>
+										{#if account?.platform === 'youtube' && setting.key === 'description'}
+											<p
+												id="youtube-description-usage"
+												class="mt-1 text-xs"
+												class:text-destructive={youtubeDescriptionInvalid(setting)}
+												class:text-muted-foreground={!youtubeDescriptionInvalid(setting)}
+											>
+												{m.compose_description_bytes({
+													count: countPlatformText('youtube', valueAsString(setting.key)),
+													limit: YOUTUBE_DESCRIPTION_MAX_BYTES
+												})}
+											</p>
+											{#if /[<>]/.test(valueAsString(setting.key))}
+												<p
+													id="youtube-description-character-error"
+													class="mt-1 text-xs text-destructive"
+												>
+													{m.compose_description_angle_brackets()}
+												</p>
+											{/if}
+										{/if}
 									{:else}
 										<Input
 											id="destination-setting-{setting.key}"

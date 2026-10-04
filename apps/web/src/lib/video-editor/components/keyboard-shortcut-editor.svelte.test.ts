@@ -1,14 +1,38 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render } from 'vitest-browser-svelte';
+import { page, userEvent } from 'vitest/browser';
+import { WebThemeRuntime } from '$lib/themes/runtime';
+import { resolveBuiltInTheme } from '$lib/themes/builtins';
 import '../../../routes/layout.css';
 import { keyboardShortcuts } from '../settings/keyboard-shortcuts.svelte';
 import KeyboardShortcutEditor from './keyboard-shortcut-editor.svelte';
+import EditorSettingsDialog from './editor-settings-dialog.svelte';
 
 beforeEach(() => {
 	keyboardShortcuts.resetAll();
 });
 
 describe('KeyboardShortcutEditor', () => {
+	it('cancels shortcut capture before Escape dismisses Settings', async () => {
+		const screen = await render(EditorSettingsDialog, { open: true });
+		const dialog = screen.getByRole('dialog', { name: 'Editor settings' });
+		await dialog.getByRole('button', { name: 'Shortcuts', exact: true }).click();
+		const play = dialog.getByRole('group', { name: 'Play or pause', exact: true });
+		for (const conflict of [false, true]) {
+			await play.getByRole('button', { name: 'Change', exact: true }).click();
+			if (conflict) {
+				await userEvent.keyboard('{ArrowRight}');
+				await expect.element(dialog.getByText(/Already used by.*Next frame/)).toBeVisible();
+			}
+			await userEvent.keyboard('{Escape}');
+			await expect.element(dialog).toBeVisible();
+			await expect.element(play.getByRole('button', { name: 'Change', exact: true })).toBeVisible();
+			expect(keyboardShortcuts.bindings.PLAY_PAUSE).toBe('space');
+		}
+		await userEvent.keyboard('{Escape}');
+		await expect.element(dialog).not.toBeInTheDocument();
+	});
+
 	it('groups alternate bindings and filters commands from an accessible keyboard', async () => {
 		const screen = await render(KeyboardShortcutEditor);
 
@@ -90,3 +114,39 @@ describe('KeyboardShortcutEditor', () => {
 		await expect.element(group.getByRole('button', { name: /^All/ })).toBeVisible();
 	});
 });
+
+it('explains playback target and focused control scope beside filtered shuttle commands', async () => {
+	const screen = await render(EditorSettingsDialog, { open: true });
+	const theme = new WebThemeRuntime();
+	try {
+		const dialog = screen.getByRole('dialog', { name: 'Editor settings' });
+		await dialog.getByRole('button', { name: 'Shortcuts', exact: true }).click();
+		const search = dialog.getByRole('searchbox', { name: 'Search commands or keys', exact: true });
+		await search.fill('shuttle');
+		const hint = dialog.getByText(
+			'Shuttle controls Source when it is focused or hovered, otherwise Program. Focused sliders, buttons and text fields keep their own keys.',
+			{ exact: true }
+		);
+		await expect.element(hint).toBeVisible();
+		for (const scheme of ['light', 'dark'] as const) {
+			await theme.apply(resolveBuiltInTheme('dither', scheme), document.documentElement);
+			for (const width of [1280, 390, 320]) {
+				await page.viewport(width, 844);
+				hint.element().scrollIntoView({ block: 'center' });
+				await expect.element(hint).toBeVisible();
+				await expect
+					.element(dialog.getByRole('group', { name: 'Shuttle forward', exact: true }))
+					.toBeInTheDocument();
+				await page.screenshot({ path: `vkp001-${scheme}-${width}.png` });
+			}
+		}
+		await search.fill('');
+		search.element().focus();
+		await userEvent.keyboard('shuttle');
+		await expect.element(hint).toBeVisible();
+		expect(keyboardShortcuts.bindings.SHUTTLE_FORWARD).toBe('l');
+	} finally {
+		await screen.unmount();
+		theme.clear(document.documentElement);
+	}
+}, 30000);

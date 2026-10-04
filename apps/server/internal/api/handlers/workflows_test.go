@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,7 +13,6 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humaecho"
 	"github.com/labstack/echo/v4"
 	"github.com/openpost/backend/internal/api/middleware"
-	"github.com/openpost/backend/internal/database"
 	"github.com/openpost/backend/internal/jobregistry"
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/services/workflows"
@@ -31,10 +29,7 @@ func (workflowSession) AuthenticateBearer(context.Context, string) (*middleware.
 
 func workflowHandlerDB(t *testing.T) *bun.DB {
 	t.Helper()
-	db, err := database.InitDBWithDriver("sqlite", fmt.Sprintf("file:workflow-http-%d?mode=memory&cache=shared", time.Now().UnixNano()))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	require.NoError(t, database.CreateSchema(db))
+	db := newHandlerSchemaTestDB(t)
 	now := time.Now().UTC()
 	for _, row := range []any{
 		&models.User{ID: "user", Email: "workflow-http@example.com", PasswordHash: "hash", CreatedAt: now},
@@ -97,7 +92,12 @@ func TestWorkflowHTTPPreviewAndLiveDraftApproval(t *testing.T) {
 	require.Equal(t, "A real native draft", post.SourceText)
 	_, err = db.NewUpdate().Model((*models.Publication)(nil)).Set("revision = revision + 1, source_text = ?", "Edited after review").Where("id = ?", post.ID).Exec(t.Context())
 	require.NoError(t, err)
-	request(http.MethodPost, "/workflow-runs/"+live.ID+"/approve?workspace_id=ws", map[string]any{"expected_revision": live.Revision, "publication_revision": post.Revision}, http.StatusConflict)
+	conflict := request(http.MethodPost, "/workflow-runs/"+live.ID+"/approve?workspace_id=ws", map[string]any{"expected_revision": live.Revision, "publication_revision": post.Revision}, http.StatusConflict)
+	var problem struct {
+		Detail string `json:"detail"`
+	}
+	require.NoError(t, json.Unmarshal(conflict, &problem))
+	require.Equal(t, "the post changed; refresh the post and review its current revision before approving", problem.Detail)
 	request(http.MethodPost, "/workflow-runs/"+live.ID+"/approve?workspace_id=ws", map[string]any{"expected_revision": live.Revision, "publication_revision": post.Revision + 1}, http.StatusOK)
 	request(http.MethodPost, "/workflow-runs/"+live.ID+"/approve?workspace_id=ws", map[string]any{"expected_revision": live.Revision, "publication_revision": post.Revision + 1}, http.StatusConflict)
 	request(http.MethodGet, "/workflow-runs/"+live.ID+"?workspace_id=other", nil, http.StatusForbidden)
@@ -218,4 +218,31 @@ func TestWorkflowScheduleReportsNativeDestinationValidation(t *testing.T) {
 	count, err := db.NewSelect().Model((*models.Job)(nil)).Where("scope_id = ?", draft.Output["id"]).Count(t.Context())
 	require.NoError(t, err)
 	require.Zero(t, count)
+}
+
+func TestPostCreatedSourceHTTPReportsCreationWithoutPublicationTime(t *testing.T) {
+	db := workflowHandlerDB(t)
+	createdAt := time.Date(2026, time.October, 3, 10, 15, 30, 0, time.UTC)
+	_, err := db.NewInsert().Model(&models.Publication{ID: "draft-event", WorkspaceID: "ws", CreatedByID: "user", CreationSource: "web", Title: "Unscheduled draft", SourceText: "Not published", CreatedAt: createdAt, UpdatedAt: createdAt}).Exec(t.Context())
+	require.NoError(t, err)
+	service := workflows.NewService(db, nil, nil)
+	e := echo.New()
+	api := humaecho.NewWithGroup(e, e.Group("/api/v1"), huma.DefaultConfig("Test", "1"))
+	NewWorkflowHandler(service, workflowSession{}).RegisterRoutes(api)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/workflow-sources/sample?workspace_id=ws", bytes.NewBufferString(`{"kind":"publication_created"}`))
+	req.Header.Set("Authorization", "Bearer session")
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, req)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var items []map[string]any
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &items))
+	require.Len(t, items, 1)
+	require.Equal(t, "draft-event", items[0]["publication_id"])
+	require.Equal(t, "2026-10-03T10:15:30Z", items[0]["created_at"])
+	require.NotContains(t, items[0], "published_at")
+	var lifecycleCount int
+	lifecycleCount, err = db.NewSelect().Table("publication_lifecycle_events").Where("publication_id = ?", "draft-event").Count(t.Context())
+	require.NoError(t, err)
+	require.Zero(t, lifecycleCount)
 }

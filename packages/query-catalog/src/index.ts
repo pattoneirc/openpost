@@ -38,3 +38,8 @@ export * from "./voice-profiles";
 export * from "./video-projects";
 export * from "./screenshot-templates";
 export * from "./workflows";
+
+export * from "./editor-agent";
+
+export * from "./repurpose";
+export * from "./publication-builds";

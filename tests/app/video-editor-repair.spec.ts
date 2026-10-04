@@ -4,6 +4,55 @@ import { authenticatePage, createWorkspace, registerUser } from "./helpers";
 
 const CLOUD_SAVE_TIMEOUT_MS = 15_000;
 
+test("header history actions close after the selected command becomes disabled", async ({
+  page,
+  request,
+}, testInfo) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const auth = await registerUser(request, `history-menu-${randomUUID()}@example.com`);
+  await createWorkspace(request, auth.token, "History menu");
+  await authenticatePage(page, auth.token);
+  await newProject(page, "History menu proof");
+  await page.getByRole("button", { name: "Add layer", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Add text", exact: true }).click();
+  const header = page.getByRole("banner");
+  const more = header.getByRole("button", { name: "More actions", exact: true });
+  const summary = page.locator("[data-project-summary]");
+  await expect(summary).toContainText("Clips: 1");
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+    await expect(page.locator("html")).toHaveAttribute("data-theme-scheme", scheme);
+    for (const width of [1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      for (const command of ["Undo", "Redo"] as const) {
+        await more.click();
+        const action = page.getByRole("menuitem", { name: command, exact: true });
+        if (width === 1280) await action.click();
+        else {
+          await action.focus();
+          await action.press("Enter");
+        }
+        await expect(summary).toContainText(command === "Undo" ? "Clips: 0" : "Clips: 1");
+        await expect(page.getByRole("menu")).toHaveCount(0);
+        if (width !== 1280) await expect(more).toBeFocused();
+      }
+      await page.screenshot({ path: testInfo.outputPath(`history-menu-${scheme}-${width}.png`) });
+    }
+  }
+  await more.click();
+  await expect(page.getByRole("menuitem", { name: "Redo", exact: true })).toBeDisabled();
+  await page.getByRole("menuitem", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  await expect(header.locator('[role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+  );
+  await page.reload();
+  await expect(summary).toContainText("Clips: 1");
+  expect(errors).toEqual([]);
+});
+
 async function newProject(page: Page, name: string) {
   if (new URL(page.url()).pathname !== "/video-editor") await page.goto("/video-editor");
   await page.getByRole("button", { name: "Open Video Editor", exact: true }).click();
@@ -11,9 +60,13 @@ async function newProject(page: Page, name: string) {
   await expect(title).toHaveValue("Untitled project");
   await title.fill(name);
   await title.press("Tab");
-  await expect(page.locator("header").getByRole("status")).toHaveAttribute("data-state", "saved", {
-    timeout: CLOUD_SAVE_TIMEOUT_MS,
-  });
+  await expect(page.locator('header [role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+    {
+      timeout: CLOUD_SAVE_TIMEOUT_MS,
+    },
+  );
   await expect(page.getByRole("tablist", { name: "Editor workspaces" })).toBeVisible();
 }
 
@@ -67,9 +120,13 @@ test("cloud editing saves text, preserves spaces and reopens without a refresh",
   await page.keyboard.press("ControlOrMeta+Shift+z");
   await expect(page.getByRole("img", { name: "A launch with spaces", exact: true })).toBeVisible();
   await page.keyboard.press("ControlOrMeta+s");
-  await expect(page.locator("header").getByRole("status")).toHaveAttribute("data-state", "saved", {
-    timeout: CLOUD_SAVE_TIMEOUT_MS,
-  });
+  await expect(page.locator('header [role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+    {
+      timeout: CLOUD_SAVE_TIMEOUT_MS,
+    },
+  );
   await page
     .locator("header")
     .getByRole("link", { name: /Video Editor/u })
@@ -79,7 +136,10 @@ test("cloud editing saves text, preserves spaces and reopens without a refresh",
   await expect(page.getByRole("img", { name: "A launch with spaces", exact: true })).toBeVisible();
   await expect(page.getByText("Save failed", { exact: false })).toHaveCount(0);
   await page.locator("header").getByRole("button", { name: "More actions" }).click();
-  await page.getByRole("menuitem", { name: "Export MP4", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Export", exact: true }).click();
+  await page.getByRole("dialog").getByText("WebM", { exact: true }).click();
+  await page.getByRole("option", { name: "MP4", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Render now", exact: true }).click();
   await expect(
     page.getByText("Saved Text proof.mp4.", {
       exact: true,
@@ -96,7 +156,7 @@ test("cloud editing saves text, preserves spaces and reopens without a refresh",
     .click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   await newProject(page, "Text proof");
-  await expect(page.locator("[data-project-summary]")).toContainText("0 clips");
+  await expect(page.locator("[data-project-summary]")).toContainText("Clips: 0");
   expect(errors).toEqual([]);
 });
 
@@ -393,18 +453,22 @@ test("recording setup fits both themes and imports a real streaming WebM", async
   await waitForRecording(dialog);
   await dialog.getByRole("button", { name: "Stop recording" }).click();
   await expect(dialog).not.toBeVisible({ timeout: 30000 });
-  await expect(page.locator("[data-project-summary]")).toContainText("1 clip");
+  await expect(page.locator("[data-project-summary]")).toContainText("Clips: 1");
   await page.keyboard.press("ControlOrMeta+s");
-  await expect(page.locator("header").getByRole("status")).toHaveAttribute("data-state", "saved", {
-    timeout: 15000,
-  });
+  await expect(page.locator('header [role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+    {
+      timeout: 15000,
+    },
+  );
   await page.locator("header").getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Record screen" }).click();
   await dialog.getByRole("button", { name: "Start recording" }).click();
   await waitForRecording(dialog);
   await page.evaluate(() => window.dispatchEvent(new Event("test-stop-sharing")));
   await expect(dialog).not.toBeVisible({ timeout: 30000 });
-  await expect(page.locator("[data-project-summary]")).toContainText("2 clips");
+  await expect(page.locator("[data-project-summary]")).toContainText("Clips: 2");
   const uploadRoute = /\/api\/v1\/media\/upload(?:-session)?(?:\?|$)/;
   await page.route(uploadRoute, (route) =>
     route.fulfill({
@@ -445,7 +509,7 @@ test("recording setup fits both themes and imports a real streaming WebM", async
     await expect(dialog.getByRole("status")).toHaveAttribute("aria-busy", "true");
     await expect(dialog.getByRole("status")).toContainText("Saving");
     await expect(dialog.getByRole("link", { name: "Download Screen", exact: true })).toHaveCount(0);
-    await expect(page.locator("[data-project-summary]")).toContainText("2 clips");
+    await expect(page.locator("[data-project-summary]")).toContainText("Clips: 2");
   } finally {
     releaseRecoveryUpload();
   }
@@ -453,7 +517,7 @@ test("recording setup fits both themes and imports a real streaming WebM", async
   await expect(dialog.getByRole("link", { name: "Download Screen", exact: true })).toHaveCount(0, {
     timeout: 30_000,
   });
-  await expect(page.locator("[data-project-summary]")).toContainText("3 clips");
+  await expect(page.locator("[data-project-summary]")).toContainText("Clips: 3");
 });
 
 test("editing text over a background does not leave the old lettering underneath", async ({

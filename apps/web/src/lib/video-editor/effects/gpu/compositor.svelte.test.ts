@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GpuCompositor, type GpuRenderEffect } from './compositor';
+import { getGpuEffectDefaultParams } from './registry';
 import { lut, encodeLutData } from './lut';
 import type { GpuParamValues } from './types';
 
@@ -49,8 +50,13 @@ describe('GPU effect texture reuse', () => {
 		const red = solidLut(255, 0, 0);
 		try {
 			expect(render(red)).toEqual([255, 0, 0, 255]);
-			// A 2-cube cannot fill a 3-cube. Invalid data must use the identity fallback.
+			// A 2-cube cannot fill a 3-cube. Invalid data must preserve the source exactly.
 			expect(render({ ...red, lutSize: 3 })).toEqual([80, 120, 160, 255]);
+			expect(render({ lutSize: 3, lutData: '', intensity: 1 })).toEqual([80, 120, 160, 255]);
+			expect(render({ lutSize: 3, lutData: '!', intensity: 1 })).toEqual([80, 120, 160, 255]);
+			const blue = solidLut(0, 0, 255, 3);
+			expect(render(blue)).toEqual([0, 0, 255, 255]);
+			expect(render({ ...blue, intensity: 0 })).toEqual([80, 120, 160, 255]);
 			expect(render(red)).toEqual([255, 0, 0, 255]);
 		} finally {
 			compositor.dispose();
@@ -131,4 +137,49 @@ it('updates reused color uniforms after changing the stack length and parameter 
 	} finally {
 		compositor.dispose();
 	}
+});
+
+describe('deliberate empty effect outcomes', () => {
+	it('keeps reversed Pixel Sort pixels unchanged and draws no glyphs for an empty custom ASCII set', () => {
+		const canvas = new OffscreenCanvas(8, 8);
+		const compositor = GpuCompositor.create(canvas)!;
+		const pixels = new Uint8ClampedArray(8 * 8 * 4);
+		for (let pixel = 0; pixel < 64; pixel++) {
+			const brightness = pixel % 2 === 0 ? 245 : 235;
+			pixels.set([brightness, brightness, brightness, 255], pixel * 4);
+		}
+		const source = new ImageData(pixels, 8, 8);
+		const output = new OffscreenCanvas(8, 8).getContext('2d', { willReadFrequently: true })!;
+		const read = () => {
+			output.drawImage(canvas, 0, 0);
+			return output.getImageData(0, 0, 8, 8).data;
+		};
+		try {
+			expect(
+				compositor.render(source, 8, 8, [
+					{
+						effectId: 'gpu-pixel-sort-hq',
+						params: { ...getGpuEffectDefaultParams('gpu-pixel-sort-hq'), low: 1, high: 0.9 }
+					}
+				])
+			).toBe(true);
+			expect([...read()]).toEqual([...pixels]);
+			const asciiParams = {
+				...getGpuEffectDefaultParams('gpu-ascii'),
+				charSet: 'custom',
+				customChars: '',
+				originalOpacity: 0,
+				bgColor: '#112233'
+			};
+			expect(
+				compositor.render(source, 8, 8, [{ effectId: 'gpu-ascii', params: asciiParams }])
+			).toBe(true);
+			const empty = read();
+			for (let pixel = 0; pixel < 64; pixel++)
+				expect([...empty.slice(pixel * 4, pixel * 4 + 4)]).toEqual([17, 34, 51, 255]);
+			expect(asciiParams.customChars).toBe('');
+		} finally {
+			compositor.dispose();
+		}
+	});
 });

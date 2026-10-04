@@ -143,7 +143,7 @@
 				`logo-${exportSize}.svg`
 			);
 			exportState = 'done';
-			statusMessage = 'SVG downloaded.';
+			statusMessage = 'SVG download started.';
 		} catch {
 			exportState = 'failed';
 			statusMessage = 'The SVG could not be created.';
@@ -175,6 +175,7 @@
 		}
 	}
 	async function exportPng(mode: 'download' | 'copy'): Promise<void> {
+		if (exportState === 'working') return;
 		const requestedGeneration = generation;
 		const requestedSize = exportSize;
 		let svg: string;
@@ -195,7 +196,7 @@
 			else downloadBlob(blob, `logo-${requestedSize}.png`);
 			if (requestedGeneration !== generation || requestedSize !== exportSize) return;
 			exportState = 'done';
-			statusMessage = mode === 'copy' ? 'PNG copied.' : 'PNG downloaded.';
+			statusMessage = mode === 'copy' ? 'PNG copied.' : 'PNG download started.';
 		} catch {
 			if (requestedGeneration !== generation) return;
 			exportState = 'failed';
@@ -238,13 +239,16 @@
 					><Button
 						type="button"
 						onclick={() => exportPng('download')}
-						disabled={exportState === 'working' || !iconReady}
-						><Download data-icon="inline-start" />PNG</Button
+						disabled={!iconReady}
+						aria-disabled={exportState === 'working'}
+						class="aria-disabled:opacity-50"><Download data-icon="inline-start" />PNG</Button
 					>{#if canCopyPng}<Button
 							type="button"
 							variant="outline"
 							onclick={() => exportPng('copy')}
-							disabled={exportState === 'working' || !iconReady}
+							disabled={!iconReady}
+							aria-disabled={exportState === 'working'}
+							class="aria-disabled:opacity-50"
 							>{#if exportState === 'done' && statusMessage === 'PNG copied.'}<Check
 									data-icon="inline-start"
 								/>{:else}<Clipboard data-icon="inline-start" />{/if}Copy PNG</Button

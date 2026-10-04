@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/openpost/backend/internal/ai"
 	"github.com/openpost/backend/internal/api/handlers"
 	"github.com/openpost/backend/internal/api/middleware"
 	"github.com/openpost/backend/internal/capabilities"
@@ -51,6 +52,7 @@ import (
 	"github.com/openpost/backend/internal/services/publicationdiscovery"
 	"github.com/openpost/backend/internal/services/publicurl"
 	repostservice "github.com/openpost/backend/internal/services/reposts"
+	"github.com/openpost/backend/internal/services/repurpose"
 	"github.com/openpost/backend/internal/services/sessions"
 	telegramservice "github.com/openpost/backend/internal/services/telegram"
 	"github.com/openpost/backend/internal/services/updatestatus"
@@ -81,9 +83,12 @@ type RouteDeps struct {
 	MemeProvider                 memes.Provider
 	MemeSuggester                memegeneration.Suggester
 	PostBuilder                  postgeneration.Builder
+	EditorAgentGenerator         ai.Generator
+	EditorAgentModel             string
 	ContentBuilderEnabled        bool
 	ContentDiscoveryEnabled      bool
 	PublicationBuilder           *publicationbuilder.Application
+	RepurposeSuggestions         *repurpose.Service
 	PublicationPlanner           *publicationbuilder.Service
 	PublicationDiscovery         publicationdiscovery.Discoverer
 	PublicMediaVerifier          *publicurl.MediaVerifier
@@ -315,6 +320,7 @@ func RegisterHumaRoutes(api huma.API, deps RouteDeps) {
 	publicationBuildHandler.SetCapabilityResolver(capabilityResolverHandler)
 	publicationBuildHandler.SetPlanner(deps.PublicationPlanner)
 	publicationBuildHandler.RegisterRoutes(api)
+	handlers.NewRepurposeHandler(deps.RepurposeSuggestions, deps.Authenticator).RegisterRoutes(api)
 	registerWorkflowRoutes(api, deps, publicationHandler, publicationBuildHandler)
 	handlers.NewPublicationDiscoveryHandler(deps.DB, deps.Authenticator, deps.PublicationDiscovery).RegisterRoutes(api)
 	handlers.NewVoiceProfileHandler(deps.DB, deps.Authenticator).RegisterRoutes(api)
@@ -324,6 +330,9 @@ func RegisterHumaRoutes(api huma.API, deps RouteDeps) {
 	socialSetHandler.SetCapabilityResolver(capabilityResolverHandler)
 	socialSetHandler.RegisterRoutes(api)
 	handlers.NewVideoProjectHandler(deps.DB, deps.Authenticator, deps.MediaStorage).RegisterRoutes(api)
+	handlers.NewEditorAgentHandler(deps.DB, deps.Authenticator).RegisterRoutes(api)
+	handlers.NewEditorPreferencesHandler(deps.DB, deps.Authenticator).RegisterRoutes(api)
+	handlers.NewEditorAgentAssistantHandler(deps.DB, deps.Authenticator, deps.Entitlement, deps.EditorAgentGenerator, deps.EditorAgentModel, deps.Edition).RegisterRoutes(api)
 	handlers.NewRepostHandler(deps.DB, deps.RepostService, deps.Authenticator).RegisterRoutes(api)
 	commentHandler := handlers.NewCommentHandler(deps.DB, deps.Authenticator, deps.Providers, deps.TokenEncryptor)
 	providerRegistrars = append(providerRegistrars, commentHandler.SetProvider)
@@ -397,12 +406,14 @@ func RegisterHumaRoutes(api huma.API, deps RouteDeps) {
 	postingScheduleHandler.CreateSchedule(api)
 	postingScheduleHandler.UpdateSchedule(api)
 	postingScheduleHandler.DeleteSchedule(api)
+	postingScheduleHandler.BatchDeleteSchedules(api)
 	postingScheduleHandler.SuggestSchedule(api)
 	postingScheduleHandler.GetNextAvailableSlot(api)
 
 	promptHandler := handlers.NewPromptHandler(deps.DB, deps.Authenticator)
 	promptHandler.ListPrompts(api)
 	promptHandler.CreatePrompt(api)
+	promptHandler.UpdatePrompt(api)
 	promptHandler.DeletePrompt(api)
 	promptHandler.GetRandomPrompt(api)
 	promptHandler.GetCategories(api)

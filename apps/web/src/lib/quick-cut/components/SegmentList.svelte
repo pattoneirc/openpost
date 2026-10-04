@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { m } from '$lib/paraglide/messages';
 	import AppSelect from '$lib/components/app-select.svelte';
 	import { Button } from '$lib/components/ui/button';
@@ -6,7 +7,8 @@
 	import { Input } from '$lib/components/ui/input';
 	import { ProtectedIcon, ThemeIcon } from '$lib/themes/icons';
 	import type { CutMode, QuickCutSegment, QuickCutSource } from '../types';
-	import { formatTimecode, parseTimecode } from '../model';
+	import { formatTimecode } from '../model';
+	import SegmentTimeInput from './SegmentTimeInput.svelte';
 
 	let {
 		segments,
@@ -37,15 +39,32 @@
 	} = $props();
 
 	const sourceById = $derived(new Map(sources.map((s) => [s.id, s])));
+	const segmentButtons = new Map<string, HTMLButtonElement>();
+	let listElement: HTMLUListElement;
 
-	function commitTime(id: string, field: 'start' | 'end', value: string, sourceId: string) {
-		const parsed = parseTimecode(value);
-		if (parsed === null) return;
-		const src = sourceById.get(sourceId);
-		const duration = src?.duration ?? 0;
-		const clamped = Math.max(0, Math.min(duration, parsed));
-		if (field === 'start') onUpdate(id, { start: clamped });
-		else onUpdate(id, { end: clamped });
+	function rememberSegmentButton(node: HTMLButtonElement, id: string) {
+		segmentButtons.set(id, node);
+		return { destroy: () => segmentButtons.delete(id) };
+	}
+
+	async function mutateWithFocus(event: MouseEvent, mutate: () => void, targetId?: string) {
+		const action = event.currentTarget;
+		const ownedFocus = document.activeElement === action;
+		mutate();
+		await tick();
+		if (!ownedFocus || !(action instanceof HTMLElement)) return;
+		if (document.activeElement !== action && document.activeElement !== document.body) return;
+		if (action.isConnected && !action.matches(':disabled')) {
+			action.focus();
+			return;
+		}
+		(segmentButtons.get(targetId ?? '') ?? listElement).focus();
+	}
+
+	function removeSegment(event: MouseEvent, index: number) {
+		const segment = segments[index];
+		const neighborId = segments[index + 1]?.id ?? segments[index - 1]?.id;
+		void mutateWithFocus(event, () => onRemove(segment.id), neighborId);
 	}
 
 	function parseCutMode(value: string): CutMode | undefined {
@@ -70,7 +89,13 @@
 	}
 </script>
 
-<ul class="flex flex-col gap-1" role="list" aria-label={m.quick_cut_segments_label()}>
+<ul
+	bind:this={listElement}
+	tabindex="-1"
+	class="flex flex-col gap-1 rounded focus-visible:outline-2 focus-visible:outline-ring"
+	role="list"
+	aria-label={m.quick_cut_segments_label()}
+>
 	{#each segments as seg, index (seg.id)}
 		{@const src = sourceById.get(seg.sourceId)}
 		<li>
@@ -87,6 +112,7 @@
 						<div class="flex min-w-0 items-center gap-2">
 							<button
 								type="button"
+								use:rememberSegmentButton={seg.id}
 								class="flex min-h-7 min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-2 focus-visible:outline-ring [@media(pointer:coarse)]:min-h-11"
 								aria-pressed={selectedId === seg.id}
 								aria-label={`${m.quick_cut_segment()} ${index + 1}`}
@@ -110,7 +136,8 @@
 										variant="ghost"
 										aria-label={m.quick_cut_move_up()}
 										disabled={index === 0}
-										onclick={() => onMove(index, index - 1)}
+										onclick={(event) =>
+											mutateWithFocus(event, () => onMove(index, index - 1), seg.id)}
 										class="h-6 w-6 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
 									>
 										<ThemeIcon role="chevron-up" class="size-4" />
@@ -120,7 +147,8 @@
 										variant="ghost"
 										aria-label={m.quick_cut_move_down()}
 										disabled={index === segments.length - 1}
-										onclick={() => onMove(index, index + 1)}
+										onclick={(event) =>
+											mutateWithFocus(event, () => onMove(index, index + 1), seg.id)}
 										class="h-6 w-6 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
 									>
 										<ThemeIcon role="chevron-down" class="size-4" />
@@ -130,7 +158,7 @@
 									size="icon-xs"
 									variant="ghost"
 									aria-label={m.quick_cut_remove_segment()}
-									onclick={() => onRemove(seg.id)}
+									onclick={(event) => removeSegment(event, index)}
 									class="h-6 w-6 text-muted-foreground hover:text-destructive [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
 								>
 									<ThemeIcon role="delete" class="size-4" />
@@ -149,25 +177,20 @@
 							<div class="grid min-w-0 grid-cols-2 gap-3">
 								<label class="flex min-w-0 flex-col gap-1 text-xs">
 									<span class="text-muted-foreground">{m.quick_cut_in()}</span>
-									<Input
-										type="text"
-										inputmode="decimal"
-										value={formatTimecode(seg.start)}
+									<SegmentTimeInput
+										value={seg.start}
+										duration={src?.duration ?? 0}
 										aria-label={`${m.quick_cut_in()} ${index + 1}`}
-										onchange={(e) =>
-											commitTime(seg.id, 'start', e.currentTarget.value, seg.sourceId)}
-										class="h-7 min-h-7 min-w-0 font-mono text-xs tabular-nums [@media(pointer:coarse)]:min-h-11"
+										onCommit={(start) => onUpdate(seg.id, { start })}
 									/>
 								</label>
 								<label class="flex min-w-0 flex-col gap-1 text-xs">
 									<span class="text-muted-foreground">{m.quick_cut_out()}</span>
-									<Input
-										type="text"
-										inputmode="decimal"
-										value={formatTimecode(seg.end)}
+									<SegmentTimeInput
+										value={seg.end}
+										duration={src?.duration ?? 0}
 										aria-label={`${m.quick_cut_out()} ${index + 1}`}
-										onchange={(e) => commitTime(seg.id, 'end', e.currentTarget.value, seg.sourceId)}
-										class="h-7 min-h-7 min-w-0 font-mono text-xs tabular-nums [@media(pointer:coarse)]:min-h-11"
+										onCommit={(end) => onUpdate(seg.id, { end })}
 									/>
 								</label>
 							</div>

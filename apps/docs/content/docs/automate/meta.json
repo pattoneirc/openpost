@@ -1,22 +1,20 @@
 {
   "title": "Automate",
-  "icon": "Workflow",
+  "icon": "Code2",
   "root": true,
   "pages": [
     "index",
-    "workflows",
-    "workflow-examples",
     "---TypeScript SDK---",
-    "[Overview](/automate/sdk)",
+    "[Install and connect](/automate/sdk)",
     "...sdk",
     "---HTTP API---",
-    "[Overview](/automate/api)",
+    "[Install and connect](/automate/api)",
     "...api",
     "---Command-line interface---",
-    "[Overview](/automate/cli)",
+    "[Install and connect](/automate/cli)",
     "...cli",
     "---n8n workflows---",
-    "[Overview](/automate/n8n)",
+    "[Install and connect](/automate/n8n)",
     "...n8n"
   ]
 }

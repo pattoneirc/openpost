@@ -133,6 +133,7 @@ type memeThumbnailCacheEntry struct {
 
 // MemeMediaImport is the bounded input to the existing media pipeline.
 type MemeMediaImport struct {
+	Filename       string
 	RetentionClass string
 	WorkspaceID    string
 	TemplateID     string
@@ -162,10 +163,18 @@ func (i mediaHandlerMemeImporter) ImportMeme(ctx context.Context, input MemeMedi
 	if input.RetentionClass == "" {
 		input.RetentionClass = medialifecycle.RetentionTemporary
 	}
+	filename := "meme-" + input.TemplateID + "." + extension
+	if input.Filename != "" {
+		var err error
+		filename, err = normalizeMediaFilename(filename, input.Filename)
+		if err != nil {
+			return models.MediaAttachment{}, false, err
+		}
+	}
 	var created models.MediaAttachment
 	result, err := i.handler.processUploadBytes(ctx, mediaUploadBytesInput{
 		WorkspaceID:      input.WorkspaceID,
-		Filename:         "meme-" + input.TemplateID + "." + extension,
+		Filename:         filename,
 		DeclaredMimeType: input.MIMEType,
 		Size:             int64(len(input.Data)),
 		Content:          input.Data,
@@ -349,6 +358,7 @@ type RenderMemeInput struct {
 		Captions        []string `json:"captions" required:"true" minItems:"1" maxItems:"16" maxLength:"200" doc:"Caption values in template order"`
 		OverlayMediaIDs []string `json:"overlay_media_ids,omitempty" maxItems:"8" maxLength:"80" doc:"Workspace media IDs for replaceable image slots"`
 		Format          string   `json:"format,omitempty" default:"png" enum:"png,jpg,jpeg,gif,webp" doc:"Rendered image format"`
+		Filename        string   `json:"filename,omitempty" maxLength:"255" doc:"Output filename; its extension must match the rendered format (.jpg for jpg or jpeg). Defaults to the template-based filename."`
 		AltText         string   `json:"alt_text,omitempty" maxLength:"500" doc:"Alternative text saved with the media"`
 		ParentMediaID   string   `json:"parent_media_id,omitempty" maxLength:"80" doc:"Prior generated media when this is an edited version"`
 	}
@@ -690,6 +700,14 @@ func (h *MemeHandler) renderMeme(ctx context.Context, input *RenderMemeInput) (*
 	if h.importer == nil || h.db == nil {
 		return nil, huma.Error503ServiceUnavailable("meme media storage is not configured")
 	}
+	filename := input.Body.Filename
+	if filename != "" {
+		var err error
+		filename, err = normalizeMediaFilename("meme."+normalizedMemeExtension(input.Body.Format), filename)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
+	}
 	altText := strings.TrimSpace(input.Body.AltText)
 	if utf8.RuneCountInString(altText) > memegeneration.MaxAltTextCharacters || hasMemeControl(altText, false) {
 		return nil, huma.Error400BadRequest("meme alt text is invalid")
@@ -713,7 +731,7 @@ func (h *MemeHandler) renderMeme(ctx context.Context, input *RenderMemeInput) (*
 		return nil, huma.Error429TooManyRequests("another generated image is still being saved; try again shortly")
 	}
 	media, deduped, err := h.importer.ImportMeme(ctx, MemeMediaImport{
-		WorkspaceID: input.Body.WorkspaceID, TemplateID: template.ID, RetentionClass: input.Body.RetentionClass,
+		WorkspaceID: input.Body.WorkspaceID, TemplateID: template.ID, RetentionClass: input.Body.RetentionClass, Filename: filename,
 		Extension: rendered.Extension, MIMEType: rendered.MIMEType, Data: rendered.Data,
 		AltText: altText, ParentMediaID: strings.TrimSpace(input.Body.ParentMediaID),
 	})
@@ -937,11 +955,13 @@ func (h *MemeHandler) loadOverlayImages(ctx context.Context, workspaceID string,
 			return nil, huma.Error400BadRequest("overlay media must be a ready PNG, JPEG, GIF, or WebP image")
 		}
 		pixels := int64(media.Width) * int64(media.Height)
-		if media.Size <= 0 || media.Size > maxMemeOverlayBytes ||
-			media.Width <= 0 || media.Height <= 0 ||
+		if media.Size <= 0 || media.Width <= 0 || media.Height <= 0 || pixels <= 0 {
+			return nil, huma.Error400BadRequest("overlay media must contain a valid bounded image")
+		}
+		if media.Size > maxMemeOverlayBytes ||
 			media.Width > maxMemeImageDimension || media.Height > maxMemeImageDimension ||
-			pixels <= 0 || pixels > maxMemeImagePixels {
-			return nil, huma.Error400BadRequest("overlay image is too large for meme rendering")
+			pixels > maxMemeImagePixels {
+			return nil, memeOverlaySizeError()
 		}
 		declaredTotalBytes += media.Size
 		if declaredTotalBytes > maxMemeOverlayTotalBytes {
@@ -956,8 +976,11 @@ func (h *MemeHandler) loadOverlayImages(ctx context.Context, workspaceID string,
 		if readErr != nil || closeErr != nil {
 			return nil, huma.Error500InternalServerError("failed to read overlay media")
 		}
-		if len(data) == 0 || len(data) > maxMemeOverlayBytes {
-			return nil, huma.Error400BadRequest("overlay image is too large for meme rendering")
+		if len(data) == 0 {
+			return nil, huma.Error400BadRequest("overlay media must contain a valid bounded image")
+		}
+		if len(data) > maxMemeOverlayBytes {
+			return nil, memeOverlaySizeError()
 		}
 		loadedTotalBytes += int64(len(data))
 		if loadedTotalBytes > maxMemeOverlayTotalBytes {
@@ -965,14 +988,23 @@ func (h *MemeHandler) loadOverlayImages(ctx context.Context, workspaceID string,
 		}
 		config, _, decodeErr := image.DecodeConfig(bytes.NewReader(data))
 		actualPixels := int64(config.Width) * int64(config.Height)
-		if decodeErr != nil || config.Width <= 0 || config.Height <= 0 ||
-			config.Width > maxMemeImageDimension || config.Height > maxMemeImageDimension ||
-			actualPixels <= 0 || actualPixels > maxMemeImagePixels {
+		if decodeErr != nil || config.Width <= 0 || config.Height <= 0 || actualPixels <= 0 {
 			return nil, huma.Error400BadRequest("overlay media must contain a valid bounded image")
+		}
+		if config.Width > maxMemeImageDimension || config.Height > maxMemeImageDimension ||
+			actualPixels > maxMemeImagePixels {
+			return nil, memeOverlaySizeError()
 		}
 		result = append(result, memes.OverlayImage{Data: data, MIMEType: mimeType})
 	}
 	return result, nil
+}
+
+func memeOverlaySizeError() error {
+	return huma.Error400BadRequest(fmt.Sprintf(
+		"Meme overlay images must be at most %d MiB, %d pixels per side, and %d million pixels. Resize the image or choose a smaller one.",
+		maxMemeOverlayBytes/(1024*1024), maxMemeImageDimension, maxMemeImagePixels/1_000_000,
+	))
 }
 
 func (h *MemeHandler) rankSuggestionTemplates(ctx context.Context, idea string, count int) (memes.Catalog, []memes.Template, error) {

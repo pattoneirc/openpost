@@ -11,29 +11,46 @@
 		ResolvedTranscriptionEngine
 	} from '$lib/video-editor/transcript/engine/types';
 	import type { QuickCutSource, QuickCutSegment } from '../types';
+	import { formatTimecode, getSelectedAudioStreams } from '../model';
+	import {
+		assertSourceTranscriptStorageCurrent,
+		captureSourceTranscriptStorage
+	} from '$lib/video-editor/workspace-fs/source-transcripts';
+	import { saveQuickCutSourceTranscript } from '../transcript-cache';
+	import { showToast } from '$lib/toast';
 	let {
 		source,
 		segments,
 		currentTime,
 		disabled = false,
+		transcriptionOnly = false,
+		workspaceId = '',
 		onsave,
 		onremove,
+		oneditcuts,
 		onseek
 	}: {
 		source: QuickCutSource;
 		segments: QuickCutSegment[];
 		currentTime: number;
 		disabled?: boolean;
+		transcriptionOnly?: boolean;
+		workspaceId?: string;
 		onsave: (sourceId: string, transcript: NonNullable<QuickCutSource['transcript']>) => void;
 		onremove: (sourceId: string, ranges: Array<{ start: number; end: number }>) => void;
 		onseek: (time: number) => void;
+		oneditcuts?: (event: MouseEvent) => void;
 	} = $props();
+	const audioStreams = $derived(getSelectedAudioStreams(source));
 	const audioTrackIndex = $derived(
-		source.selectedAudioTrackIndices?.[0] ?? source.audioStreams[0]?.index
+		audioStreams.find((stream) => stream.index === source.transcript?.audioTrackIndex)?.index ??
+			audioStreams[0]?.index
 	);
-	const words = $derived(
-		source.transcript?.audioTrackIndex === audioTrackIndex ? source.transcript.words : []
+	const transcript = $derived(
+		source.transcript?.audioTrackIndex === audioTrackIndex ? source.transcript : undefined
 	);
+	const words = $derived(transcript?.words ?? []);
+	const removedWords = $derived(words.filter((word) => !isKept(word)));
 	let selected = $state<Set<number>>(new Set());
 	let anchor = $state<number | null>(null);
 	let busy = $state(false);
@@ -72,10 +89,14 @@
 		error = '';
 		selected = new Set();
 		try {
-			const file = source.file ?? (await source.handle?.getFile());
-			if (!file || audioTrackIndex === undefined) return;
+			const capturedSource = { ...source };
+			const storage = captureSourceTranscriptStorage(workspaceId);
 			const sourceId = source.id;
 			const trackIndex = audioTrackIndex;
+			const duration = source.duration;
+			const file = capturedSource.file ?? (await capturedSource.handle?.getFile());
+			request.signal.throwIfAborted();
+			if (!file || trackIndex === undefined) return;
 			progress = { stage: 'decoding', progress: 0 };
 			const job = new BrowserTranscriber().transcribe(file, {
 				...selection,
@@ -87,7 +108,7 @@
 			});
 			const transcript = await job.collect();
 			request.signal.throwIfAborted();
-			onsave(sourceId, {
+			const savedTranscript = {
 				audioTrackIndex: trackIndex,
 				words: transcript
 					.flatMap((segment) =>
@@ -101,10 +122,25 @@
 							Number.isFinite(word.end) &&
 							word.end > word.start &&
 							word.start >= 0 &&
-							word.start < source.duration
+							word.start < duration
 					)
-					.map((word) => ({ ...word, end: Math.min(source.duration, word.end) }))
-			});
+					.map((word) => ({ ...word, end: Math.min(duration, word.end) }))
+			};
+			let cacheUnavailable = false;
+			try {
+				await saveQuickCutSourceTranscript(
+					capturedSource,
+					savedTranscript,
+					storage,
+					request.signal
+				);
+			} catch (cause) {
+				if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+				cacheUnavailable = true;
+			}
+			assertSourceTranscriptStorageCurrent(storage, request.signal);
+			onsave(sourceId, savedTranscript);
+			if (cacheUnavailable) showToast(m.repurpose_transcript_storage_failed(), 'warning');
 		} catch (cause) {
 			if (!request.signal.aborted) error = cause instanceof Error ? cause.message : String(cause);
 		} finally {
@@ -137,7 +173,19 @@
 </script>
 
 <div class="flex h-full min-h-0 flex-col gap-3">
-	<p class="text-xs text-muted-foreground">{m.quick_cut_transcript_hint()}</p>
+	{#if !transcriptionOnly}<p class="text-xs text-muted-foreground">
+			{m.quick_cut_transcript_hint()}
+		</p>{/if}
+	{#if source.audioStreams.length === 0}
+		<p class="text-xs text-muted-foreground" role="status">{m.quick_cut_stream_no_audio()}</p>
+	{:else if source.selectedAudioTrackIndices?.length === 0}
+		<p class="text-xs text-muted-foreground" role="status">
+			{m.quick_cut_transcript_audio_unselected({
+				export: m.quick_cut_export(),
+				tracks: m.quick_cut_tracks()
+			})}
+		</p>
+	{/if}
 	<details open={words.length === 0}>
 		<summary class="cursor-pointer py-1 text-xs font-medium">{m.quick_cut_transcribe()}</summary>
 		<TranscriptionControls
@@ -152,10 +200,28 @@
 		/>
 	</details>
 	{#if error}<p role="alert" class="text-xs text-destructive">{error}</p>{/if}
-	{#if words.length > 0}
+	{#if transcript && words.length === 0 && !busy && !error}
+		<p role="status" class="text-xs text-muted-foreground">{m.quick_cut_transcript_no_speech()}</p>
+	{/if}
+	{#if words.length > 0 && !transcriptionOnly}
+		{#if removedWords.length > 0}
+			<div class="flex shrink-0 flex-col items-start gap-2 text-xs text-muted-foreground">
+				<p role="status">{m.quick_cut_transcript_restore_hint({ cuts: m.quick_cut_cuts() })}</p>
+				<ul class="max-h-24 w-full overflow-y-auto font-mono break-words">
+					{#each removedWords as word}
+						<li>{word.text.trim()} · {formatTimecode(word.start)} → {formatTimecode(word.end)}</li>
+					{/each}
+				</ul>
+				{#if oneditcuts}<Button size="sm" variant="outline" onclick={oneditcuts}
+						>{m.quick_cut_cuts()}</Button
+					>{/if}
+			</div>
+		{/if}
 		<div class="flex items-center gap-2">
 			<Button size="sm" disabled={selected.size === 0 || disabled} onclick={remove}
-				>{m.quick_cut_remove_words({ count: selected.size })}</Button
+				>{selected.size === 1
+					? m.quick_cut_remove_word()
+					: m.quick_cut_remove_words({ count: selected.size })}</Button
 			>
 			<Button
 				size="sm"

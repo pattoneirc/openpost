@@ -23,9 +23,12 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 	import PanelResizeHandle from '$lib/components/panel-resize-handle.svelte';
 	import { toast } from 'svelte-sonner';
 	import { showToast } from '$lib/toast';
+	import { auth } from '$lib/stores/auth';
 	import { ui } from '$lib/stores/ui.svelte';
 	import FeedbackDialog from '$lib/components/feedback-dialog.svelte';
 	import { editorSession } from '$lib/video-editor/editor.svelte';
+	import { connectEditorAgent } from '$lib/editor-agent/browser-relay';
+	import { handleVideoAgentRequest } from '$lib/editor-agent/video-executor.svelte';
 	import { timelineStore } from '$lib/video-editor/timeline/stores/timeline-store.svelte';
 	import {
 		addAdjustmentLayer,
@@ -225,6 +228,30 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 			? editorSession.project
 			: null
 	);
+	const connectedAgentProjectID = $derived(displayedProject?.id ?? '');
+	let agentConnectionStatus = $state<'connected' | 'disconnected' | 'working'>('disconnected');
+	let agentSessionID = $state<string | null>(null);
+	$effect(() => {
+		const workspaceID = workspaceCtx.currentWorkspace?.id;
+		const connectedProjectID = connectedAgentProjectID;
+		if (!workspaceID || !connectedProjectID) return;
+		return connectEditorAgent({
+			workspaceID,
+			projectID: connectedProjectID,
+			kind: 'video',
+			handle: (request) =>
+				handleVideoAgentRequest(
+					request,
+					(itemID) => {
+						selectedItemId = itemID;
+						selectedItemIds = [itemID];
+					},
+					cloudStorage ? importCloudEditorProjectAsset : undefined
+				),
+			onSession: (sessionID) => (agentSessionID = sessionID),
+			onStatus: (status) => (agentConnectionStatus = status)
+		});
+	});
 	const gate = createWorkspaceGate();
 	let colorPickerBrandColors = $state.raw<ColorPickerPreset[]>([]);
 	let editorBrandFonts = $state.raw<EditorBrandFont[]>([]);
@@ -501,7 +528,10 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 	let unsupportedAudioResolve: ((decision: 'import' | 'cancel') => void) | null = null;
 	$effect(() => {
 		const scope = cloudStorage ? workspaceCtx.currentWorkspace?.id : 'local';
-		if (scope) void videoLibrary.load(scope).catch((error) => toast.error(String(error)));
+		if (scope)
+			void videoLibrary
+				.load(scope, workspaceCtx.currentWorkspace?.id, $auth.user?.id)
+				.catch((error) => toast.error(String(error)));
 	});
 	type LeftPanel =
 		| 'library'
@@ -910,6 +940,16 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 		mobileEditPane = 'assets';
 	}
 
+	function openSourceMonitor(mediaId: string): void {
+		sourceMediaId = mediaId;
+		mobileEditPane = 'program';
+		if (editorViewportWidth >= 1024) return;
+		void tick().then(() => {
+			if (sourceMediaId !== mediaId || mobileEditPane !== 'program') return;
+			document.querySelector<HTMLButtonElement>('[data-source-monitor] button')?.focus();
+		});
+	}
+
 	function persistPanelSize(
 		key:
 			| 'assetBrowserWidth'
@@ -991,7 +1031,11 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 		);
 		const workspaceId = cloudStorage ? (workspaceCtx.currentWorkspace?.id ?? '') : '';
 		if (!projectId || (cloudStorage ? !workspaceId : gate.state !== 'ready')) return;
-		untrack(() => void editorSession.load(projectId, workspaceId));
+		const requestedWorkspace = page.url.searchParams.get('workspace');
+		untrack(() => {
+			if (requestedWorkspace === 'edit') changeEditorWorkspace('edit');
+			void editorSession.load(projectId, workspaceId);
+		});
 		return () => {
 			editorSession.pausePlayback();
 			editorSession.stopAutosaveTimers();
@@ -1144,7 +1188,9 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 	function handleGeneratedAudioInserted(itemId: string): void {
 		selectedItemId = itemId;
-		selectedItemIds = [itemId];
+		selectedItemIds = timelineStore.linkedSelectionEnabled
+			? expandSelectionWithLinkedItems(timelineStore.items, [itemId])
+			: [itemId];
 		selectedTransitionId = null;
 		editorSession.scheduleAutosave();
 		showToast(m.video_editor_local_ai_added(), 'success');
@@ -1586,7 +1632,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 		};
 	}
 
-	let exporting = $state(false);
+	let exportDialog: ReturnType<typeof ExportDialog> | undefined = $state();
 	let sending = $state(false);
 	let sentExport = $state<{ composerHref: string } | null>(null);
 
@@ -1598,27 +1644,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 			: '/';
 		return resolveAppPath(`${path}?${query}`);
 	}
-	async function handleExport(): Promise<void> {
-		if (!displayedProject) return;
-		exporting = true;
-		try {
-			editorSession.pausePlayback();
-			await editorSession.saveNow();
-			const project = activeRenderProject();
-			if (!project) return;
-			const result = await renderVideoExport(project, {
-				format: 'mp4',
-				codec: 'avc',
-				width: project.metadata.width,
-				height: project.metadata.height,
-				subtitleMode: 'burn'
-			});
-			showToast(m.video_editor_export_done({ name: result.fileName }), 'success');
-		} catch (err) {
-			showToast(err instanceof Error ? err.message : String(err), 'error');
-		} finally {
-			exporting = false;
-		}
+	function handleExport(): void {
+		exportDialog?.openExportDialog();
 	}
 
 	const renderProject = $derived(activeRenderProject());
@@ -1969,6 +1996,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 			}
 			if (updateTransitionPresentation(selectedTransition.id, presentation, direction)) {
 				editorSession.scheduleAutosave();
+				videoLibrary.recordChoice(`${videoLibrary.scope}:transition:${presentation}`, presentation);
 			} else {
 				showToast(m.video_editor_agent_error_transition_failed(), 'error');
 			}
@@ -2006,7 +2034,9 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 					{ presentation, direction }
 				);
 			}
-			selectedTransitionId = id ?? null;
+			if (!id) return;
+			videoLibrary.recordChoice(`${videoLibrary.scope}:transition:${presentation}`, presentation);
+			selectedTransitionId = id;
 			selectedItemId = null;
 			selectedItemIds = [];
 			editorSession.scheduleAutosave();
@@ -2024,7 +2054,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 	}
 
 	let speechCleanupOpen = $state(false);
-	let speechCleanupMode = $state<'fillers' | 'silence'>('fillers');
+	let speechCleanupMode = $state<'recording' | 'fillers' | 'silence'>('recording');
 	let speechCleanupTargetIds = $state<string[] | null>(null);
 	const speechCleanupItemIds = $derived.by(() => {
 		if (speechCleanupTargetIds && speechCleanupTargetIds.length > 0) {
@@ -2047,7 +2077,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 					.map((item) => item.id);
 	});
 
-	function openSpeechCleanup(mode: 'fillers' | 'silence'): void {
+	function openSpeechCleanup(mode: 'recording' | 'fillers' | 'silence'): void {
 		editorSession.pausePlayback();
 		speechCleanupTargetIds = null;
 		speechCleanupMode = mode;
@@ -2065,12 +2095,14 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 		if (!speechCleanupOpen) speechCleanupTargetIds = null;
 	});
 
-	function handleSpeechCleanupApplied(removedCount: number): void {
+	function handleSpeechCleanupApplied(removedCount: number, appliedMode = speechCleanupMode): void {
 		editorSession.scheduleAutosave();
 		showToast(
-			removedCount === 1
-				? m.video_editor_cleanup_done_one()
-				: m.video_editor_cleanup_done_many({ count: removedCount }),
+			appliedMode === 'recording'
+				? m.recording_cleanup_applied()
+				: removedCount === 1
+					? m.video_editor_cleanup_done_one()
+					: m.video_editor_cleanup_done_many({ count: removedCount }),
 			'success'
 		);
 	}
@@ -2253,7 +2285,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 			saveProject();
 		} else if (matches('EXPORT')) {
 			event.preventDefault();
-			if (!exporting && timelineStore.items.length > 0) void handleExport();
+			handleExport();
 		} else if (matches('OPEN_SETTINGS')) {
 			event.preventDefault();
 			settingsOpen = true;
@@ -2458,6 +2490,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 
 <div
 	class="video-editor-theme flex h-dvh flex-col bg-[var(--video-editor-canvas)] text-[var(--video-editor-text)]"
+	data-agent-status={agentConnectionStatus}
 >
 	<EditorHeader>
 		{#snippet identity()}
@@ -2505,6 +2538,36 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 			</div>
 		{/snippet}
 		{#snippet actions()}
+			<Button
+				variant="outline"
+				size="sm"
+				class="hidden size-8 xl:inline-flex 2xl:w-auto 2xl:px-2 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+				aria-label={m.recording_cleanup_action()}
+				title={m.recording_cleanup_action()}
+				disabled={speechCleanupItemIds.length === 0}
+				onclick={() => openSpeechCleanup('recording')}
+			>
+				<ThemeIcon role="sparkles" class="size-3.5" />
+				<span class="hidden 2xl:inline">{m.recording_cleanup_action()}</span>
+			</Button>
+			{#if agentConnectionStatus !== 'disconnected'}
+				<span
+					class="inline-flex items-center gap-1.5 text-xs text-[var(--video-editor-text-muted)]"
+					role="status"
+					aria-live="polite"
+				>
+					<span
+						class="size-1.5 rounded-full bg-current {agentConnectionStatus === 'working'
+							? 'motion-safe:animate-pulse'
+							: ''}"
+					></span>
+					<span class="sr-only lg:not-sr-only">
+						{agentConnectionStatus === 'working'
+							? m.editor_agent_status_working()
+							: m.editor_agent_status_connected()}
+					</span>
+				</span>
+			{/if}
 			{#if editorSession.saveError}
 				<Button
 					type="button"
@@ -2647,13 +2710,19 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 						}}
 					/>
 					<DropdownMenu.Item onclick={saveProject}>{m.common_save()}</DropdownMenu.Item>
-					<DropdownMenu.Item disabled={!commandHistory.canUndo} onclick={undoProject}>
+					<DropdownMenu.Item disabled={!commandHistory.canUndo} onSelect={undoProject}>
 						{m.video_editor_undo()}
 					</DropdownMenu.Item>
-					<DropdownMenu.Item disabled={!commandHistory.canRedo} onclick={redoProject}>
+					<DropdownMenu.Item disabled={!commandHistory.canRedo} onSelect={redoProject}>
 						{m.video_editor_redo()}
 					</DropdownMenu.Item>
 					<DropdownMenu.Separator />
+					<DropdownMenu.Item
+						disabled={speechCleanupItemIds.length === 0}
+						onclick={() => openSpeechCleanup('recording')}
+					>
+						{m.recording_cleanup_action()}
+					</DropdownMenu.Item>
 					<DropdownMenu.Label>{m.video_editor_clip()}</DropdownMenu.Label>
 					<DropdownMenu.Item disabled={!selectedItemId} onclick={handleSplit}>
 						{m.video_editor_split()}
@@ -2696,11 +2765,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 							{m.video_editor_history()}
 						</DropdownMenu.Item>
 					{/if}
-					<DropdownMenu.Item
-						disabled={exporting || timelineStore.items.length === 0}
-						onclick={() => void handleExport()}
-					>
-						{m.video_editor_export()}
+					<DropdownMenu.Item disabled={!displayedProject} onclick={handleExport}>
+						{m.common_export()}
 					</DropdownMenu.Item>
 					<DropdownMenu.Item
 						disabled={sending || timelineStore.items.length === 0 || !workspaceCtx.currentWorkspace}
@@ -2722,6 +2788,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 				</DropdownMenu.Content>
 			</DropdownMenu.Root>
 			<ExportDialog
+				bind:this={exportDialog}
 				project={displayedProject}
 				disabled={!displayedProject}
 				triggerLabel={m.common_export()}
@@ -3146,16 +3213,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 												>
 													<EditorAssistantPanel
 														{projectId}
+														sessionId={agentSessionID}
 														oninserted={handleGeneratedAudioInserted}
-														onselectitems={(ids) => {
-															selectedItemIds = ids;
-															selectedItemId = ids[0] ?? null;
-															selectedTransitionId = null;
-														}}
-														onopensilence={(ids) => openAgentSpeechCleanup('silence', ids)}
-														onopenfillers={(ids) => openAgentSpeechCleanup('fillers', ids)}
-														selectedIds={selectedLeftPanelItemIds}
-														onautosave={() => editorSession.scheduleAutosave()}
 														{textVoiceRequest}
 														importProjectAsset={cloudStorage
 															? importCloudEditorProjectAsset
@@ -3169,7 +3228,7 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 													deleteProjectMedia={cloudStorage ? deleteCloudProjectMedia : undefined}
 													onUnsupportedAudio={requestUnsupportedAudioDecision}
 													onsequenceopen={handleTabSwitchSelection}
-													onsourceopen={(mediaId) => (sourceMediaId = mediaId)}
+													onsourceopen={openSourceMonitor}
 													onextractsubtitles={openEmbeddedSubtitlePicker}
 													onimport={handleImport}
 													importProjectAsset={cloudStorage
@@ -3643,30 +3702,16 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with the fini
 												onedit={() => editorSession.scheduleAutosave()}
 											/>
 										</div>
-										<div
-											class="mt-3 grid grid-cols-2 gap-1 border-t border-[var(--video-editor-border)] pt-3"
+										<Button
+											size="sm"
+											variant="outline"
+											class="mt-3 w-full [@media(pointer:coarse)]:min-h-11"
+											disabled={speechCleanupItemIds.length === 0}
+											onclick={() => openSpeechCleanup('recording')}
 										>
-											<Button
-												size="sm"
-												variant="outline"
-												class="min-h-11 lg:min-h-8"
-												disabled={speechCleanupItemIds.length === 0}
-												aria-label={m.video_editor_filler_review()}
-												onclick={() => openSpeechCleanup('fillers')}
-											>
-												{m.video_editor_cleanup_fillers_short()}
-											</Button>
-											<Button
-												size="sm"
-												variant="outline"
-												class="min-h-11 lg:min-h-8"
-												disabled={speechCleanupItemIds.length === 0}
-												aria-label={m.video_editor_silence_review()}
-												onclick={() => openSpeechCleanup('silence')}
-											>
-												{m.video_editor_cleanup_silence_short()}
-											</Button>
-										</div>
+											<ThemeIcon role="sparkles" class="size-3.5" />
+											{m.recording_cleanup_action()}
+										</Button>
 									{:else if sequenceStore.activeSequenceId === null}
 										<ProjectCanvasPanel onedit={() => editorSession.scheduleAutosave()} />
 									{:else}

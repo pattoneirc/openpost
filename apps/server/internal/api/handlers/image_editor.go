@@ -326,7 +326,14 @@ type ImageEditorExportDefaults struct {
 	MatteColor string  `json:"matte_color"`
 }
 
+type ImageEditorTemplateSlot struct {
+	Name          string `json:"name" minLength:"1" maxLength:"100"`
+	TargetID      string `json:"target_id" minLength:"1"`
+	MaxCharacters int    `json:"max_characters" minimum:"1" maximum:"2000"`
+}
+
 type ImageEditorDocumentPayload struct {
+	TemplateSlots    []ImageEditorTemplateSlot `json:"template_slots,omitempty" maxItems:"20"`
 	SchemaVersion    int                       `json:"schema_version"`
 	Title            string                    `json:"title"`
 	PresetKey        string                    `json:"preset_key"`
@@ -398,6 +405,7 @@ type ImageEditorPresetOutput struct {
 type ListImageEditorDesignsInput struct {
 	WorkspaceID string `query:"workspace_id" required:"true"`
 	Search      string `query:"search"`
+	Trashed     bool   `query:"trashed" doc:"List recoverable deleted designs instead of active designs."`
 	Limit       int    `query:"limit" minimum:"1" maximum:"100"`
 	Offset      int    `query:"offset" minimum:"0"`
 }
@@ -512,6 +520,18 @@ type ImageEditorRevisionResponse struct {
 
 type GetImageEditorRevisionOutput struct {
 	Body ImageEditorRevisionResponse
+}
+
+type DeleteImageEditorRevisionInput struct {
+	PathID     string `path:"id"`
+	RevisionID string `path:"revision_id"`
+	Confirm    bool   `query:"confirm" required:"true" doc:"Confirm permanent removal of this named checkpoint"`
+}
+
+type DeleteImageEditorRevisionOutput struct {
+	Body struct {
+		Deleted bool `json:"deleted"`
+	}
 }
 
 type CreateImageEditorCheckpointInput struct {
@@ -675,6 +695,13 @@ func (h *ImageEditorHandler) registerDesigns(api huma.API) {
 	}, h.getDesign)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "restore-image-editor-design", Method: http.MethodPost,
+		Path: "/image-editor/designs/{id}/restore", Summary: "Restore a trashed OpenPost Image Editor design",
+		Tags: []string{tagImageEditor}, Middlewares: huma.Middlewares{middleware.AuthMiddleware(api, h.auth)},
+		Errors: []int{403, 404},
+	}, h.restoreDesign)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "update-image-editor-design",
 		Method:      http.MethodPatch,
 		Path:        "/image-editor/designs/{id}",
@@ -737,6 +764,17 @@ func (h *ImageEditorHandler) registerRevisions(api huma.API) {
 	}, h.getRevision)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "delete-image-editor-design-checkpoint",
+		Method:      http.MethodDelete,
+		Path:        "/image-editor/designs/{id}/revisions/{revision_id}",
+		Summary:     "Remove a named OpenPost Image Editor checkpoint",
+		Description: "Removes only the selected named checkpoint and its snapshot references. The current design and other versions remain unchanged.",
+		Tags:        []string{tagImageEditor},
+		Middlewares: huma.Middlewares{middleware.AuthMiddleware(api, h.auth)},
+		Errors:      []int{400, 403, 404},
+	}, h.deleteRevision)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "create-image-editor-design-checkpoint",
 		Method:      http.MethodPost,
 		Path:        "/image-editor/designs/{id}/revisions",
@@ -795,8 +833,12 @@ func (h *ImageEditorHandler) listDesigns(ctx context.Context, input *ListImageEd
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
+	deletionPredicate := "deleted_at IS NULL"
+	if input.Trashed {
+		deletionPredicate = "deleted_at IS NOT NULL"
+	}
 	query := h.db.NewSelect().Model((*models.DesignDocument)(nil)).
-		Where("workspace_id = ? AND deleted_at IS NULL", input.WorkspaceID)
+		Where("workspace_id = ?", input.WorkspaceID).Where(deletionPredicate)
 	if search := strings.TrimSpace(input.Search); search != "" {
 		query = query.Where("LOWER(title) LIKE ?", "%"+strings.ToLower(search)+"%")
 	}
@@ -823,7 +865,7 @@ func (h *ImageEditorHandler) listDesigns(ctx context.Context, input *ListImageEd
 			ORDER BY r.created_at ASC
 			LIMIT 1
 		) AS fallback_preview_media_id`).
-		Where("d.workspace_id = ? AND d.deleted_at IS NULL", input.WorkspaceID).
+		Where("d.workspace_id = ?", input.WorkspaceID).Where("d."+deletionPredicate).
 		Apply(func(q *bun.SelectQuery) *bun.SelectQuery {
 			if search := strings.TrimSpace(input.Search); search != "" {
 				return q.Where("LOWER(d.title) LIKE ?", "%"+strings.ToLower(search)+"%")
@@ -1185,6 +1227,42 @@ func (h *ImageEditorHandler) deleteDesign(ctx context.Context, input *DeleteImag
 	}{Deleted: true}}, nil
 }
 
+func (h *ImageEditorHandler) restoreDesign(ctx context.Context, input *DeleteImageEditorDesignInput) (*GetImageEditorDesignOutput, error) {
+	if err := h.ensureEnabled(); err != nil {
+		return nil, err
+	}
+	var document models.DesignDocument
+	err := h.db.NewSelect().Model(&document).Where("id = ? AND deleted_at IS NOT NULL", input.PathID).Scan(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, huma.Error404NotFound("trashed OpenPost Image Editor design not found")
+	}
+	if err != nil {
+		return nil, huma.Error500InternalServerError("failed to load trashed design")
+	}
+	if _, err := h.requireAccess(ctx, document.WorkspaceID, true); err != nil {
+		return nil, err
+	}
+	result, err := h.db.NewUpdate().Model((*models.DesignDocument)(nil)).
+		Set("deleted_at = NULL").Set("source_media_id = NULL").
+		Set("updated_at = ?", time.Now().UTC()).Set("revision = revision + 1").
+		Where("id = ? AND deleted_at IS NOT NULL", document.ID).Exec(ctx)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("failed to restore design")
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, huma.Error500InternalServerError("failed to restore design")
+	}
+	if affected == 0 {
+		return nil, huma.Error404NotFound("trashed design not found")
+	}
+	response, err := h.documentResponse(ctx, document.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &GetImageEditorDesignOutput{Body: *response}, nil
+}
+
 func (h *ImageEditorHandler) toggleDesignFavorite(ctx context.Context, input *ToggleImageEditorDesignFavoriteInput) (*ToggleImageEditorDesignFavoriteOutput, error) {
 	if err := h.ensureEnabled(); err != nil {
 		return nil, err
@@ -1377,6 +1455,61 @@ func (h *ImageEditorHandler) loadImageEditorRevisionSnapshot(
 		return nil, imageEditorRevisionSnapshot{}, huma.Error400BadRequest("OpenPost Image Editor revision is corrupt")
 	}
 	return &revision, snapshot, nil
+}
+
+func (h *ImageEditorHandler) deleteRevision(ctx context.Context, input *DeleteImageEditorRevisionInput) (*DeleteImageEditorRevisionOutput, error) {
+	if err := h.ensureEnabled(); err != nil {
+		return nil, err
+	}
+	document, err := h.loadDocument(ctx, input.PathID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := h.requireAccess(ctx, document.WorkspaceID, true); err != nil {
+		return nil, err
+	}
+	if !input.Confirm {
+		return nil, huma.Error400BadRequest("checkpoint removal requires confirmation")
+	}
+	err = h.db.RunInTx(ctx, &sql.TxOptions{}, func(txCtx context.Context, tx bun.Tx) error {
+		var revision models.DesignRevision
+		query := tx.NewSelect().Model(&revision).Where("id = ? AND design_document_id = ?", input.RevisionID, document.ID)
+		if tx.Dialect().Name() == dialect.PG {
+			query = query.For("UPDATE")
+		}
+		if err := query.Scan(txCtx); errors.Is(err, sql.ErrNoRows) {
+			return huma.Error404NotFound("OpenPost Image Editor checkpoint not found")
+		} else if err != nil {
+			return err
+		}
+		if revision.Kind != "checkpoint" {
+			return huma.Error400BadRequest("only named checkpoints can be removed")
+		}
+		var mediaIDs []string
+		if err := tx.NewSelect().Model((*models.DesignRevisionMediaReference)(nil)).Column("media_id").Where("revision_id = ?", revision.ID).Scan(txCtx, &mediaIDs); err != nil {
+			return err
+		}
+		if _, err := tx.NewDelete().Model((*models.DesignRevisionMediaReference)(nil)).Where("revision_id = ?", revision.ID).Exec(txCtx); err != nil {
+			return err
+		}
+		if _, err := tx.NewDelete().Model((*models.DesignRevisionMediaIndexState)(nil)).Where("revision_id = ?", revision.ID).Exec(txCtx); err != nil {
+			return err
+		}
+		if _, err := tx.NewDelete().Model(&revision).WherePK().Exec(txCtx); err != nil {
+			return err
+		}
+		return medialifecycle.TouchWithDB(txCtx, tx, mediaIDs, time.Now().UTC())
+	})
+	if err != nil {
+		var status huma.StatusError
+		if errors.As(err, &status) {
+			return nil, err
+		}
+		return nil, huma.Error500InternalServerError("failed to remove OpenPost Image Editor checkpoint")
+	}
+	out := &DeleteImageEditorRevisionOutput{}
+	out.Body.Deleted = true
+	return out, nil
 }
 
 func (h *ImageEditorHandler) createCheckpoint(ctx context.Context, input *CreateImageEditorCheckpointInput) (*CreateImageEditorCheckpointOutput, error) {
@@ -2116,6 +2249,24 @@ func validateImageEditorPayload(payload ImageEditorDocumentPayload) error {
 		(payload.ExportDefaults.MatteColor != "" &&
 			!imageEditorHexColor.MatchString(payload.ExportDefaults.MatteColor)) {
 		return fmt.Errorf("image editor export defaults are invalid")
+	}
+	if len(payload.TemplateSlots) > 20 {
+		return fmt.Errorf("too many template slots")
+	}
+	slotNames := map[string]bool{}
+	for _, slot := range payload.TemplateSlots {
+		found := false
+		for _, page := range payload.Pages {
+			for _, layer := range page.Layers {
+				if layer.ID == slot.TargetID && layer.Text != nil {
+					found = true
+				}
+			}
+		}
+		if !found || strings.TrimSpace(slot.Name) == "" || len(slot.Name) > 100 || slotNames[slot.Name] || slot.MaxCharacters < 1 || slot.MaxCharacters > 2000 {
+			return fmt.Errorf("invalid template text slot")
+		}
+		slotNames[slot.Name] = true
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil || len(encoded) > imageEditorMaxDocumentBytes {

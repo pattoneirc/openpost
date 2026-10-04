@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openpost/backend/internal/database"
 	"github.com/openpost/backend/internal/jobregistry"
 	"github.com/openpost/backend/internal/models"
 	servicecrypto "github.com/openpost/backend/internal/services/crypto"
@@ -31,10 +30,7 @@ func (f responseTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func workflowTestService(t *testing.T, actions Actions) (*Service, workspaceaccess.ActorFacts) {
 	t.Helper()
-	db, err := database.InitDBWithDriver("sqlite", fmt.Sprintf("file:workflow-%d?mode=memory&cache=shared", time.Now().UnixNano()))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	require.NoError(t, database.CreateSchema(db))
+	db := newWorkflowSchemaTestDB(t)
 	now := time.Now().UTC()
 	for _, row := range []any{
 		&models.User{ID: "user", Email: "workflow@example.com", PasswordHash: "hash", CreatedAt: now},
@@ -317,6 +313,13 @@ func TestGitHubSampleHandlesRepositoriesWithLargeReleaseHistories(t *testing.T) 
 	require.Len(t, items, 5)
 	require.Equal(t, "Release 1", items[0].Title)
 	require.Equal(t, "Release notes", items[0].Body)
+	encoded, err := json.Marshal(items[0])
+	require.NoError(t, err)
+	var source map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &source))
+	require.Contains(t, source, "published_at")
+	require.Equal(t, "", source["published_at"])
+	require.NotContains(t, source, "created_at")
 }
 
 func TestGitHubPollReconcilesPagesWithoutReplayingKnownReleases(t *testing.T) {
@@ -477,7 +480,7 @@ func TestExpiredWaitResumesOnceAfterRestart(t *testing.T) {
 
 func TestWorkflowRejectsBrokenTokensBeforeStarting(t *testing.T) {
 	s, actor := workflowTestService(t, nil)
-	for _, text := range []string{"Hello {{source.title", "Hello {{source.title + 1}}"} {
+	for _, text := range []string{"Hello {{source.title", "Hello {{source.title + 1}}", `{{source["invalid\q"]}}`, `{{source["constructor"]}}`} {
 		item := saveTestWorkflow(t, s, actor, []Step{{ID: "draft", Kind: KindDraft, Inputs: map[string]Value{"text": literal(text)}}})
 		_, err := s.Start(t.Context(), actor, "ws", item.ID, ModePreview, map[string]any{"title": "Release"}, item.Revision)
 		require.ErrorIs(t, err, ErrInvalid)
@@ -501,4 +504,134 @@ func TestWorkflowTransformsFeedItemsBeforeCreatingContent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StateSucceeded, result.State, result.Error)
 	require.Equal(t, "Release | Behind the scenes", result.Steps[3].Inputs["text"])
+}
+
+func TestLiteralKeyReferencesRemainDistinctThroughSavedExecution(t *testing.T) {
+	s, actor := workflowTestService(t, nil)
+	workflow := saveTestWorkflow(t, s, actor, []Step{
+		{ID: "values", Kind: KindFields, Inputs: map[string]Value{"fields": literal(map[string]any{
+			"literal": `{{source["a.b"]}}`, "local.dot": `{{source["a.b"]}}`, "nested": "{{source.a.b}}",
+			"escaped": `{{source["quote\"key"]}}`, "array": `{{source.items[0]["x.y"]}}`,
+		})}},
+		{ID: "joined", Kind: KindMerge, Inputs: map[string]Value{"first": reference(`source["object.key"]`), "second": reference("source.legacy key")}},
+		{ID: "previous", Kind: KindFields, Inputs: map[string]Value{"fields": literal(map[string]any{"copied": `{{values["literal"]}}`, "copied_dot": `{{values["local.dot"]}}`})}},
+	})
+	run, err := s.Start(t.Context(), actor, "ws", workflow.ID, ModePreview, map[string]any{
+		"a.b": "DOT", "a": map[string]any{"b": "NEST"}, "quote\"key": "ESCAPED",
+		"items": []any{map[string]any{"x.y": "ARRAY"}}, "object.key": map[string]any{"kept": 42}, "legacy key": map[string]any{"added": true},
+	}, workflow.Revision)
+	require.NoError(t, err)
+	runJob(t, s, run.ID)
+	runJob(t, s, run.ID)
+	runJob(t, s, run.ID)
+	result, err := s.GetRun(t.Context(), actor, "ws", run.ID)
+	require.NoError(t, err)
+	require.Equal(t, StateSucceeded, result.State, result.Error)
+	require.Equal(t, map[string]any{"literal": "DOT", "local.dot": "DOT", "nested": "NEST", "escaped": "ESCAPED", "array": "ARRAY"}, result.Steps[0].Output)
+	require.Equal(t, map[string]any{"kept": float64(42), "added": true}, result.Steps[1].Output["data"])
+	require.Equal(t, map[string]any{"copied": "DOT", "copied_dot": "DOT"}, result.Steps[2].Output)
+}
+
+func TestSortRequiresOneComparableFieldTypeThroughSavedExecution(t *testing.T) {
+	mixed := []any{
+		map[string]any{"name": "A", "rank": 2},
+		map[string]any{"name": "B", "rank": 10},
+		map[string]any{"name": "C", "rank": "11"},
+	}
+	for _, order := range [][]int{{0, 1, 2}, {1, 2, 0}, {2, 0, 1}, {0, 2, 1}, {2, 1, 0}, {1, 0, 2}} {
+		t.Run(fmt.Sprint(order), func(t *testing.T) {
+			s, actor := workflowTestService(t, nil)
+			items := []any{mixed[order[0]], mixed[order[1]], mixed[order[2]]}
+			workflow := saveTestWorkflow(t, s, actor, []Step{{ID: "sorted", Kind: KindSort, Inputs: map[string]Value{
+				"items": literal(items), "field": literal("rank"), "direction": literal("ascending"),
+			}}})
+			run, err := s.Start(t.Context(), actor, "ws", workflow.ID, ModePreview, nil, workflow.Revision)
+			require.NoError(t, err)
+			runJob(t, s, run.ID)
+			result, err := s.GetRun(t.Context(), actor, "ws", run.ID)
+			require.NoError(t, err)
+			require.Equal(t, StateFailed, result.State)
+			require.Contains(t, result.Error, `field "rank" mixes text and numbers`)
+			require.Contains(t, result.Error, "use one type for every item")
+			require.Empty(t, result.Steps[0].Output)
+		})
+	}
+	for _, scenario := range []struct {
+		name      string
+		ranks     []any
+		direction string
+		want      []any
+	}{
+		{"numeric ascending", []any{10, 2, 2}, "ascending", []any{"B", "C", "A"}},
+		{"numeric descending", []any{2, 10, 2}, "descending", []any{"B", "A", "C"}},
+		{"text ascending", []any{"2", "10", "11"}, "ascending", []any{"B", "C", "A"}},
+		{"text descending", []any{"2", "10", "11"}, "descending", []any{"A", "C", "B"}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			s, actor := workflowTestService(t, nil)
+			items := make([]any, len(scenario.ranks))
+			for i, rank := range scenario.ranks {
+				items[i] = map[string]any{"name": string(rune('A' + i)), "rank": rank}
+			}
+			workflow := saveTestWorkflow(t, s, actor, []Step{{ID: "sorted", Kind: KindSort, Inputs: map[string]Value{
+				"items": literal(items), "field": literal("rank"), "direction": literal(scenario.direction),
+			}}})
+			run, err := s.Start(t.Context(), actor, "ws", workflow.ID, ModePreview, nil, workflow.Revision)
+			require.NoError(t, err)
+			runJob(t, s, run.ID)
+			result, err := s.GetRun(t.Context(), actor, "ws", run.ID)
+			require.NoError(t, err)
+			require.Equal(t, StateSucceeded, result.State, result.Error)
+			var names []any
+			for _, item := range result.Steps[0].Output["items"].([]any) {
+				names = append(names, item.(map[string]any)["name"])
+			}
+			require.Equal(t, scenario.want, names)
+		})
+	}
+}
+
+func TestFilterDistinguishesNullFromMissingThroughSavedExecution(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		item      map[string]any
+		wantError string
+	}{
+		{"present null", map[string]any{"value": nil}, "field item.value is null; provide a non-null value"},
+		{"absent", map[string]any{}, "field item.value is missing"},
+		{"numeric recovery", map[string]any{"value": 2}, ""},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			s, actor := workflowTestService(t, nil)
+			workflow := saveTestWorkflow(t, s, actor, []Step{{ID: "filtered", Kind: KindFilter, Inputs: map[string]Value{
+				"items": literal([]any{scenario.item}), "field": literal("value"), "operator": literal("equals"), "right": literal(2),
+			}}})
+			run, err := s.Start(t.Context(), actor, "ws", workflow.ID, ModePreview, nil, workflow.Revision)
+			require.NoError(t, err)
+			runJob(t, s, run.ID)
+			result, err := s.GetRun(t.Context(), actor, "ws", run.ID)
+			require.NoError(t, err)
+			if scenario.wantError != "" {
+				require.Equal(t, StateFailed, result.State)
+				require.Equal(t, scenario.wantError, result.Error)
+				require.Empty(t, result.Steps[0].Output)
+				return
+			}
+			require.Equal(t, StateSucceeded, result.State, result.Error)
+			require.Equal(t, []any{map[string]any{"value": float64(2)}}, result.Steps[0].Output["items"])
+		})
+	}
+	t.Run("existing null array equality", func(t *testing.T) {
+		s, actor := workflowTestService(t, nil)
+		workflow := saveTestWorkflow(t, s, actor, []Step{{ID: "compare", Kind: KindCondition, Inputs: map[string]Value{
+			"left": reference("source.values.0"), "operator": literal("equals"), "right": reference("source.values.1"),
+		}}})
+		run, err := s.Start(t.Context(), actor, "ws", workflow.ID, ModePreview, map[string]any{"values": []any{nil, nil}}, workflow.Revision)
+		require.NoError(t, err)
+		runJob(t, s, run.ID)
+		result, err := s.GetRun(t.Context(), actor, "ws", run.ID)
+		require.NoError(t, err)
+		require.Equal(t, StateSucceeded, result.State, result.Error)
+		require.Equal(t, true, result.Steps[0].Output["matched"])
+	})
 }

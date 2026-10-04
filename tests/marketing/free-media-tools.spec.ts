@@ -44,6 +44,28 @@ test("WebP conversion downloads real original-size PNG with transparency", async
   await expect(page.getByRole("alert")).toContainText(/damaged|decode|processed/i);
 });
 
+test("empty image recovery requests a fresh export and accepts a valid WebP afterwards", async ({
+  page,
+}) => {
+  await page.goto("/tools/webp-to-jpg");
+  await dismissTelemetryConsent(page);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: /Drop, paste, or choose a WEBP image/ }).click();
+  await (
+    await chooser
+  ).setFiles({ name: "empty.webp", mimeType: "image/webp", buffer: Buffer.alloc(0) });
+  await expect(page.getByRole("alert")).toContainText("empty", { timeout: 2000 });
+  await expect(page.getByRole("alert")).toContainText("exporting it again");
+  await expect(page.getByRole("alert")).not.toContainText("smaller than");
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "valid.webp",
+    mimeType: "image/webp",
+    buffer: await sampleImage("webp"),
+  });
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Download JPEG", exact: true })).toBeEnabled();
+});
+
 test("color picker previews source pixels and selects with mouse or keyboard", async ({ page }) => {
   await page.goto("/tools/image-color-picker");
   await dismissTelemetryConsent(page);
@@ -75,6 +97,45 @@ test("color picker previews source pixels and selects with mouse or keyboard", a
   await expect(magnifier).toContainText("#00000000");
   await page.getByRole("heading", { level: 1 }).hover();
   await expect(magnifier).toBeHidden();
+});
+
+test("palette selection identifies its source and keyboard sampling returns to image pixels", async ({
+  page,
+}, testInfo) => {
+  await page.goto("/tools/image-color-picker");
+  await dismissTelemetryConsent(page);
+  await page
+    .locator('input[type="file"]')
+    .setInputFiles({ name: "palette.png", mimeType: "image/png", buffer: await sampleImage() });
+  const choice = page.getByRole("button", { name: /^Use #[0-9A-F]+/ }).first();
+  await choice.focus();
+  await choice.press("Enter");
+  const selected = page.locator(".selected");
+  await expect(selected).toContainText("Image palette", { timeout: 2000 });
+  await expect(selected).not.toContainText("pixel");
+  for (const width of [1280, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const theme of ["light", "dark"]) {
+      const navigation = page.getByRole("button", { name: "Open navigation", exact: true });
+      const phone = await navigation.isVisible();
+      if (phone) await navigation.click();
+      const toggle = page.getByRole("button", { name: `Use ${theme} theme`, exact: true });
+      if (await toggle.isVisible()) await toggle.click();
+      if (phone) await page.getByRole("button", { name: "Close navigation", exact: true }).click();
+      await selected.scrollIntoViewIfNeeded();
+      await expect(selected).toBeInViewport();
+      await expect(selected).toContainText("Image palette");
+      await page.screenshot({
+        path: testInfo.outputPath(`palette-source-${width}-${theme}.png`),
+        animations: "disabled",
+      });
+    }
+  }
+  const sampler = page.getByRole("button", { name: /^Image color sampler/ });
+  await sampler.focus();
+  await sampler.press("ArrowLeft");
+  await expect(selected).toContainText("pixel");
+  await expect(selected).not.toContainText("Image palette");
 });
 
 test("clipboard image becomes a downloadable original-size file", async ({ page }) => {
@@ -146,7 +207,7 @@ test("find a converter, clear an empty search, and open Quick Cut", async ({ pag
   await expect(main.getByRole("heading", { name: "No tools match that search." })).toBeVisible();
   await main.getByRole("button", { name: "Show all tools" }).click();
   await main.getByRole("button", { name: "Video", exact: true }).click();
-  await expect(main.getByRole("link")).toHaveCount(2);
+  await expect(main.getByRole("link", { name: /^Quick Cut/ })).toBeVisible();
   await main.getByRole("link", { name: /^Quick Cut/ }).click();
   await expect(main.getByRole("link", { name: "Open Quick Cut" })).toHaveAttribute(
     "href",
@@ -167,6 +228,9 @@ test("supported tool pages are discoverable without JavaScript", async ({ browse
     "image-converter",
     "webp-to-png",
     "jpg-to-webp",
+    "mp4-to-mkv",
+    "audio-converter",
+    "media-info",
   ]) {
     await expect(page.getByRole("main").locator(`a[href="/tools/${slug}"]`)).toHaveCount(1);
   }

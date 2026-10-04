@@ -2,7 +2,15 @@ import { previewTools } from "./preview-tools.js";
 export { previewTools } from "./preview-tools.js";
 import { marketingGuides } from "./guides.js";
 import { mediaTools } from "./media-tools.js";
-export { mediaTools, imageConversions, imageFormats } from "./media-tools.js";
+export {
+  mediaTools,
+  imageConversions,
+  imageFormats,
+  mediaConversionTools,
+  mediaToolThumbnailTone,
+  videoFormats,
+  audioFormats,
+} from "./media-tools.js";
 export { marketingGuides } from "./guides.js";
 import { docsPageCatalog } from "./docs-catalog.js";
 import { docsRouteFromPage } from "./docs-route.js";
@@ -155,7 +163,7 @@ const staticMarketingEntries = [
     path: "/",
     key: "home",
     title: "OpenPost - The all-in-one content team for solo founders",
-    socialTitle: "Turn what you’re building into content. Publish it everywhere.",
+    socialTitle: "Your socials, on steroids.",
     description:
       "Create, edit, and schedule social content in OpenPost. Turn GitHub releases and RSS feeds into drafts with visual workflows, AI, and review steps.",
     label: "The content team for companies of one",
@@ -196,7 +204,7 @@ const staticMarketingEntries = [
     title: "Free image, video and social media tools - OpenPost",
     socialTitle: "Useful social tools. No account required.",
     description:
-      "Remove backgrounds, pick image colors, convert PNG, JPEG and WebP, make a logo, or cut a video. Free browser tools, no account required.",
+      "Remove backgrounds, convert images, video and audio, inspect codecs, make a logo, or cut a video. Free browser tools, no account required.",
     label: "OpenPost free tools",
     kind: "tools-index",
     agentRepresentation: "static",
@@ -325,7 +333,7 @@ const platformEntries = platformNames.map(([slug, name]) => ({
   path: `/platforms/${slug}`,
   key: `platform-${slug}`,
   title: `${name} content and scheduling - OpenPost`,
-  socialTitle: `Make your next ${name} post with OpenPost.`,
+  socialTitle: name,
   description: `Explore ideas, editing tools, and posting options for your business on ${name}.`,
   label: "Channel guide",
   kind: "platform",

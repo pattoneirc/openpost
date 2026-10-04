@@ -257,6 +257,7 @@
 			`width:${(width / canvasWidth) * 100}%`,
 			`height:${(height / canvasHeight) * 100}%`,
 			`transform:translate(${(-anchorX / width) * 100}%,${(-anchorY / height) * 100}%) rotate(${transform.rotation ?? 0}deg) scaleX(${(transform.flipHorizontal ? -1 : 1) * (transform.scaleX ?? 1)}) scaleY(${(transform.flipVertical ? -1 : 1) * (transform.scaleY ?? 1)})`,
+			`transform-origin:${(anchorX / width) * 100}% ${(anchorY / height) * 100}%`,
 			`opacity:${
 				deferEffects
 					? 0
@@ -625,12 +626,19 @@
 
 	function paintRaster(canvas: HTMLCanvasElement): void {
 		if (!['text', 'subtitle', 'shape'].includes(resolved.type)) return;
-		const width = Math.max(1, Math.round(transform.width ?? canvasWidth));
-		const height = Math.max(1, Math.round(transform.height ?? canvasHeight));
+		const width = Math.max(
+			1,
+			Math.round(resolved.textLayoutSize?.width ?? transform.width ?? canvasWidth)
+		);
+		const height = Math.max(
+			1,
+			Math.round(resolved.textLayoutSize?.height ?? transform.height ?? canvasHeight)
+		);
 		const rasterKey = JSON.stringify([
 			resolved.type,
 			resolved.text,
 			resolved.textSpans,
+			resolved.textLayoutSize,
 			resolved.timer,
 			resolved.spanLayout,
 			resolved.label,

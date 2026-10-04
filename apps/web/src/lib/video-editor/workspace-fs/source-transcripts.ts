@@ -7,7 +7,53 @@ import type {
 } from '../transcript/engine/types';
 import { readJson, removeEntry, WorkspaceFileCorruptError, writeJsonAtomic } from './fs-primitives';
 import { sourceTranscriptPath } from './paths';
-import { requireWorkspaceRoot } from './root';
+import { getWorkspaceRoot } from './root';
+import {
+	captureQueryMutationSession,
+	queryMutationSessionIsCurrent,
+	type QueryMutationSession
+} from '$lib/query/authorization-boundary';
+
+export type SourceTranscriptStorage =
+	| { kind: 'local'; root: FileSystemDirectoryHandle | null }
+	| { kind: 'cloud'; workspaceId: string; actorId: string; session: QueryMutationSession };
+
+export function captureSourceTranscriptStorage(workspaceId = ''): SourceTranscriptStorage {
+	if (!workspaceId) return { kind: 'local', root: getWorkspaceRoot() };
+	const session = captureQueryMutationSession();
+	const actorId = session.authorizationIdentity?.userID;
+	if (!actorId) throw new Error('Cloud transcript storage requires a signed-in account.');
+	return { kind: 'cloud', workspaceId, actorId, session };
+}
+
+export async function sourceTranscriptRoot(
+	storage: SourceTranscriptStorage,
+	signal?: AbortSignal
+): Promise<FileSystemDirectoryHandle> {
+	assertSourceTranscriptStorageCurrent(storage, signal);
+	if (storage.kind === 'local') {
+		if (!storage.root) throw new Error('Local transcript storage requires a workspace folder.');
+		return storage.root;
+	}
+	const browserRoot = await navigator.storage.getDirectory();
+	const transcripts = await browserRoot.getDirectoryHandle('openpost-source-transcripts', {
+		create: true
+	});
+	const actor = await transcripts.getDirectoryHandle(storage.actorId, { create: true });
+	const workspace = await actor.getDirectoryHandle(storage.workspaceId, { create: true });
+	assertSourceTranscriptStorageCurrent(storage, signal);
+	return workspace;
+}
+
+export function assertSourceTranscriptStorageCurrent(
+	storage: SourceTranscriptStorage,
+	signal?: AbortSignal
+): void {
+	signal?.throwIfAborted();
+	if (storage.kind === 'cloud' && !queryMutationSessionIsCurrent(storage.session)) {
+		throw new DOMException('Transcription session changed', 'AbortError');
+	}
+}
 
 export interface SourceTranscript {
 	schemaVersion: 1;
@@ -30,6 +76,8 @@ export interface SaveSourceTranscriptInput {
 	resolvedModel: TranscriptionModel;
 	words: TranscriptWord[];
 	createdAt?: number;
+	storage?: SourceTranscriptStorage;
+	signal?: AbortSignal;
 }
 
 export function sourceTranscriptMatchesMedia(
@@ -57,12 +105,16 @@ export function sourceTranscriptMatchesSelection(
 	);
 }
 
-export async function getSourceTranscript(mediaId: string): Promise<SourceTranscript | null> {
+export async function getSourceTranscript(
+	mediaId: string,
+	storage = captureSourceTranscriptStorage()
+): Promise<SourceTranscript | null> {
 	try {
 		const transcript = await readJson<SourceTranscript>(
-			requireWorkspaceRoot(),
+			await sourceTranscriptRoot(storage),
 			sourceTranscriptPath(mediaId)
 		);
+		assertSourceTranscriptStorageCurrent(storage);
 		return transcript?.schemaVersion === 1 && transcript.mediaId === mediaId ? transcript : null;
 	} catch (error) {
 		if (error instanceof WorkspaceFileCorruptError) return null;
@@ -74,7 +126,9 @@ export async function saveSourceTranscript(
 	input: SaveSourceTranscriptInput
 ): Promise<SourceTranscript> {
 	const now = Date.now();
-	const previous = await getSourceTranscript(input.media.id);
+	const storage = input.storage ?? captureSourceTranscriptStorage();
+	const root = await sourceTranscriptRoot(storage, input.signal);
+	const previous = await getSourceTranscript(input.media.id, storage);
 	const transcript: SourceTranscript = {
 		schemaVersion: 1,
 		mediaId: input.media.id,
@@ -89,10 +143,17 @@ export async function saveSourceTranscript(
 		createdAt: input.createdAt ?? previous?.createdAt ?? now,
 		updatedAt: now
 	};
-	await writeJsonAtomic(requireWorkspaceRoot(), sourceTranscriptPath(input.media.id), transcript);
+	assertSourceTranscriptStorageCurrent(storage, input.signal);
+	await writeJsonAtomic(root, sourceTranscriptPath(input.media.id), transcript);
+	assertSourceTranscriptStorageCurrent(storage, input.signal);
 	return transcript;
 }
 
-export async function deleteSourceTranscript(mediaId: string): Promise<void> {
-	await removeEntry(requireWorkspaceRoot(), sourceTranscriptPath(mediaId));
+export async function deleteSourceTranscript(
+	mediaId: string,
+	storage = captureSourceTranscriptStorage()
+): Promise<void> {
+	const root = await sourceTranscriptRoot(storage);
+	assertSourceTranscriptStorageCurrent(storage);
+	await removeEntry(root, sourceTranscriptPath(mediaId));
 }

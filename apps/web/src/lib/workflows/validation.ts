@@ -1,3 +1,4 @@
+import { referenceTokens, referenceParts } from './reference-path';
 /* oxlint-disable anti-slop/no-runtime-typeof -- This form validator checks arbitrary user-authored JSON literals before publishing or testing a workflow. */
 import type { Definition, Value, Step, WorkflowData } from './api';
 import { availableReferences } from './catalog';
@@ -5,12 +6,16 @@ import { stepFields, type FieldSpec, type Reference } from './fields';
 import { m } from '$lib/paraglide/messages';
 export type Issue = { node: string; field: string; message: string };
 export function referenceExists(reference: string, references: Reference[]): boolean {
-	if (!/^[a-zA-Z][a-zA-Z0-9_-]*(\.[a-zA-Z0-9_-]+)+$/.test(reference)) return false;
-	if (reference.split('.').some((part) => ['__proto__', 'constructor', 'prototype'].includes(part)))
-		return false;
-	return references.some(
-		(item) => item.value === reference || (item.dynamic && reference.startsWith(`${item.value}.`))
-	);
+	const parts = referenceParts(reference);
+	if (!parts || parts.length < 2) return false;
+	return references.some((item) => {
+		const candidate = referenceParts(item.value);
+		return (
+			candidate &&
+			(item.dynamic || candidate.length === parts.length) &&
+			candidate.every((key, i) => parts[i] === key)
+		);
+	});
 }
 function missingValue(value: Value | undefined): boolean {
 	return (
@@ -35,7 +40,7 @@ function bindingIssue(value: Value | undefined, references: Reference[], require
 }
 
 function interpolationIssue(text: string, references: Reference[]): string {
-	const pattern = /\{\{\s*([a-zA-Z][a-zA-Z0-9_.-]*)\s*\}\}/g;
+	const pattern = referenceTokens();
 	const rest = text.replace(pattern, '');
 	if (rest.includes('{{') || rest.includes('}}')) return m.workflows_invalid_syntax();
 	for (const token of text.matchAll(pattern))
@@ -43,17 +48,19 @@ function interpolationIssue(text: string, references: Reference[]): string {
 			return m.workflows_invalid_variable({ reference: token[1] });
 	return '';
 }
-export function workflowIssues(definition: Definition, sourceData?: WorkflowData): Issue[] {
+export function workflowIssues(definition: Definition, sourceData?: WorkflowData[string]): Issue[] {
 	const issues: Issue[] = [];
 	const source = definition.source;
 	const requiredSource =
 		source.kind === 'github_release'
 			? 'repository'
-			: source.kind === 'rss'
-				? 'url'
-				: source.kind === 'interval'
-					? 'interval_minutes'
-					: '';
+			: source.kind === 'interval'
+				? 'interval_minutes'
+				: '';
+	if (source.kind === 'rss') {
+		const message = feedURLIssue(source.url);
+		if (message) issues.push({ node: 'source', field: 'url', message });
+	}
 	if (requiredSource && !source[requiredSource])
 		issues.push({ node: 'source', field: requiredSource, message: m.workflows_required() });
 	if (
@@ -76,6 +83,10 @@ export function workflowIssues(definition: Definition, sourceData?: WorkflowData
 	function visit(steps: Step[]) {
 		for (const step of steps) {
 			const references = availableReferences(definition.steps ?? [], step.id, sourceData);
+			if (step.kind === 'build_draft') {
+				const message = builderDestinationIssue(step.inputs ?? {});
+				if (message) issues.push({ node: step.id, field: 'account_ids', message });
+			}
 			for (const field of stepFields(step.kind, step.inputs)) {
 				const message = fieldIssue(field, step.inputs?.[field.key], references);
 				if (message) issues.push({ node: step.id, field: field.key, message });
@@ -89,7 +100,9 @@ export function workflowIssues(definition: Definition, sourceData?: WorkflowData
 }
 export function resolveDisplay(reference: string, data: WorkflowData): Value['literal'] {
 	let value: Value['literal'] = data;
-	for (const part of reference.split('.')) {
+	const parts = referenceParts(reference);
+	if (!parts) return undefined;
+	for (const part of parts) {
 		if (
 			!value ||
 			typeof value !== 'object' ||
@@ -140,4 +153,28 @@ function urlIssue(value: Value['literal']): string {
 		return m.workflows_invalid_url();
 	}
 	return '';
+}
+
+export function feedURLIssue(value: string | undefined): string {
+	if (!value?.trim()) return m.workflows_required();
+	const authority = value.match(/^https?:\/\/([^/?#]*)/i)?.[1];
+	if (!authority || authority.includes('@') || value !== value.trim())
+		return m.workflows_invalid_url();
+	try {
+		const url = new URL(value);
+		if (!url.hostname) return m.workflows_invalid_url();
+	} catch {
+		return m.workflows_invalid_url();
+	}
+	return '';
+}
+
+export function builderDestinationIssue(inputs: Record<string, Value>): string {
+	if (inputs.account_ids?.reference || inputs.social_set_id?.reference) return '';
+	const set = inputs.social_set_id?.literal;
+	if (typeof set === 'string' && set.trim()) return '';
+	const accounts = inputs.account_ids?.literal;
+	if (Array.isArray(accounts) && accounts.some((id) => typeof id === 'string' && id.trim()))
+		return '';
+	return m.compose_ai_destinations_required();
 }

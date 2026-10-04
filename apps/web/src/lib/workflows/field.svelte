@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { referenceTokens, wholeReferenceToken } from './reference-path';
 	/* oxlint-disable anti-slop/no-runtime-typeof -- Workflow literals are user-authored JSON; distinguish text from structured values for editing and previews. */
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
@@ -67,7 +68,8 @@
 		if (code) return undefined;
 		if (value?.reference) return resolveDisplay(value.reference, data);
 		if (!text.includes('{{')) return undefined;
-		return text.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9_.-]*)\s*\}\}/g, (_token, ref: string) => {
+		if (json) return jsonPreview(text);
+		return text.replace(referenceTokens(), (_token, ref: string) => {
 			const value = resolveDisplay(ref, data);
 			return value === undefined
 				? m.workflows_value_unavailable()
@@ -76,8 +78,32 @@
 					: String(value);
 		});
 	});
+	function jsonPreview(authored: string): string | undefined {
+		try {
+			const parsed = JSON.parse(authored);
+			let available = true;
+			const preview = JSON.stringify(
+				parsed,
+				(_key, child) => {
+					if (typeof child !== 'string') return child;
+					return child.replace(referenceTokens(), (_token, reference: string) => {
+						const sample = resolveDisplay(reference, data);
+						if (sample === undefined || sample === null || typeof sample === 'object') {
+							available = false;
+							return '';
+						}
+						return String(sample);
+					});
+				},
+				2
+			);
+			return available ? preview : undefined;
+		} catch {
+			return undefined;
+		}
+	}
 	function write(next: string) {
-		const reference = !code && next.trim().match(/^\{\{\s*([a-zA-Z][a-zA-Z0-9_.-]*)\s*\}\}$/)?.[1];
+		const reference = !code && wholeReferenceToken(next.trim());
 		if (reference && (json || numeric || preserveReferenceType)) {
 			onchange({ reference });
 			return;
@@ -108,6 +134,7 @@
 			{readonly}
 			{references}
 			{code}
+			variableInsertion={json && /^\s*(\[\s*\]|\{\s*\})\s*$/.test(text) ? 'replace' : 'selection'}
 			multiline={multiline || json}
 			{placeholder}
 			invalid={Boolean(issue)}

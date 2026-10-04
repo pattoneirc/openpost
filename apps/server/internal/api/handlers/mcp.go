@@ -90,7 +90,7 @@ const (
 	mcpScopeRead          = apitokens.ScopeMCPRead
 	mcpScopeFull          = apitokens.ScopeMCP
 	maxRemoteMediaBytes   = 50 * 1024 * 1024
-	maxMCPRequestBytes    = 2 * 1024 * 1024
+	maxMCPRequestBytes    = 12 * 1024 * 1024
 	mcpAppWidgetURI       = "ui://widget/openpost-scheduler-v1.html"
 	mcpUploadWidgetURI    = "ui://widget/openpost-local-upload-v1.html"
 	mcpAppWidgetMimeType  = "text/html;profile=mcp-app"
@@ -417,8 +417,10 @@ type mcpError struct {
 }
 
 type mcpContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	Data     string `json:"data,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
 }
 
 type mcpHTTPFailure struct {
@@ -717,7 +719,7 @@ func (h *MCPHandler) mcpActiveToolMode() mcpToolMode {
 }
 
 func (h *MCPHandler) mcpInstructions(scope string, mode mcpToolMode) string {
-	const shared = " All delegated operations retain the same authorization, workspace scoping, schema validation, quota, and audit controls."
+	const shared = " Connected Image and Video Editors expose editor_sessions, editor_context, structure and media inspection, and guarded live edits. Call editor_sessions first, then inspect stable IDs and the authored revision. A local project is available only while its browser editor remains connected. Each edit needs an explicit project ID, expected revision, and retry key. All delegated operations retain the same authorization, workspace scoping, schema validation, quota, and audit controls."
 	var base string
 	switch mode {
 	case mcpToolModeSearch:
@@ -1219,7 +1221,7 @@ Workflow:
 1. Call search_operations to load the schemas for list_workspaces, list_provider_catalog, list_accounts, list_media, upload_media_from_url, and create_post as needed.
 2. If workspace_id is missing, call query_operation with list_workspaces and ask which workspace to use.
 3. Call query_operation with list_provider_catalog and list_accounts to choose available destinations matching these platform hints: %s.
-4. Call query_operation with list_media if the idea needs existing media, or call execute_operation with upload_media_from_url if the user supplied a public media URL.
+4. Call query_operation with list_media if the idea needs existing media, or call execute_operation with upload_media_from_url for a public media URL or upload_media_base64 for a local file up to 8 MiB when the client cannot show a file picker.
 5. Call execute_operation with create_post to create one concise draft and relevant media_ids. Do not schedule it until the user approves timing and destinations.
 6. Explain what you created and suggest the next scheduling step.
 
@@ -1380,12 +1382,57 @@ func mcpOperationCatalog() []mcpOperationDefinition {
 		mcpDeleteCommentTool(),
 		mcpSuggestNextSlotTool(),
 		mcpUploadMediaFromURLTool(),
+		mcpUploadMediaBase64Tool(),
 		mcpPostMetricsTool(),
 		mcpDashboardLinkTool(),
 		mcpSearchDocsTool(),
 		mcpGetMediaTool(),
 		mcpUpdateMediaTool(),
 		mcpDeleteMediaTool(),
+		mcpEditorSessionsTool(),
+		mcpEditorReferenceTool(),
+		mcpEditorContextTool(),
+		mcpEditorLibraryTool("library_search"),
+		mcpEditorLibraryTool("library_inspect"),
+		mcpEditorLibraryTool("library_apply"),
+		mcpEditorLibraryTool("library_save"),
+		mcpEditorLibraryTool("style_capture"),
+		mcpEditorLibraryTool("style_preview"),
+		mcpEditorPersonalizationTool("style_list"),
+		mcpEditorPersonalizationTool("style_inspect"),
+		mcpEditorPersonalizationTool("style_save"),
+		mcpEditorPersonalizationTool("style_archive"),
+		mcpEditorPersonalizationTool("preferences_get"),
+		mcpEditorPersonalizationTool("preferences_set"),
+		mcpEditorPersonalizationTool("preferences_remove"),
+		mcpTimelineInspectTool(),
+		mcpImageInspectTool(),
+		mcpMediaSearchEditorTool(),
+		mcpMediaInspectEditorTool(),
+		mcpMediaLibraryTool(),
+		mcpMediaAnalyzeTool(),
+		mcpMediaAnalysisStatusTool(),
+		mcpMediaAnalysisCancelTool(),
+		mcpMediaFrameTool(),
+		mcpMediaStoryboardTool(),
+		mcpSceneAnalyzeTool(),
+		mcpSceneAnalysisStatusTool(),
+		mcpSceneAnalysisCancelTool(),
+		mcpSceneSearchTool(),
+		mcpSceneInspectTool(),
+		mcpEditorPreviewTool(),
+		mcpEditorAudioPreviewTool(),
+		mcpEditorExportStartTool(),
+		mcpEditorExportStatusTool(),
+		mcpEditorExportCancelTool(),
+		mcpEditorRevealTool(),
+		mcpVideoEditTool(),
+		mcpImageEditTool(),
+		mcpEditorWorkStatusTool(),
+		mcpEditorWorkCancelTool(),
+		mcpEditorHistoryInspectTool(),
+		mcpEditorHistoryUndoTool(),
+		mcpEditorHistoryRedoTool(),
 	}
 }
 
@@ -1736,7 +1783,7 @@ func mcpCreatePublicationTool() mcpOperationDefinition {
 	mediaSchema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"media_id":               map[string]any{"type": "string", "description": "Media attachment ID returned by list_media or upload_media_from_url."},
+			"media_id":               map[string]any{"type": "string", "description": "Media attachment ID returned by list_media, upload_media_from_url, or upload_media_base64."},
 			"role":                   map[string]any{"type": "string", "description": "Media role such as attachment, cover, or thumbnail."},
 			"alt_text":               map[string]any{"type": "string", "description": "Alt text override."},
 			"thumbnail_timestamp_ms": map[string]any{"type": "integer", "description": "Video thumbnail timestamp in milliseconds."},
@@ -1936,7 +1983,7 @@ func mcpReplyToRenditionTool() mcpOperationDefinition {
 func mcpPublicationMediaSchema() map[string]any {
 	return map[string]any{
 		"type": "object", "properties": map[string]any{
-			"media_id": map[string]any{"type": "string", "description": "Media attachment ID returned by list_media or upload_media_from_url."},
+			"media_id": map[string]any{"type": "string", "description": "Media attachment ID returned by list_media, upload_media_from_url, or upload_media_base64."},
 			"role": map[string]any{
 				"type": "string", "enum": []string{"attachment", "cover", "thumbnail"},
 				"description": "Media purpose within the provider output.",
@@ -2572,6 +2619,7 @@ var mcpToolStatuses = map[string]mcpToolStatus{
 	mcpToolDeleteComment:  {Invoking: "Queueing comment deletion", Invoked: "Comment deletion queued"},
 	mcpToolSuggestSlot:    {Invoking: "Finding next slot", Invoked: "Next slot found"},
 	mcpToolUploadURL:      {Invoking: "Uploading media", Invoked: "Media uploaded"},
+	mcpToolUploadBase64:   {Invoking: "Uploading media", Invoked: "Media uploaded"},
 	mcpToolPostMetrics:    {Invoking: "Loading post metrics", Invoked: "Post metrics loaded"},
 	mcpToolDashboardLink:  {Invoking: "Building dashboard link", Invoked: "Dashboard link ready"},
 	mcpToolSearchDocs:     {Invoking: "Searching docs", Invoked: "Docs found"},
@@ -2589,6 +2637,9 @@ func mcpToolInvocationStatus(toolName string) mcpToolStatus {
 
 //nolint:gocyclo // Tool cases are a flat schema catalog, not nested control flow.
 func mcpToolOutputSchema(toolName string) map[string]any {
+	if strings.HasPrefix(toolName, "editor_") || strings.HasPrefix(toolName, "library_") || strings.HasPrefix(toolName, "style_") || strings.HasPrefix(toolName, "preferences_") || toolName == "timeline_inspect" || toolName == "image_inspect" || toolName == "media_library" || toolName == "media_analyze" || toolName == "media_analysis_status" || toolName == "media_analysis_cancel" || toolName == "media_search" || toolName == "media_inspect" || toolName == "media_frame" || toolName == "media_storyboard" || strings.HasPrefix(toolName, "scene_") || toolName == "preview_render" || toolName == "preview_audio" || toolName == "video_edit" || toolName == "image_edit" || toolName == "export_start" || toolName == "export_status" || toolName == "export_cancel" {
+		return mcpOpenObjectSchema()
+	}
 	if toolName == mcpToolListPubs {
 		return mcpStructuredOutputSchema(map[string]any{
 			"publications": mcpArraySchema(mcpOpenObjectSchema()),
@@ -2653,7 +2704,7 @@ func mcpToolOutputSchema(toolName string) map[string]any {
 		return mcpStructuredOutputSchema(map[string]any{
 			"suggestion": mcpOpenObjectSchema(),
 		}, "suggestion")
-	case mcpToolUploadURL:
+	case mcpToolUploadURL, mcpToolUploadBase64:
 		return mcpStructuredOutputSchema(map[string]any{
 			"media": mcpOpenObjectSchema(),
 		}, "media")
@@ -3004,6 +3055,9 @@ func (h *MCPHandler) callTool(ctx context.Context, principal *middleware.Princip
 	result, auditToolName, auditArgs, rpcErr := h.executeMCPTool(ctx, principal.UserID, principal.Scope, canonicalName, params.Arguments)
 	if rpcErr == nil {
 		rpcErr = validateMCPResult(canonicalName, auditToolName, result)
+		if rpcErr == nil {
+			result, rpcErr = mcpStructuredJSONText(result)
+		}
 	}
 	h.recordToolCall(ctx, principal, auditToolName, workspaceIDFromMCPArguments(auditArgs), time.Since(start), rpcErr)
 	return result, rpcErr
@@ -3256,10 +3310,12 @@ func (h *MCPHandler) callMCPOperation(ctx context.Context, userID, operation str
 		return h.renderLocalMediaUpload(ctx, userID, args)
 	case mcpToolCreateTicket:
 		return h.createLocalMediaUploadTicket(ctx, userID, args)
+	case "editor_sessions", "editor_reference", "editor_context", "editor_reveal", "timeline_inspect", "image_inspect", "media_library", "media_analyze", "media_analysis_status", "media_analysis_cancel", "media_search", "media_inspect", "media_frame", "media_storyboard", "scene_analyze", "scene_analysis_status", "scene_analysis_cancel", "scene_search", "scene_inspect", "preview_render", "preview_audio", "video_edit", "image_edit", "export_start", "export_status", "export_cancel", "editor_work_status", "editor_work_cancel", "editor_history_inspect", "editor_history_undo", "editor_history_redo", "library_search", "library_inspect", "library_apply", "library_save", "style_capture", "style_preview", "style_list", "style_inspect", "style_save", "preferences_get", "preferences_set", "preferences_remove", "style_archive":
+		return h.callEditorAgentTool(ctx, userID, operation, args)
 	case mcpToolCreatePub, mcpToolListPubs, mcpToolGetPub, mcpToolUpdatePub, mcpToolPubRenditions, mcpToolReplyRendition,
 		mcpToolValidatePub, mcpToolSchedulePub, mcpToolCancelPub, mcpToolPublishPubNow, mcpToolDeletePub,
 		mcpToolRetryFailed, mcpToolRetryOne, mcpToolPubEvents, mcpToolComments,
-		mcpToolReplyComment, mcpToolHideComment, mcpToolDeleteComment, mcpToolSuggestSlot, mcpToolUploadURL,
+		mcpToolReplyComment, mcpToolHideComment, mcpToolDeleteComment, mcpToolSuggestSlot, mcpToolUploadURL, mcpToolUploadBase64,
 		mcpToolGetMedia, mcpToolUpdateMedia, mcpToolDeleteMedia:
 		return h.callWorkspaceActionTool(ctx, userID, operation, args)
 	default:
@@ -3281,6 +3337,8 @@ func (h *MCPHandler) callWorkspaceActionTool(ctx context.Context, userID, toolNa
 		return h.suggestNextSlot(ctx, userID, args)
 	case mcpToolUploadURL:
 		return h.uploadMediaFromURL(ctx, userID, args)
+	case mcpToolUploadBase64:
+		return h.uploadMediaBase64(ctx, userID, args)
 	default:
 		return nil, &mcpError{Code: -32602, Message: "unknown tool"}
 	}
@@ -5742,6 +5800,7 @@ func (h *MCPHandler) uploadMediaFromURL(ctx context.Context, userID string, args
 	if err := decodeMCPArguments(args, &input); err != nil {
 		return nil, &mcpError{Code: -32602, Message: "invalid upload_media_from_url arguments"}
 	}
+	input.WorkspaceID = strings.TrimSpace(input.WorkspaceID)
 	if rpcErr := h.ensureWorkspaceEditAccess(ctx, userID, input.WorkspaceID); rpcErr != nil {
 		return nil, rpcErr
 	}
@@ -5813,34 +5872,12 @@ func (h *MCPHandler) fetchAndStoreRemoteMedia(ctx context.Context, workspaceID, 
 	if rpcErr != nil {
 		return mcpMedia{}, rpcErr
 	}
-	mediaHandler := &MediaHandler{
-		db:      h.db,
-		storage: h.mediaStorage,
-		quota:   h.entitlement,
-		usage:   h.usage,
-	}
-	result, err := mediaHandler.processUploadBytes(ctx, mediaUploadBytesInput{
-		WorkspaceID:      workspaceID,
-		Filename:         filename,
-		DeclaredMimeType: declaredMimeType,
-		Size:             int64(len(content)),
-		Content:          content,
-		AltText:          altText,
+	media, rpcErr := h.storeMCPMediaBytes(ctx, mediaUploadBytesInput{
+		WorkspaceID: workspaceID, Filename: filename, DeclaredMimeType: declaredMimeType,
+		Size: int64(len(content)), Content: content, AltText: altText,
 	})
-	if err != nil {
-		return mcpMedia{}, &mcpError{Code: -32602, Message: err.Error()}
-	}
-
-	return mcpMedia{
-		ID:        stringFromMap(result, "id"),
-		MimeType:  stringFromMap(result, "mime_type"),
-		URL:       stringFromMap(result, "url"),
-		Size:      int64FromMap(result, "size"),
-		Deduped:   boolFromMap(result, "deduped"),
-		Filename:  filename,
-		AltText:   altText,
-		SourceURL: remote.String(),
-	}, nil
+	media.SourceURL = remote.String()
+	return media, rpcErr
 }
 
 func (h *MCPHandler) renderLocalMediaUpload(ctx context.Context, userID string, args map[string]any) (any, *mcpError) {
@@ -6147,19 +6184,6 @@ func boolFromMap(values map[string]interface{}, key string) bool {
 		return value
 	}
 	return false
-}
-
-func int64FromMap(values map[string]interface{}, key string) int64 {
-	switch value := values[key].(type) {
-	case int64:
-		return value
-	case int:
-		return int64(value)
-	case float64:
-		return int64(value)
-	default:
-		return 0
-	}
 }
 
 func newUUID() string {

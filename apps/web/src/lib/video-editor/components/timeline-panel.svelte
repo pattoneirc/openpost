@@ -237,6 +237,7 @@
 	import {
 		addTrack,
 		createTrackGroup,
+		canCreateTrackGroup,
 		moveTrack,
 		renameTrack,
 		removeTrackGroupWithContents,
@@ -447,6 +448,13 @@
 	let visibleTimelineItemIds = $state<Set<string>>(new Set());
 	let timelineItemObserver: IntersectionObserver | null = null;
 	let selectedTrackIds = $state<string[]>([]);
+	const replacesGroupNames = $derived(
+		timelineStore.tracks.some((track) => {
+			if (!track.isGroup) return false;
+			const children = trackChildren(timelineStore.tracks, track.id);
+			return children.length > 0 && children.every((child) => selectedTrackIds.includes(child.id));
+		})
+	);
 	type TimelineContextTarget =
 		| { kind: 'items'; itemIds: string[]; primaryId: string }
 		| { kind: 'transition'; transitionId: string }
@@ -4582,6 +4590,16 @@
 				})
 			: []
 	);
+	$effect(() => {
+		if (availableKeyframeProperties.includes(pendingKeyframeProperty)) return;
+		const property = availableKeyframeProperties.includes('opacity')
+			? 'opacity'
+			: availableKeyframeProperties[0];
+		if (property) pendingKeyframeProperty = property;
+	});
+	const hasPendingKeyframeProperty = $derived(
+		availableKeyframeProperties.includes(pendingKeyframeProperty)
+	);
 	const keyframePropertyOptions = $derived(
 		availableKeyframeProperties.map((property) => ({
 			value: property,
@@ -4627,7 +4645,17 @@
 <svelte:window onkeydown={onPanelKeydown} />
 
 <div class="flex size-full min-h-0 flex-col">
-	<div class="flex max-w-full min-w-0 shrink-0 items-center gap-2 overflow-x-auto px-3 py-1">
+	<div
+		class="flex max-w-full min-w-0 shrink-0 scroll-px-1 items-center gap-2 overflow-x-auto px-3 py-1"
+		onfocusin={(event) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			requestAnimationFrame(() => {
+				if (target.isConnected && document.activeElement === target)
+					target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+			});
+		}}
+	>
 		<span class="text-xs text-[var(--video-editor-muted)]">{m.video_editor_timeline()}</span>
 		<div class="flex items-center gap-0.5 border-l border-[var(--video-editor-border)] pl-2">
 			<Button
@@ -4700,10 +4728,13 @@
 					</DropdownMenu.Item>
 					<DropdownMenu.Separator />
 					<DropdownMenu.Item
-						disabled={selectedTrackIds.length === 0}
+						disabled={!canCreateTrackGroup(selectedTrackIds)}
+						class="max-w-[calc(100vw-2rem)] whitespace-normal"
 						onclick={createGroupFromSelection}
 					>
-						{m.video_editor_track_group_selected()}
+						{replacesGroupNames
+							? m.video_editor_track_group_merge()
+							: m.video_editor_track_group_selected()}
 					</DropdownMenu.Item>
 					<DropdownMenu.Separator />
 					<DropdownMenu.CheckboxItem
@@ -4800,26 +4831,29 @@
 					<AppSelect
 						class="h-7 w-36 text-xs"
 						value={pendingKeyframeProperty}
+						disabled={!hasPendingKeyframeProperty}
 						options={keyframePropertyOptions}
 						ariaLabel={m.video_editor_keyframe_property()}
 						onValueChange={(value) => keyframesPanel?.setPendingKeyframeProperty(value)}
 					/>
 					<button
 						type="button"
-						class="flex items-center gap-1 rounded px-1 py-0.5 text-xs hover:bg-[var(--video-editor-control-hover)] focus-visible:outline-2 focus-visible:outline-[var(--video-editor-focus)] [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+						class="flex items-center gap-1 rounded px-1 py-0.5 text-xs hover:bg-[var(--video-editor-control-hover)] focus-visible:outline-2 focus-visible:outline-[var(--video-editor-focus)] disabled:cursor-not-allowed disabled:opacity-40 [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+						disabled={!hasPendingKeyframeProperty}
 						onclick={() => keyframesPanel?.addKeyframeAtPlayhead(pendingKeyframeProperty)}
 						><ProtectedIcon icon="editor-keyframe" class="size-2.5 fill-current" />
 						{m.video_editor_keyframe_add()}</button
 					>
 					<button
 						type="button"
-						class="rounded px-1.5 py-0.5 text-xs font-semibold text-[var(--video-editor-muted)] hover:bg-[var(--video-editor-control-hover)] data-[active=true]:bg-[var(--video-editor-primary)] data-[active=true]:text-[var(--video-editor-primary-text)] [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+						class="rounded px-1.5 py-0.5 text-xs font-semibold text-[var(--video-editor-muted)] hover:bg-[var(--video-editor-control-hover)] disabled:cursor-not-allowed disabled:opacity-40 data-[active=true]:bg-[var(--video-editor-primary)] data-[active=true]:text-[var(--video-editor-primary-text)] [@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
 						data-active={selectedItem
 							? autoKeyframeStore.isEnabled(selectedItem.id, pendingKeyframeProperty)
 							: false}
 						aria-pressed={selectedItem
 							? autoKeyframeStore.isEnabled(selectedItem.id, pendingKeyframeProperty)
 							: false}
+						disabled={!hasPendingKeyframeProperty}
 						aria-label={m.video_editor_property_auto_key({
 							property: keyframeLabel(pendingKeyframeProperty)
 						})}

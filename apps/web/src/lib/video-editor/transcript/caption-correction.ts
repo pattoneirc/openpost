@@ -1,18 +1,20 @@
-import type { SubtitleCue, SubtitleWord } from '../project/types';
+import type { SubtitleCue, SubtitleWord, TimelineItem } from '../project/types';
+import { captionTimelineOffset, type CaptionFrameRange } from './caption-source-mapping';
+import { buildCueText, getCueFormatFlags, parseSubtitleCueText } from './subtitle-cue-format';
 
-function finiteFrame(value: number, fallback: number): number {
-	return Number.isFinite(value) ? Math.round(value) : fallback;
+export function captionTimingBounds(item: TimelineItem): CaptionFrameRange {
+	const start = item.from - captionTimelineOffset(item);
+	return { start, end: start + item.durationInFrames };
 }
 
-/** Keep a cue interval finite and non-empty while preserving valid user input. */
-export function correctedCueTiming(
-	cue: SubtitleCue,
-	startFrame: number,
-	endFrame: number
-): Pick<SubtitleCue, 'startFrame' | 'endFrame'> {
-	const start = Math.max(0, finiteFrame(startFrame, cue.startFrame));
-	const end = Math.max(start + 1, finiteFrame(endFrame, cue.endFrame));
-	return { startFrame: start, endFrame: end };
+function validTiming(start: number, end: number, bounds: CaptionFrameRange): boolean {
+	return (
+		Number.isInteger(start) &&
+		Number.isInteger(end) &&
+		start >= bounds.start &&
+		end <= bounds.end &&
+		end > start
+	);
 }
 
 export interface CorrectedCueTimingPatch {
@@ -25,9 +27,11 @@ export interface CorrectedCueTimingPatch {
 export function correctedCueTimingPatch(
 	cue: SubtitleCue,
 	startFrame: number,
-	endFrame: number
-): CorrectedCueTimingPatch {
-	const corrected = correctedCueTiming(cue, startFrame, endFrame);
+	endFrame: number,
+	bounds: CaptionFrameRange
+): CorrectedCueTimingPatch | null {
+	if (!validTiming(startFrame, endFrame, bounds)) return null;
+	const corrected = { startFrame, endFrame };
 	if (!cue.words) return corrected;
 	const previousDuration = Math.max(1, cue.endFrame - cue.startFrame);
 	const nextDuration = corrected.endFrame - corrected.startFrame;
@@ -96,20 +100,20 @@ export function correctedCueWords(cue: SubtitleCue, plainText: string): Subtitle
 export function correctedSubtitleWord(
 	cue: SubtitleCue,
 	wordId: string,
-	patch: Partial<SubtitleWord>
+	patch: Partial<SubtitleWord>,
+	bounds: CaptionFrameRange
 ): CorrectedWordPatch | null {
 	if (!cue.words) return null;
 	const index = cue.words.findIndex((word) => word.id === wordId);
 	if (index < 0) return null;
 	const current = cue.words[index]!;
-	const startFrame = Math.max(
-		0,
-		finiteFrame(patch.startFrame ?? current.startFrame, current.startFrame)
-	);
-	const endFrame = Math.max(
-		startFrame + 1,
-		finiteFrame(patch.endFrame ?? current.endFrame, current.endFrame)
-	);
+	const startFrame = patch.startFrame ?? current.startFrame;
+	const endFrame = patch.endFrame ?? current.endFrame;
+	if (
+		(patch.startFrame !== undefined || patch.endFrame !== undefined) &&
+		!validTiming(startFrame, endFrame, bounds)
+	)
+		return null;
 	const text = patch.text ?? current.text;
 	if (text === current.text && startFrame === current.startFrame && endFrame === current.endFrame) {
 		return null;
@@ -123,4 +127,40 @@ export function correctedSubtitleWord(
 		startFrame: Math.min(...words.map((word) => word.startFrame)),
 		endFrame: Math.max(...words.map((word) => word.endFrame))
 	};
+}
+
+/** Keep authored separators when timed word copy changes independently of cue layout. */
+export function correctedCueWordText(cue: SubtitleCue, words: SubtitleWord[]): string {
+	const original = cue.words ?? [];
+	if (
+		original.length === words.length &&
+		original.every(
+			(word, index) => word.id === words[index]?.id && word.text === words[index]?.text
+		)
+	)
+		return cue.text;
+	const parsed = parseSubtitleCueText(cue.text);
+	const plain = parsed.spans.map((span) => span.text).join('');
+	const replacements = new Map(words.map((word) => [word.id, word.text]));
+	let cursor = 0;
+	let text = '';
+	let aligned = true;
+	for (const word of original) {
+		const separator = plain.slice(cursor).match(/^\s*/u)![0];
+		text += separator;
+		cursor += separator.length;
+		if (
+			!plain.startsWith(word.text, cursor) ||
+			(cursor + word.text.length < plain.length &&
+				!/^\s/u.test(plain.slice(cursor + word.text.length)))
+		) {
+			aligned = false;
+			break;
+		}
+		text += replacements.get(word.id) ?? '';
+		cursor += word.text.length;
+	}
+	if (aligned && /^\s*$/u.test(plain.slice(cursor))) text += plain.slice(cursor);
+	else text = words.map((word) => word.text).join(' ');
+	return buildCueText(text, getCueFormatFlags(parsed), cue.text);
 }

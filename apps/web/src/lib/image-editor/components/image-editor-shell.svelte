@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { replaceEqualDeep } from '@tanstack/svelte-query';
 	import { captureTelemetryEvent } from '@openpost/telemetry';
@@ -28,6 +28,7 @@
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import FeedbackDialog from '$lib/components/feedback-dialog.svelte';
 	import ImageEditorGuideDialog from './image-editor-guide-dialog.svelte';
+	import CheckpointRemove from './checkpoint-remove.svelte';
 	import ImageEditorResizeDialog from './image-editor-resize-dialog.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { Input } from '$lib/components/ui/input';
@@ -43,12 +44,15 @@
 	import TemplatePreview from './template-preview.svelte';
 	import ColorPicker from '$lib/components/color-picker.svelte';
 	import { provideImageEditor, ImageEditorController } from '../editor.svelte';
+	import { connectEditorAgent } from '$lib/editor-agent/browser-relay';
+	import { handleImageAgentRequest } from '$lib/editor-agent/image-executor';
 	import {
 		completeImageEditorReturnToken,
 		createImageEditorDesign,
 		createImageEditorCheckpoint,
 		createImageEditorTemplate,
 		restoreImageEditorRevision,
+		deleteImageEditorCheckpoint,
 		saveImageEditorDesign,
 		updateImageEditorTemplate
 	} from '../api';
@@ -69,7 +73,11 @@
 		loadLocalImageEditorRecovery,
 		storeLocalImageEditorRecovery
 	} from '../recovery';
-	import { saveGuestImageEditorDesign, storeGuestImageEditorMedia } from '../local-persistence';
+	import {
+		saveGuestImageEditorDesign,
+		storeGuestImageEditorMedia,
+		storeGuestImageEditorProjectMedia
+	} from '../local-persistence';
 	import {
 		releaseLocalImageEditorMediaForDesign,
 		retainLocalImageEditorMediaForDesign
@@ -132,7 +140,7 @@
 		queryMutationSessionIsCurrent,
 		type QueryMutationSession
 	} from '$lib/query/authorization-boundary';
-	import { editorHandoffReturnURL } from '$lib/editor-handoff';
+	import { editorHandoffReturnURL, loadEditorHandoff } from '$lib/editor-handoff';
 	import { ProtectedIcon, ThemeIcon } from '$lib/themes/icons';
 	import type { ThemeIconRole } from '$lib/themes/contracts.js';
 	import type { ProtectedIconRole } from '$lib/themes/icons/protected-icon.js';
@@ -142,8 +150,8 @@
 	import {
 		imageEditorCommand,
 		imageEditorCommandForKeyboardEvent,
-		imageEditorCommandsForCompactMenu,
 		imageEditorCommandsForCategory,
+		imageEditorCommandsForCompactMenu,
 		imageEditorCommandsForMobileGroup,
 		imageEditorCommandsForRail,
 		imageEditorShortcutLabel,
@@ -185,7 +193,31 @@
 		onSaveToOpenPost?: () => void | Promise<void>;
 	} = $props();
 
-	const editor = provideImageEditor(new ImageEditorController());
+	const coverHandoff = $derived(
+		Boolean(returnToken && loadEditorHandoff(returnToken, 'image')?.purpose === 'destination_cover')
+	);
+	const attachLabel = $derived(
+		coverHandoff ? m.compose_cover_use_design() : m.image_editor_attach()
+	);
+
+	const editor = provideImageEditor(
+		new ImageEditorController({
+			textAppearance: () => (coverHandoff ? 'over-image' : 'standard')
+		})
+	);
+	let agentConnectionStatus = $state<'connected' | 'disconnected' | 'working'>('disconnected');
+	$effect(() => {
+		const workspaceID = editor.workspaceID;
+		const projectID = editor.id;
+		if (guestMode || !editor.canEdit || !workspaceID || !projectID) return;
+		return connectEditorAgent({
+			workspaceID,
+			projectID,
+			kind: 'image',
+			handle: (request) => handleImageAgentRequest(editor, request),
+			onStatus: (status) => (agentConnectionStatus = status)
+		});
+	});
 	$effect(() => {
 		editor.setBrandKit(initialBrandKit);
 	});
@@ -242,6 +274,40 @@
 	let firstEditHintVisible = $state(false);
 	let firstEditActionLabel = $state<string | undefined>();
 	let helpDialogOpen = $state(false);
+	type CompactMenuSection = ImageEditorCompactMenuCategory | 'file' | 'view' | 'help';
+	const compactMenuSections: readonly CompactMenuSection[] = [
+		'file',
+		...IMAGE_EDITOR_COMPACT_MENU_CATEGORIES,
+		'view',
+		'help'
+	];
+	let compactMenuSection = $state<CompactMenuSection | null>(null);
+	let compactMenuBack = $state<HTMLDivElement | null>(null);
+	let compactMenuItems = $state<Record<CompactMenuSection, HTMLDivElement | null>>({
+		file: null,
+		edit: null,
+		layer: null,
+		select: null,
+		tools: null,
+		view: null,
+		help: null
+	});
+	let compactMenuContent = $state<HTMLDivElement | null>(null);
+
+	async function openCompactMenuSection(section: CompactMenuSection): Promise<void> {
+		compactMenuSection = section;
+		await tick();
+		compactMenuContent?.scrollTo(0, 0);
+		compactMenuBack?.focus();
+	}
+
+	async function backToCompactMenu(): Promise<void> {
+		const section = compactMenuSection;
+		compactMenuSection = null;
+		await tick();
+		compactMenuContent?.scrollTo(0, 0);
+		if (section) compactMenuItems[section]?.focus();
+	}
 	let conflictDialogOpen = $state(false);
 	let conflictBusy = $state(false);
 	let conflictOperationSequence = 0;
@@ -445,7 +511,7 @@
 		| undefined;
 	let exportPages = $derived.by(() => {
 		if (!editor.document) return [];
-		return exportAllPages
+		return exportAllPages && !(coverHandoff && exportMode === 'attach')
 			? editor.document.pages
 			: editor.document.pages.filter((page) => page.id === editor.activePageID);
 	});
@@ -653,6 +719,18 @@
 			coverPreviewMediaID = initial.cover_preview_media_id ?? '';
 		}
 	}
+
+	$effect(() => {
+		if (
+			coverHandoff &&
+			exportMode === 'attach' &&
+			editor.document?.export_defaults.format === 'webp'
+		) {
+			editor.mutate('Change cover export format', (document) => {
+				document.export_defaults.format = 'png';
+			});
+		}
+	});
 
 	function openExport(mode: 'download' | 'media' | 'attach'): void {
 		if (editor.floatingPixelSelection) editor.commitFloatingPixelSelection();
@@ -1577,7 +1655,11 @@
 						done: index + 1,
 						total
 					});
-					const uploaded = await storeGuestImageEditorMedia(recovery.guestDesignID, entry.file);
+					const uploaded = await storeGuestImageEditorProjectMedia(
+						recovery.guestDesignID,
+						parsed.document,
+						entry
+					);
 					recovery.replacements.set(entry.id, uploaded.id);
 				}
 				controller.signal.throwIfAborted();
@@ -1825,6 +1907,21 @@
 		}
 	}
 
+	async function removeCheckpoint(revision: ImageEditorRevisionSummary): Promise<void> {
+		if (!editor.canEdit || historyBusy || revision.kind !== 'checkpoint') return;
+		const view = captureEditorMutationView();
+		const operationSequence = ++historyMutationSequence;
+		historyBusy = true;
+		try {
+			await deleteImageEditorCheckpoint(editor.workspaceID, editor.id, revision.id);
+			if (!editorMutationViewIsCurrent(view)) return;
+			revisions = revisions.filter((entry) => entry.id !== revision.id);
+			if (revisionPreview?.summary.id === revision.id) invalidateRevisionPreview();
+		} finally {
+			if (operationSequence === historyMutationSequence) historyBusy = false;
+		}
+	}
+
 	async function restoreRevision(): Promise<void> {
 		if (!revisionPreview || !revisionChanges || !imageEditorRevisionHasChanges(revisionChanges)) {
 			return;
@@ -1937,7 +2034,9 @@
 		}
 		if (
 			tool === 'crop' &&
-			!editor.selectedLayers.some((layer) => layer.type === 'image' && !layer.locked)
+			!editor.selectedLayers.some(
+				(layer) => layer.type === 'image' && !editor.isLayerLocked(layer.id)
+			)
 		)
 			return;
 		assetOverlayOpen = false;
@@ -2307,6 +2406,10 @@
 				editor.document &&
 				prepareRasterOperation(editor.document, editor.activePageID, editor.selectedLayerIDs, id)
 			);
+		if (id === 'delete' || id === 'cut') {
+			const targets = editor.pixelSelection?.targetLayerIDs ?? editor.selectedLayerIDs;
+			if (targets.length && targets.every((layerID) => editor.isLayerLocked(layerID))) return false;
+		}
 		const availability = imageEditorCommand(id).availability;
 		if (availability === 'always') return true;
 		if (availability === 'editable') return editor.canEdit;
@@ -2319,21 +2422,36 @@
 			return Boolean(editor.pixelSelection && !editor.floatingPixelSelection);
 		}
 		if (availability === 'layer_selection') {
-			return editor.selectedLayers.length === 1 && !editor.selectedLayers[0].locked;
+			return (
+				editor.selectedLayers.length === 1 && !editor.isLayerLocked(editor.selectedLayers[0].id)
+			);
 		}
-		if (availability === 'multi_selection') return editor.selectedLayers.length >= 2;
+		if (availability === 'multi_selection')
+			return (
+				editor.selectedLayers.length >= 2 &&
+				editor.selectedLayers.every((layer) => !editor.isLayerLocked(layer.id))
+			);
 		if (availability === 'group_selection') {
-			return editor.selectedLayers.some((layer) => layer.type === 'group');
+			return (
+				editor.selectedLayers.some((layer) => layer.type === 'group') &&
+				editor.selectedLayers
+					.filter((layer) => layer.type === 'group')
+					.every((layer) => !editor.isLayerLocked(layer.id))
+			);
 		}
 		if (availability === 'clipboard') return copiedLayers.length > 0 || editor.canEdit;
 		if (availability === 'crop_target') {
 			return (
 				editor.canEdit &&
-				editor.selectedLayers.some((layer) => layer.type === 'image' && !layer.locked)
+				editor.selectedLayers.some(
+					(layer) => layer.type === 'image' && !editor.isLayerLocked(layer.id)
+				)
 			);
 		}
 		if (availability === 'image_selection') {
-			return Boolean(editor.selectedLayers.some((layer) => layer.image && !layer.locked));
+			return Boolean(
+				editor.selectedLayers.some((layer) => layer.image && !editor.isLayerLocked(layer.id))
+			);
 		}
 		if (availability === 'project_idle') return !projectBusy;
 		if (availability === 'guides') {
@@ -2492,7 +2610,10 @@
 		return commandLabel(id);
 	}
 
-	function compactCommandCategoryLabel(category: ImageEditorCompactMenuCategory): string {
+	function compactCommandCategoryLabel(category: CompactMenuSection): string {
+		if (category === 'file') return m.image_editor_file();
+		if (category === 'view') return m.image_editor_view();
+		if (category === 'help') return m.image_editor_help();
 		if (category === 'edit') return m.image_editor_edit();
 		if (category === 'layer') return m.image_editor_layer();
 		if (category === 'select') return m.image_editor_select();
@@ -2659,7 +2780,9 @@
 	}
 
 	async function removeBackground(optimizeLarge = false): Promise<void> {
-		const layer = editor.selectedLayers.find((candidate) => candidate.image && !candidate.locked);
+		const layer = editor.selectedLayers.find(
+			(candidate) => candidate.image && !editor.isLayerLocked(candidate.id)
+		);
 		if (!layer?.image || backgroundBusy) return;
 		backgroundBusy = true;
 		const finishMetric = startImageEditorMetric('background_removal');
@@ -2755,9 +2878,10 @@
 			exportError = m.image_editor_export_budget_exceeded();
 			return;
 		}
-		const pageIDs = exportAllPages
-			? editor.document.pages.map((page) => page.id)
-			: [editor.activePageID];
+		const pageIDs =
+			exportAllPages && !(coverHandoff && exportMode === 'attach')
+				? editor.document.pages.map((page) => page.id)
+				: [editor.activePageID];
 		const preparedPages = preparedExportPages(editor.document, pageIDs);
 		if (!preparedPages) {
 			exportError = m.image_editor_export_preview_required();
@@ -3003,6 +3127,7 @@
 <div
 	class="image-editor-theme fixed inset-0 flex min-h-0 flex-col overflow-hidden bg-background text-foreground"
 	data-testid="image-editor-shell"
+	data-agent-status={agentConnectionStatus}
 	{@attach initializeShell}
 >
 	<div class="sr-only" aria-live="polite">{statusAnnouncement}</div>
@@ -3067,6 +3192,24 @@
 			/>
 		{/snippet}
 		{#snippet actions()}
+			{#if agentConnectionStatus !== 'disconnected'}
+				<span
+					class="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
+					role="status"
+					aria-live="polite"
+				>
+					<span
+						class="size-1.5 rounded-full bg-current {agentConnectionStatus === 'working'
+							? 'motion-safe:animate-pulse'
+							: ''}"
+					></span>
+					<span class="sr-only lg:not-sr-only">
+						{agentConnectionStatus === 'working'
+							? m.editor_agent_status_working()
+							: m.editor_agent_status_connected()}
+					</span>
+				</span>
+			{/if}
 			<SaveIndicator
 				saving={editor.saveState === 'saving'}
 				saved={editor.saveState === 'saved'}
@@ -3120,7 +3263,7 @@
 						<ThemeIcon role="feedback" />
 					</Button>
 				{/if}
-				<DropdownMenu.Root>
+				<DropdownMenu.Root onOpenChange={() => (compactMenuSection = null)}>
 					<DropdownMenu.Trigger>
 						{#snippet child({ props })}
 							<Button
@@ -3136,99 +3279,112 @@
 					</DropdownMenu.Trigger>
 					<DropdownMenu.Content
 						align="end"
+						bind:ref={compactMenuContent}
 						class="max-h-[calc(100dvh-1rem)] w-72 max-w-[calc(100vw-1rem)] overflow-y-auto"
 					>
-						<div class="w-64 p-1 md:hidden">
-							<EditorTitleInput
-								value={editor.document?.title ?? ''}
-								class="h-11 w-full"
-								ariaLabel={m.image_editor_design_title()}
-								disabled={!editor.canEdit}
-								onkeydown={(event) => {
-									if (event.key !== 'Escape' && event.key !== 'Tab') event.stopPropagation();
-								}}
-								onchange={(value) =>
-									editor.mutate(
-										'Rename design',
-										(document) => (document.title = value),
-										'document-title'
-									)}
-							/>
-						</div>
-						<DropdownMenu.Separator class="md:hidden" />
-						{#each imageEditorCommandsForCategory('file').filter(commandVisible) as command (command.id)}
-							{#if command.separatorBefore}<DropdownMenu.Separator />{/if}
+						{#if compactMenuSection}
 							<DropdownMenu.Item
-								onclick={() => executeEditorCommand(command.id)}
-								disabled={!commandEnabled(command.id)}
-								title={commandDisabledReason(command.id) || undefined}
+								bind:ref={compactMenuBack}
+								closeOnSelect={false}
+								onSelect={backToCompactMenu}
+								class="[@media(pointer:coarse)]:min-h-11"
 							>
-								{commandMenuLabel(command.id)}
+								<ThemeIcon role="chevron-left" />{m.common_back()}
 							</DropdownMenu.Item>
-						{/each}
-						<DropdownMenu.Separator />
-						{#each IMAGE_EDITOR_COMPACT_MENU_CATEGORIES as category (category)}
-							<DropdownMenu.Label>{compactCommandCategoryLabel(category)}</DropdownMenu.Label>
-							{#each imageEditorCommandsForCompactMenu().filter((command) => command.category === category) as command (command.id)}
+							<DropdownMenu.Label
+								>{compactCommandCategoryLabel(compactMenuSection)}</DropdownMenu.Label
+							>
+							{#each (compactMenuSection === 'file' || compactMenuSection === 'view' || compactMenuSection === 'help' ? imageEditorCommandsForCategory(compactMenuSection) : imageEditorCommandsForCompactMenu().filter((command) => command.category === compactMenuSection))
+								.filter(commandVisible)
+								.filter((command) => command.id !== 'version_history') as command (command.id)}
 								{#if command.separatorBefore}<DropdownMenu.Separator />{/if}
-								<DropdownMenu.Item
-									onclick={() => executeEditorCommand(command.id)}
-									disabled={!commandEnabled(command.id)}
-									title={commandDisabledReason(command.id) || undefined}
+								{#if command.menuKind === 'checkbox' || command.id === 'focus_canvas'}
+									<DropdownMenu.CheckboxItem
+										class="[@media(pointer:coarse)]:min-h-11"
+										checked={commandChecked(command.id)}
+										onCheckedChange={(checked) => setCommandChecked(command.id, checked)}
+										>{commandLabel(command.id)}</DropdownMenu.CheckboxItem
+									>
+								{:else}
+									<DropdownMenu.Item
+										class="[@media(pointer:coarse)]:min-h-11"
+										onSelect={() => executeEditorCommand(command.id)}
+										disabled={!commandEnabled(command.id)}
+										title={commandDisabledReason(command.id) || undefined}
+									>
+										{commandMenuLabel(command.id)}
+										{#if commandShortcut(command.id)}<span
+												class="ml-auto text-xs text-muted-foreground"
+												>{commandShortcut(command.id)}</span
+											>{/if}
+									</DropdownMenu.Item>
+								{/if}
+							{/each}
+							{#if compactMenuSection === 'layer'}<p
+									class="max-w-64 px-2 py-1.5 text-xs text-muted-foreground"
 								>
-									{commandMenuLabel(command.id)}
-									{#if commandShortcut(command.id)}
-										<span class="ml-auto text-xs text-muted-foreground"
-											>{commandShortcut(command.id)}</span
-										>
-									{/if}
+									{m.image_editor_raster_help()}
+								</p>{/if}
+						{:else}
+							<div class="w-64 p-1 md:hidden">
+								<EditorTitleInput
+									value={editor.document?.title ?? ''}
+									class="h-11 w-full"
+									ariaLabel={m.image_editor_design_title()}
+									disabled={!editor.canEdit}
+									onkeydown={(event) => {
+										if (event.key !== 'Escape' && event.key !== 'Tab') event.stopPropagation();
+									}}
+									onchange={(value) =>
+										editor.mutate(
+											'Rename design',
+											(document) => (document.title = value),
+											'document-title'
+										)}
+								/>
+							</div>
+							<DropdownMenu.Separator class="md:hidden" />
+							{#if commandVisible(imageEditorCommand('version_history'))}
+								<DropdownMenu.Item
+									class="[@media(pointer:coarse)]:min-h-11"
+									onSelect={() => executeEditorCommand('version_history')}
+									>{commandLabel('version_history')}</DropdownMenu.Item
+								>
+							{/if}
+							{#each compactMenuSections as category (category)}
+								<DropdownMenu.Item
+									class="[@media(pointer:coarse)]:min-h-11"
+									bind:ref={compactMenuItems[category]}
+									closeOnSelect={false}
+									onSelect={() => openCompactMenuSection(category)}
+								>
+									{compactCommandCategoryLabel(category)}<ThemeIcon
+										role="chevron-right"
+										class="ml-auto"
+									/>
 								</DropdownMenu.Item>
 							{/each}
-							{#if category === 'layer'}
-								<p class="max-w-64 px-2 py-1.5 text-xs text-muted-foreground">
-									{m.image_editor_raster_help()}
-								</p>
-							{/if}
-							<DropdownMenu.Separator />
-						{/each}
-						<DropdownMenu.Item onclick={() => (mobileSheet = 'layers')}
-							>{m.image_editor_layers()}</DropdownMenu.Item
-						>
-						<DropdownMenu.Item onclick={() => (mobileSheet = 'properties')}
-							>{m.image_editor_properties()}</DropdownMenu.Item
-						>
-						{#if !guestMode}
-							<DropdownMenu.Item class="sm:hidden" onclick={() => ui.openFeedback()}>
-								<ThemeIcon role="feedback" />
-								{m.feedback_open()}
-							</DropdownMenu.Item>
-						{/if}
-						<DropdownMenu.Separator />
-						{#each imageEditorCommandsForCategory('view') as command (command.id)}
-							{#if command.menuKind === 'checkbox' || command.id === 'focus_canvas'}
-								<DropdownMenu.CheckboxItem
-									checked={commandChecked(command.id)}
-									onCheckedChange={(checked) => setCommandChecked(command.id, checked)}
-								>
-									{commandLabel(command.id)}
-								</DropdownMenu.CheckboxItem>
-							{:else}
+							<DropdownMenu.Item
+								class="[@media(pointer:coarse)]:min-h-11"
+								onSelect={() => (mobileSheet = 'layers')}
+								>{m.image_editor_layers()}</DropdownMenu.Item
+							>
+							<DropdownMenu.Item
+								class="[@media(pointer:coarse)]:min-h-11"
+								onSelect={() => (mobileSheet = 'properties')}
+								>{m.image_editor_properties()}</DropdownMenu.Item
+							>
+							{#if !guestMode}
 								<DropdownMenu.Item
-									onclick={() => executeEditorCommand(command.id)}
-									disabled={!commandEnabled(command.id)}
-									title={commandDisabledReason(command.id) || undefined}
+									class="sm:hidden [@media(pointer:coarse)]:min-h-11"
+									onSelect={() => ui.openFeedback()}
 								>
-									{commandLabel(command.id)}
+									<ThemeIcon role="feedback" />
+									{m.feedback_open()}
 								</DropdownMenu.Item>
 							{/if}
-						{/each}
-						<DropdownMenu.Separator />
-						{#each imageEditorCommandsForCategory('help') as command (command.id)}
-							<DropdownMenu.Item onclick={() => executeEditorCommand(command.id)}>
-								<ThemeIcon role="help" />
-								{commandLabel(command.id)}
-							</DropdownMenu.Item>
-						{/each}
+							<DropdownMenu.Separator />
+						{/if}
 					</DropdownMenu.Content>
 				</DropdownMenu.Root>
 				{#if guestMode}
@@ -3245,12 +3401,12 @@
 					variant="default"
 					size="sm"
 					class="size-11 px-0 sm:h-8 sm:w-auto sm:px-2.5 [@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:min-w-11"
-					aria-label={returnToken ? m.image_editor_attach() : m.image_editor_export()}
+					aria-label={returnToken ? attachLabel : m.image_editor_export()}
 					onclick={() => openExport(returnToken && editor.canEdit ? 'attach' : 'download')}
 				>
 					<ThemeIcon role="download" class="size-3.5" />
 					<span class="hidden sm:inline"
-						>{#if returnToken}{m.image_editor_attach()}{:else}{m.image_editor_export()}{/if}</span
+						>{#if returnToken}{attachLabel}{:else}{m.image_editor_export()}{/if}</span
 					>
 				</Button>
 			</div>
@@ -3273,7 +3429,7 @@
 					{#each imageEditorCommandsForCategory('file').filter(commandVisible) as command (command.id)}
 						{#if command.separatorBefore}<Menubar.Separator />{/if}
 						<Menubar.Item
-							onclick={() => executeEditorCommand(command.id)}
+							onSelect={() => executeEditorCommand(command.id)}
 							disabled={!commandEnabled(command.id)}
 							title={commandDisabledReason(command.id) || undefined}
 						>
@@ -3293,7 +3449,7 @@
 					{#each imageEditorCommandsForCategory('edit') as command (command.id)}
 						{#if command.separatorBefore}<Menubar.Separator />{/if}
 						<Menubar.Item
-							onclick={() => executeEditorCommand(command.id)}
+							onSelect={() => executeEditorCommand(command.id)}
 							disabled={!commandEnabled(command.id)}
 							title={commandDisabledReason(command.id) || undefined}
 						>
@@ -3309,7 +3465,7 @@
 					{#each imageEditorCommandsForCategory('layer') as command (command.id)}
 						{#if command.separatorBefore}<Menubar.Separator />{/if}
 						<Menubar.Item
-							onclick={() => executeEditorCommand(command.id)}
+							onSelect={() => executeEditorCommand(command.id)}
 							disabled={!commandEnabled(command.id)}
 							title={commandDisabledReason(command.id) || undefined}
 						>
@@ -3332,7 +3488,7 @@
 					{#each imageEditorCommandsForCategory('select') as command (command.id)}
 						{#if command.separatorBefore}<Menubar.Separator />{/if}
 						<Menubar.Item
-							onclick={() => executeEditorCommand(command.id)}
+							onSelect={() => executeEditorCommand(command.id)}
 							disabled={!commandEnabled(command.id)}
 							title={commandDisabledReason(command.id) || undefined}
 						>
@@ -3347,7 +3503,7 @@
 				<Menubar.Content class="min-w-52">
 					{#each imageEditorCommandsForCategory('tools') as command (command.id)}
 						<Menubar.Item
-							onclick={() => executeEditorCommand(command.id)}
+							onSelect={() => executeEditorCommand(command.id)}
 							disabled={!commandEnabled(command.id)}
 							title={commandDisabledReason(command.id) || undefined}
 						>
@@ -3399,7 +3555,7 @@
 							</Menubar.CheckboxItem>
 						{:else}
 							<Menubar.Item
-								onclick={() => executeEditorCommand(command.id)}
+								onSelect={() => executeEditorCommand(command.id)}
 								disabled={!commandEnabled(command.id)}
 								title={commandDisabledReason(command.id) || undefined}
 							>
@@ -3416,7 +3572,7 @@
 				<Menubar.Trigger>{m.image_editor_help()}</Menubar.Trigger>
 				<Menubar.Content class="min-w-48">
 					{#each imageEditorCommandsForCategory('help') as command (command.id)}
-						<Menubar.Item onclick={() => executeEditorCommand(command.id)}>
+						<Menubar.Item onSelect={() => executeEditorCommand(command.id)}>
 							<ThemeIcon role="help" />
 							{commandLabel(command.id)}
 						</Menubar.Item>
@@ -4505,6 +4661,12 @@
 								!imageEditorRevisionHasChanges(revisionChanges)}
 							onclick={() => (restoreConfirmOpen = true)}>{m.version_restore_version()}</Button
 						>
+						<CheckpointRemove
+							revision={revisionPreview.summary}
+							canEdit={editor.canEdit}
+							disabled={historyBusy || revisionPreviewBusy}
+							onremove={removeCheckpoint}
+						/>
 					</div>
 				{/if}
 			</section>
@@ -4735,7 +4897,7 @@
 				</p>
 			{/if}
 
-			{#if (editor.document?.pages.length ?? 0) > 1}
+			{#if (editor.document?.pages.length ?? 0) > 1 && !(coverHandoff && exportMode === 'attach')}
 				<label class="flex min-h-11 items-center gap-2 rounded-lg border px-3">
 					<Checkbox bind:checked={exportAllPages} />
 					<span
@@ -4758,7 +4920,9 @@
 						options={[
 							{ value: 'png', label: 'PNG' },
 							{ value: 'jpeg', label: 'JPEG' },
-							{ value: 'webp', label: 'WebP' }
+							...(!(coverHandoff && exportMode === 'attach')
+								? [{ value: 'webp', label: 'WebP' }]
+								: [])
 						]}
 						class="h-10 w-full"
 					/>
@@ -4857,12 +5021,14 @@
 								<RadioGroup.Item
 									value="attach"
 									disabled={!editor.canEdit}
-									aria-label={m.image_editor_attach()}
+									aria-label={attachLabel}
 								/>
 								<span class="grid gap-0.5">
-									<span class="text-sm font-medium">{m.image_editor_attach()}</span>
+									<span class="text-sm font-medium">{attachLabel}</span>
 									<span class="text-xs text-muted-foreground"
-										>{m.image_editor_attach_description()}</span
+										>{coverHandoff
+											? m.compose_cover_return_description()
+											: m.image_editor_attach_description()}</span
 									>
 								</span>
 							</label>
@@ -4898,7 +5064,9 @@
 				{exportMode === 'download'
 					? m.image_editor_download()
 					: exportMode === 'attach'
-						? m.image_editor_export_attach()
+						? coverHandoff
+							? attachLabel
+							: m.image_editor_export_attach()
 						: m.image_editor_export_media()}
 			</Button>
 		</Dialog.Footer>

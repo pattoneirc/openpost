@@ -27,6 +27,7 @@ import {
 } from '../timeline/utils/source-calculations';
 import { wouldCreateCompositionCycle } from './composition-graph';
 import { sequenceStore } from './sequence-store.svelte';
+import { applyCompositionControlOverrides } from './composition-controls';
 
 function hasVisual(items: TimelineItem[]): boolean {
 	return items.some((item) => item.type !== 'audio');
@@ -379,6 +380,7 @@ export function createCompoundClip(
 			id: compositionId,
 			name,
 			editorKind,
+			...(editorKind === 'composite-2d' && { backgroundColor: '#00000000' }),
 			items: selected.map((item) => {
 				const snapshot = snapshotTimelineState(item);
 				const propertyLinks = snapshot.propertyLinks?.filter((link) =>
@@ -634,7 +636,12 @@ export function dissolveCompoundClip(wrapperId: string): string[] {
 			timelineStore.tracks
 		);
 		const idMap = new Map<string, string>();
-		const mappedItems = composition.items.flatMap((item) => {
+		const resolvedItems = applyCompositionControlOverrides(
+			composition.items,
+			composition.compositionControls,
+			windowAnchor.compositionControlOverrides
+		);
+		const mappedItems = resolvedItems.flatMap((item) => {
 			const mapped = mapItemThroughWrapper(item, windowAnchor, timelineStore.fps, composition.fps);
 			if (!mapped) return [];
 			const id = crypto.randomUUID();
