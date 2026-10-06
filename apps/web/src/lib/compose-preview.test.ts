@@ -67,7 +67,10 @@ describe('social preview model', () => {
 			segments: [{ id: 'one', text: 'A destination-aware post.' }]
 		});
 
-		expect(model.identity).toMatchObject({ displayName: 'Your name', handle: 'creator' });
+		expect(model.identity).toMatchObject({
+			displayName: 'Your name',
+			handle: 'creator'
+		});
 		expect(model.segments[0]?.text).toBe('A destination-aware post.');
 		expect(supportsPreviewFormat('x', 'thread')).toBe(true);
 		expect(supportsPreviewFormat('instagram', 'thread')).toBe(false);
@@ -80,7 +83,13 @@ describe('composer preview mapping', () => {
 			account: { ...account, platform: 'facebook' },
 			mode: 'post',
 			outputProfile: 'facebook.post',
-			segments: [{ id: 'one', text: 'Feed video', media: [{ id: 'clip', mimeType: 'video/mp4' }] }]
+			segments: [
+				{
+					id: 'one',
+					text: 'Feed video',
+					media: [{ id: 'clip', mimeType: 'video/mp4' }]
+				}
+			]
 		});
 		expect(model.format).toBe('post');
 	});
@@ -183,8 +192,16 @@ describe('composer preview mapping', () => {
 			account,
 			mode: 'thread',
 			segments: [
-				{ id: 'one', text: 'First', settings: { poll_options: 'Yes, sometimes\nNever' } },
-				{ id: 'two', text: 'Second', settings: { poll_options: 'Red, green\nBlue' } }
+				{
+					id: 'one',
+					text: 'First',
+					settings: { poll_options: 'Yes, sometimes\nNever' }
+				},
+				{
+					id: 'two',
+					text: 'Second',
+					settings: { poll_options: 'Red, green\nBlue' }
+				}
 			]
 		});
 		expect(model.segments?.[0].poll?.options).toEqual(['Yes, sometimes', 'Never']);
@@ -259,4 +276,135 @@ describe('composer preview mapping', () => {
 		});
 		expect(tiktokModel).toMatchObject({ platform: 'tiktok', format: 'photo' });
 	});
+});
+
+describe('account link previews', () => {
+	it.each(['bluesky', 'linkedin', 'facebook', 'x'])(
+		'uses the URL in %s account text before the shared fallback',
+		(platform) => {
+			const model = buildComposerPreview({
+				account: { ...account, platform },
+				mode: 'post',
+				segments: [{ id: 'one', text: 'A separate update https://account.example/new' }],
+				linkUrl: 'https://shared.example/old'
+			});
+			expect(model.card?.domain).toBe('account.example');
+			expect(model.segments[0].card?.domain).toBe('account.example');
+		}
+	);
+
+	it('renders LinkedIn article overrides inside the card rather than as another post heading', () => {
+		const model = buildComposerPreview({
+			account: { ...account, platform: 'linkedin' },
+			mode: 'post',
+			segments: [{ id: 'one', text: 'The introduction. https://example.com/article' }],
+			destinationSettings: {
+				article_title: 'A separate article headline',
+				article_description: 'The article summary.'
+			}
+		});
+		expect(model.card).toMatchObject({
+			title: 'A separate article headline',
+			description: 'The article summary.'
+		});
+		expect(model.title).toBe('');
+		expect(model.subtitle).toBe('');
+	});
+});
+
+describe('selected media presentation', () => {
+	it.each(['instagram.feed', 'instagram.carousel', 'linkedin.multi_image', 'linkedin.article'])(
+		'keeps the selected %s presentation while attachments change',
+		(outputProfile) => {
+			const model = buildComposerPreview({
+				account: { ...account, platform: outputProfile.split('.')[0] },
+				mode: 'post',
+				outputProfile,
+				segments: [
+					{ id: 'source', text: 'Caption', media: [{ id: 'clip', mimeType: 'video/mp4' }] }
+				]
+			});
+			expect(model.format).toBe('post');
+		}
+	);
+	it('uses the authored account cover instead of the default video poster', () => {
+		const model = buildComposerPreview({
+			account: { ...account, platform: 'youtube' },
+			mode: 'post',
+			outputProfile: 'youtube.video',
+			destinationSettings: { thumbnail_media_id: 'authored-cover' },
+			segments: [
+				{
+					id: 'source',
+					text: 'Caption',
+					media: [
+						{ id: 'video', mimeType: 'video/mp4', poster: 'https://default.example/poster.jpg' }
+					]
+				}
+			]
+		});
+		expect(model.media[0].poster).toContain('authored-cover');
+	});
+	it('deduplicates joined media in source order while keeping the first authored item', () => {
+		const model = buildComposerPreview({
+			account: { ...account, platform: 'linkedin' },
+			mode: 'thread',
+			outputProfile: 'linkedin.multi_image',
+			segmentStrategy: 'join',
+			segments: [
+				{
+					id: 'first',
+					text: 'First',
+					media: [{ id: 'same', mimeType: 'image/jpeg', altText: 'First alt' }]
+				},
+				{
+					id: 'second',
+					text: 'Second',
+					media: [
+						{ id: 'same', mimeType: 'image/jpeg', altText: 'Second alt' },
+						{ id: 'other', mimeType: 'image/jpeg' }
+					]
+				}
+			]
+		});
+		expect(model.media.map((item) => [item.id, item.alt])).toEqual([
+			['same', 'First alt'],
+			['other', undefined]
+		]);
+	});
+});
+
+it('projects an account-specific cover frame and Mastodon focal point without changing media order', () => {
+	const reel = buildComposerPreview({
+		account: { ...account, platform: 'instagram' },
+		mode: 'post',
+		outputProfile: 'instagram.reel',
+		destinationSettings: { thumbnail_timestamp_ms: 1250 },
+		segments: [
+			{
+				id: 'one',
+				text: 'Reel',
+				media: [{ id: 'clip', mimeType: 'video/mp4', poster: 'https://default.example/poster' }]
+			}
+		]
+	});
+	expect(reel.media[0]).toMatchObject({ id: 'clip', previewFrameSeconds: 1.25 });
+	expect(reel.media[0].poster).toBeUndefined();
+	const feed = buildComposerPreview({
+		account,
+		mode: 'post',
+		segments: [
+			{
+				id: 'one',
+				text: 'Photos',
+				media: [
+					{ id: 'left', mimeType: 'image/jpeg', settings: { focal_point: '-1,1' } },
+					{ id: 'center', mimeType: 'image/jpeg' }
+				]
+			}
+		]
+	});
+	expect(feed.media.map((item) => item.id)).toEqual(['left', 'center']);
+	expect(feed.media[0].focalPoint).toEqual({ x: -1, y: 1 });
+	expect(feed.media[1].focalPoint).toBeUndefined();
 });

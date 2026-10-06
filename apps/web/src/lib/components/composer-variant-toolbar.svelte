@@ -6,15 +6,15 @@
 
 	interface Props {
 		hasContentOverride: boolean;
+		resetTextLabel?: string;
 		hasMediaOverride: boolean;
 		isUnsynced: boolean;
 		uploadsPending: boolean;
 		multiAccount: boolean;
 		segmentStrategy?: string;
 		postCount: number;
-		previewOpen?: boolean;
-		previewId: string;
 		onPreview: () => void;
+		onToggleSync: () => void;
 		onSettings: () => void;
 		onResetField: (field: 'content' | 'media') => void;
 		onResync: () => void;
@@ -23,36 +23,54 @@
 
 	let {
 		hasContentOverride,
+		resetTextLabel,
 		hasMediaOverride,
 		isUnsynced,
 		uploadsPending,
 		multiAccount,
 		segmentStrategy,
 		postCount,
-		previewOpen = false,
-		previewId,
 		onPreview,
+		onToggleSync,
 		onSettings,
 		onResetField,
 		onResync,
 		onDestinationAction
 	}: Props = $props();
+	const syncDescriptionId = $props.id();
+	const contentSynced = $derived(!hasContentOverride && !hasMediaOverride);
 </script>
 
-<div class="flex flex-wrap items-center gap-2 border-b py-3">
+<div class="flex shrink-0 items-center gap-1" data-testid="composer-variant-toolbar">
+	<Button
+		type="button"
+		variant="ghost"
+		size="icon"
+		class="size-11 p-0 aria-pressed:bg-action-quiet-hover md:size-9"
+		aria-label={m.compose_shared_content()}
+		aria-pressed={contentSynced}
+		aria-describedby={syncDescriptionId}
+		title={contentSynced
+			? `${m.compose_all_synced()}. ${m.compose_unsync()}`
+			: m.compose_sync_back()}
+		disabled={uploadsPending}
+		onclick={onToggleSync}
+	>
+		<ThemeIcon role={contentSynced ? 'link' : 'unlink'} class="size-4" />
+	</Button>
+	<span id={syncDescriptionId} class="sr-only">
+		{contentSynced ? m.compose_unsync() : m.compose_sync_back()}
+	</span>
 	<Button
 		type="button"
 		variant="ghost"
 		size="sm"
-		class="h-11 md:h-9"
-		aria-expanded={previewOpen}
-		aria-controls={previewId}
+		class="size-11 shrink-0 p-0 md:size-9"
+		aria-label={m.compose_full_preview()}
+		title={m.compose_full_preview()}
 		onclick={() => onPreview()}
 	>
-		{m.compose_preview()}
-	</Button>
-	<Button type="button" variant="ghost" size="sm" class="h-11 md:h-9" onclick={() => onSettings()}>
-		{m.compose_platform_settings()}
+		<ThemeIcon role="eye" class="size-4" />
 	</Button>
 	<DropdownMenu.Root>
 		<DropdownMenu.Trigger>
@@ -69,10 +87,16 @@
 				</Button>
 			{/snippet}
 		</DropdownMenu.Trigger>
-		<DropdownMenu.Content class="w-56" align="start">
+		<DropdownMenu.Content class="w-56" align="end">
+			{#if segmentStrategy === 'join' && postCount > 1}<DropdownMenu.Label
+					class="font-normal text-muted-foreground"
+					>{m.compose_segments_joined({ count: postCount })}</DropdownMenu.Label
+				><DropdownMenu.Separator />{/if}
+			<DropdownMenu.Item onclick={onSettings}>{m.compose_platform_settings()}</DropdownMenu.Item>
+			<DropdownMenu.Separator />
 			{#if hasContentOverride}
 				<DropdownMenu.Item onclick={() => onResetField('content')}>
-					{m.compose_reset_field()}
+					{resetTextLabel ?? m.compose_reset_field()}
 				</DropdownMenu.Item>
 			{/if}
 			{#if hasMediaOverride}
@@ -97,8 +121,3 @@
 		</DropdownMenu.Content>
 	</DropdownMenu.Root>
 </div>
-{#if segmentStrategy === 'join' && postCount > 1}
-	<p class="pt-2 text-xs text-muted-foreground">
-		{m.compose_segments_joined({ count: postCount })}
-	</p>
-{/if}

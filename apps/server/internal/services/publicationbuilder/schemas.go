@@ -1,38 +1,64 @@
 package publicationbuilder
 
-import "github.com/openpost/backend/internal/ai"
+import (
+	"maps"
+	"slices"
+	"strings"
 
-func directorResponseSchema(destinationCount int) *ai.JSONSchema {
+	"github.com/openpost/backend/internal/ai"
+	"github.com/openpost/backend/internal/capabilities"
+)
+
+func directorResponseSchema(destinations []Destination, input BuildInput) *ai.JSONSchema {
+	accountIDs := make([]string, 0, len(destinations))
+	for _, destination := range destinations {
+		accountIDs = append(accountIDs, destination.AccountID)
+	}
+	properties := map[string]any{
+		"canonical_text": schemaString(1, maxCanonicalCharacters),
+		"factual_kernel": schemaStringArray(1, maxFactualKernelItems, maxKernelItemCharacters),
+		"thesis":         schemaString(1, maxThesisCharacters),
+		"route":          map[string]any{"type": "string", "enum": allowedDirectorRoutes},
+		"claims":         schemaArray(claimSchema(sourceReferenceCatalogFor(input)), 0, maxClaims),
+		"media":          mediaPlanSchema(),
+		"destinations": schemaArray(schemaObject(map[string]any{
+			"account_id": map[string]any{"type": "string", "enum": accountIDs},
+			"include":    map[string]any{"type": "boolean"},
+			"reason":     schemaString(1, maxDecisionCharacters),
+		}, "account_id", "include", "reason"), len(destinations), len(destinations)),
+	}
+	required := []string{"canonical_text", "factual_kernel", "thesis", "route", "claims", "media", "destinations"}
+	for _, field := range []struct {
+		name, locked string
+		maximum      int
+	}{
+		{"outcome", input.Direction.Outcome, maxOutcomeCharacters},
+		{"audience", input.Direction.Audience, maxAudienceCharacters},
+		{"angle", input.Direction.Angle, maxAngleCharacters},
+	} {
+		if strings.TrimSpace(field.locked) != "" {
+			continue
+		}
+		properties[field.name] = schemaString(1, field.maximum)
+		required = append(required, field.name)
+	}
 	return &ai.JSONSchema{
 		Name:        "openpost_publication_direction",
 		Description: "A bounded factual direction and one decision for every candidate destination.",
-		Schema: schemaObject(map[string]any{
-			"canonical_text": schemaString(1, maxCanonicalCharacters),
-			"factual_kernel": schemaStringArray(1, maxFactualKernelItems, maxKernelItemCharacters),
-			"thesis":         schemaString(1, maxThesisCharacters),
-			"outcome":        schemaString(1, maxOutcomeCharacters),
-			"audience":       schemaString(1, maxAudienceCharacters),
-			"angle":          schemaString(1, maxAngleCharacters),
-			"route":          map[string]any{"type": "string", "enum": allowedDirectorRoutes},
-			"claims":         schemaArray(claimSchema(), 0, maxClaims),
-			"media":          mediaPlanSchema(),
-			"destinations": schemaArray(schemaObject(map[string]any{
-				"account_id": schemaString(1, 160),
-				"include":    map[string]any{"type": "boolean"},
-				"reason":     schemaString(1, maxDecisionCharacters),
-			}, "account_id", "include", "reason"), destinationCount, destinationCount),
-		}, "canonical_text", "factual_kernel", "thesis", "outcome", "audience", "angle", "route", "claims", "media", "destinations"),
+		Schema:      schemaObject(properties, required...),
 	}
 }
 
-func adapterResponseSchema(destination Destination, policy platformPolicy) *ai.JSONSchema {
+func adapterResponseSchema(destination Destination, policy platformPolicy, sources sourceReferenceCatalog) *ai.JSONSchema {
 	profiles := make([]string, 0, len(destination.AllowedOutputProfiles))
 	maxSegments := 1
+	maxTextLength := 0
 	for _, profile := range destination.AllowedOutputProfiles {
 		profiles = append(profiles, profile.Key)
 		if profile.MaxSegments > maxSegments {
 			maxSegments = profile.MaxSegments
 		}
+		maxTextLength = max(maxTextLength, schemaTextLength(destination.Platform, profile.TextLimit))
 	}
 	return &ai.JSONSchema{
 		Name:        "openpost_destination_rendition",
@@ -43,9 +69,9 @@ func adapterResponseSchema(destination Destination, policy platformPolicy) *ai.J
 			"archetype":      map[string]any{"type": "string", "enum": policy.Archetypes},
 			"output_profile": map[string]any{"type": "string", "enum": profiles},
 			"preview":        schemaString(1, maxPreviewCharacters),
-			"segments":       schemaArray(segmentSchema(), 1, maxSegments),
+			"segments":       schemaArray(segmentSchema(maxTextLength), 1, maxSegments),
 			"media":          mediaPlanSchema(),
-			"claims":         schemaArray(claimSchema(), 0, maxClaims),
+			"claims":         schemaArray(claimSchema(sources), 0, maxClaims),
 			"warnings":       schemaStringArray(0, maxWarningsPerDestination, maxDecisionCharacters),
 			"follow_up_notes": schemaStringArray(
 				0,
@@ -56,34 +82,60 @@ func adapterResponseSchema(destination Destination, policy platformPolicy) *ai.J
 	}
 }
 
-func reviewerResponseSchema() *ai.JSONSchema {
+func reviewerResponseSchema(destinations []Destination, plans []DestinationPlan) *ai.JSONSchema {
 	flag := schemaObject(map[string]any{
 		"account_id": schemaString(0, 160),
 		"field":      schemaString(1, 120),
 		"severity":   schemaString(1, 40),
 		"message":    schemaString(1, maxDecisionCharacters),
 	}, "account_id", "field", "severity", "message")
-	replacement := schemaObject(map[string]any{
-		"account_id": schemaString(1, 160),
-		"preview":    schemaString(0, maxPreviewCharacters),
-		"segments":   schemaArray(segmentSchema(), 1, 20),
-	}, "account_id", "preview", "segments")
+	byAccount := make(map[string]Destination, len(destinations))
+	for _, destination := range destinations {
+		byAccount[destination.AccountID] = destination
+	}
+	variants := make([]map[string]any, 0, len(plans))
+	for _, plan := range plans {
+		profile, ok := allowedOutputProfile(byAccount[plan.AccountID], plan.OutputProfile)
+		if !ok {
+			continue
+		}
+		variants = append(variants, schemaObject(map[string]any{
+			"account_id": map[string]any{"type": "string", "enum": []string{plan.AccountID}},
+			"preview":    schemaString(0, maxPreviewCharacters),
+			"segments":   schemaArray(segmentSchema(schemaTextLength(plan.Platform, profile.TextLimit)), 1, max(profile.MaxSegments, 1)),
+		}, "account_id", "preview", "segments"))
+	}
+	replacement := map[string]any{"anyOf": variants}
+	if len(variants) == 1 {
+		replacement = variants[0]
+	}
 	return &ai.JSONSchema{
 		Name:        "openpost_publication_review",
 		Description: "A source-fidelity and platform-fit verdict with bounded repairs.",
 		Schema: schemaObject(map[string]any{
 			"approved":     map[string]any{"type": "boolean"},
 			"flags":        schemaArray(flag, 0, maxClaims),
-			"replacements": schemaArray(replacement, 0, 20),
+			"replacements": schemaArray(replacement, 0, len(plans)),
 		}, "approved", "flags", "replacements"),
 	}
 }
 
-func claimSchema() map[string]any {
+func claimSchema(sources sourceReferenceCatalog) map[string]any {
+	references := schemaStringArray(0, maxSourceCount+1, 160)
+	if len(sources) == 0 {
+		references = schemaStringArray(0, 0, 160)
+	} else {
+		ids := slices.Sorted(maps.Keys(sources))
+		// Some providers reject newline literals in enums. Keep legacy IDs valid
+		// through the bounded string schema and independent source validation.
+		if !slices.ContainsFunc(ids, func(id string) bool { return strings.ContainsAny(id, "\r\n") }) {
+			references = schemaArray(map[string]any{"type": "string", "enum": ids}, 0, maxSourceCount+1)
+		}
+	}
 	return schemaObject(map[string]any{
 		"text":        schemaString(1, maxKernelItemCharacters),
 		"status":      map[string]any{"type": "string", "enum": allowedClaimStatuses},
-		"source_refs": schemaStringArray(0, maxSourceCount+1, 160),
+		"source_refs": references,
 	}, "text", "status", "source_refs")
 }
 
@@ -99,12 +151,25 @@ func mediaPlanSchema() map[string]any {
 	}, "treatment", "role", "brief", "source_ref")
 }
 
-func segmentSchema() map[string]any {
+func segmentSchema(maxTextLength int) map[string]any {
 	return schemaObject(map[string]any{
-		"body":        schemaString(1, maxCanonicalCharacters),
+		"body":        schemaString(1, maxTextLength),
 		"title":       schemaString(0, 1_000),
 		"description": schemaString(0, 2_000),
 	}, "body", "title", "description")
+}
+
+func schemaTextLength(platform string, nativeLimit int) int {
+	// JSON Schema counts code points. Graphemes, shortened links and trimmed
+	// descriptions can legally contain more; native validation owns their limits.
+	switch strings.ToLower(platform) {
+	case capabilities.ProviderBluesky, capabilities.ProviderX, capabilities.ProviderMastodon, capabilities.ProviderYouTube:
+		return maxCanonicalCharacters
+	}
+	if nativeLimit <= 0 {
+		return maxCanonicalCharacters
+	}
+	return min(nativeLimit, maxCanonicalCharacters)
 }
 
 func schemaString(minimum, maximum int) map[string]any {

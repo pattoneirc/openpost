@@ -98,10 +98,24 @@ export function resolveDocsSocial(input: {
 
 export interface MarketingGuide {
   slug: string;
+  thumbnail?: "post-preview-generator" | "thread-splitter" | "best-time-to-post-calculator";
+  comparison?: {
+    name: string;
+    logo: string;
+    category: "Publishing" | "Images" | "Video";
+    toolHref?: string;
+    toolLabel?: string;
+  };
+  reviewedAt: string;
   question: string;
   socialDescription: string;
   answer: string;
-  sections: { title: string; text: string; items?: string[] }[];
+  sections: {
+    title: string;
+    text: string;
+    items?: string[];
+    table?: { caption: string; columns: string[]; rows: string[][] };
+  }[];
   sources: { label: string; href: string }[];
   next: { label: string; href: string };
 }

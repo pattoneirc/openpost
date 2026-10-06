@@ -4,6 +4,103 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [7.13.0] - 2026-10-05
+
+### Changed
+
+- Account previews start directly below the tabs. A linked/unlinked control, Preview, and More share the tab row; text status labels are removed and resetting to shared text lives in More.
+- Unlink account text and media from shared content with one click, show its linked state, and restore shared inheritance without changing poll or link settings.
+- Mobile Drafts, Calendar, Queue, Video, and the composer put content first with compact headers and shared dither styling.
+- Native tabs and draft generation follow the workspace icon pack.
+
+### Fixed
+
+- Keep the selected account tab visible when preview actions appear, and stay on that account when resetting its text.
+- Restore shared text from the account menu for joined video posts, while keeping caption-only resets separate.
+- iOS display text remains readable at enlarged Dynamic Type sizes.
+- Calendar rows show the post body when no title is authored, and composer attachments display their remote previews.
+
+### Added
+
+- Native Analytics with account filters, stored measurements, daily views, and destination results.
+
+## [7.12.1] - 2026-10-05
+
+### Fixed
+
+- Generate Publication Builder drafts and review replacements within the selected destination's text and segment limits, repair invalid output once, and allow enough response space for complete reviews.
+- Keep long diagnostic stack traces within Discord's field limit so accepted reports reach the maintainer channel.
+- Report notification email failures as worker failures instead of failed social posts.
+- Disable external diagnostics and product telemetry in application browser test servers, including when the parent environment enables reporting.
+- Link cards follow each account's post URL while preserving custom URLs and older saved overrides. LinkedIn article metadata appears inside its card.
+- Media previews follow the selected feed, carousel, multi-image, Story, Reel and video format, account covers, cover frames and image focal points. Joined previews keep delivery order without duplicate attachments.
+- Video Editor disconnects a revoked local folder immediately and offers reconnect even when browser storage is unavailable.
+
+### Improved
+
+- Include known error types, HTTP methods, and bounded browser app stack locations in maintainer diagnostics without sending error messages, concrete project routes, or private content.
+
+### Changed
+
+- Account tabs now open an editable social preview with inline poll and link controls. All keeps the shared composer, and Full preview opens the platform page.
+- Composer account controls share one compact row, with status, reset, Full preview and More.
+
+## [7.11.3] - 2026-10-05
+
+### Fixed
+
+- Preserve locked outcomes, audiences and angles in AI post builds. OpenPost keeps authored choices and asks the model to generate only unlocked fields, including when a saved choice spans multiple lines. Constrain destination choices and claim references to selected accounts and supplied sources. Oversized direction inputs fail before making an AI request.
+
+## [7.11.1] - 2026-10-05
+
+### Fixed
+
+- Collect every available conversation page on Threads and follow Facebook and Instagram comment and reply pages. Busy conversations no longer omit replies after the first page, and later-page failures retain their recovery status.
+
+## [7.11.0] - 2026-10-04
+
+### Documentation
+
+- Browse visual guides and comparisons for publishing, image and video tools, with sourced product logos, free editor costs, and reasons to choose each alternative.
+
+### Fixed
+
+- Show provider reply dates instead of collection times when Meta returns timestamps with compact UTC offsets. Refreshing replies also restores dates on previously collected items.
+
+## [7.10.4] - 2026-10-04
+
+### Documentation
+
+- Add sourced OpenPost comparisons with Buffer and Postiz, including costs, limits, self-hosting responsibilities, and reasons to choose either product. Share guide rendering and derive OpenPost pricing from the plan catalogue.
+
+### Fixed
+
+- Fix Grok MCP connection setup when its authorization request includes both MCP and REST scopes. Consent now shows and grants the MCP permissions through the MCP authorization flow.
+- Report unavailable Bluesky posts in the Inbox collection state and back off instead of retrying them as hourly failures or showing a successful empty read.
+- Deliver accepted diagnostics reports to the configured Discord webhook instead of losing its URL during initialization.
+- Point assistant, automation, and self-hosting cross-links at their exact destination titles.
+- Allow public client logos and share images through the agent-readable documentation checks.
+- Fixed turning imported posts on for Bluesky and Mastodon accounts on PostgreSQL deployments, including turning imports back on after disabling them.
+- Back off reply collection when Meta no longer exposes a post, preserving the provider error without treating missing visibility as a generic hourly failure.
+- Retain unfinished import pages, count and persist provider requests before reads, exclude posts published through OpenPost, and stop in-flight imports after disabling or reactivating them.
+- Show the server's reason when an import setting fails, allow turning imports off after read access is lost, and keep workspace viewers from changing the setting.
+- Opened notifications leave the default unread inbox. Read history remains available, and failed read updates keep the notification available to retry.
+- Keep large media downloads streaming beyond the storage operation timeout, while retaining caller cancellation and connection timeouts.
+- Request Threads reply-reading access when connecting an account, and detect older connections that need to reconnect before collecting replies.
+
+### Changed
+
+- Keep composer polls compact, edit shared content in a focused dialog, and customize each account in its own tab. Unsupported accounts require an explicit text version or post without the poll. Text versions preserve the question and answers in their original language and clearly show that voting buttons are absent.
+- Give every Workflows, Automate, and Image Editor guide its own icon and a consistent action-led title and description.
+- Fold the scheduling guide into publishing and the Docker-run page into self-hosting setup, with redirects from the old addresses.
+
+### Added
+
+- Restore one setup page per AI assistant with its logo: ChatGPT, Claude web, Claude Desktop, Grok, Perplexity, Codex, Claude Code, Cursor, VS Code, GitHub Copilot, Gemini CLI, Devin, Antigravity, OpenCode, OpenClaw, and Hermes Agent.
+- Add share images and link previews to the Quick Cut, Video Editor, and Image Editor start pages.
+- Import new posts into a read-only account library for Threads, Instagram, Facebook, Pinterest, YouTube, eligible TikTok and LinkedIn accounts, Pixelfed, PeerTube, Lemmy, PieFed and Google Business Profile. Show missing read permissions and instance restrictions. X imports remain disabled.
+- Open unread notifications from the bell in a compact panel, with a visible unread count on desktop and phones, mark-as-read controls, and access to the full history.
+
 ## [7.8.8] - 2026-10-03
 
 ### Fixed

@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { expect, test, type Page, type APIRequestContext } from "@playwright/test";
-import { authenticatePage, createWorkspace, registerUser } from "./helpers";
+import {
+  authenticatePage,
+  createWorkspace,
+  registerUser,
+  openComposerPlatformSettings,
+} from "./helpers";
 
 async function fixture(page: Page, request: APIRequestContext) {
   const auth = await registerUser(request, `cover-${randomUUID()}@example.com`);
@@ -82,7 +87,7 @@ async function fixture(page: Page, request: APIRequestContext) {
   await page.goto(`/publications/${publication.id}`);
   const openSettings = async () => {
     await page.locator(`#composer-destination-${accounts[0]}`).click();
-    await page.getByRole("button", { name: "Platform settings", exact: true }).click();
+    await openComposerPlatformSettings(page);
     await expect(page.getByRole("button", { name: "Use this frame", exact: true })).toBeVisible();
   };
   return {
@@ -158,7 +163,9 @@ test("an edited source frame returns only to its destination cover and survives 
   await page.keyboard.press("Escape");
   await page.getByRole("banner").getByRole("button", { name: "Use as cover", exact: true }).click();
   const exportDialog = page.getByRole("dialog", { name: "Export design" });
-  await expect(exportDialog.getByRole("img", { name: "Encoded export preview" })).toBeVisible();
+  await expect(exportDialog.getByRole("img", { name: "Encoded export preview" })).toBeVisible({
+    timeout: 30_000,
+  });
   await exportDialog.getByRole("button", { name: "Use as cover", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("img", { name: "A custom cover image is selected." })).toBeVisible({

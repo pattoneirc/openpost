@@ -301,6 +301,7 @@ func (w *BackgroundWorker) reportWorkerDiagnostic(job *models.Job, processErr er
 		Surface:      diagnostics.SurfaceWorker,
 		Operation:    normalizeWorkerOperation(job.Type),
 		ErrorCode:    code,
+		ErrorKind:    diagnostics.ErrorKind(processErr),
 		Provider:     provider,
 		AttemptCount: job.Attempts,
 		FirstSeen:    time.Now().UTC(),
@@ -365,7 +366,7 @@ func workerCodeForJobType(jobType string) string {
 	switch {
 	case strings.Contains(lower, "publish") || strings.Contains(lower, "deliver") ||
 		strings.Contains(lower, "webhook") || strings.Contains(lower, "repost") ||
-		strings.Contains(lower, "message") || strings.Contains(lower, "notif"):
+		strings.Contains(lower, "message"):
 		return diagnostics.CodePublishFailed
 	case strings.Contains(lower, "media") || strings.Contains(lower, "image") ||
 		strings.Contains(lower, "video") || strings.Contains(lower, "transcri"):

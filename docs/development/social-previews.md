@@ -10,13 +10,25 @@ Preview support is separate from publishing readiness. Reddit is a preview-only 
 - `scheme` accepts `system`, `light`, or `dark`. Explicit schemes override the host application's appearance.
 - Authored text detects direction with `dir="auto"`; multiline post bodies use `unicode-bidi: plaintext` and `text-align: start` for independent paragraph direction. Isolate inline author names with `bdi`. Keep card controls in the interface direction and preserve the original text without inserting directional characters.
 - Preserve the selected output format, the destination's segment strategy, per-segment settings, and explicitly empty media arrays. Joined destinations use the same trimmed text and combined attachments as publication delivery.
-- Use supplied media dimensions when available and intrinsic dimensions otherwise. A missing ratio must not permanently force portrait media into a landscape crop.
+- Use supplied image dimensions when available and intrinsic dimensions otherwise. Selected feed, carousel, multi-image, Story, Reel, and video profiles take precedence over attachment inference. Project supported covers, cover frames and focal points from effective account settings, and deduplicate joined attachments in source order, retaining the first item metadata. A missing ratio must not permanently force portrait media into a landscape crop.
 - Shared capability counts describe verified preview limits. Unspecified limits can vary by instance or client; public tools must label their own input limits and never silently discard uploads.
 - Navigation and neighboring content illustrate a platform. Only real preview interactions, such as carousel navigation and content-warning disclosure, should look operable.
 
 The Threads preview limit is 20 mixed images or videos, matching [Meta's published carousel contract](https://www.postman.com/meta/threads/documentation/dht3nzz/threads-api). Unverified limits remain labeled as preview-tool limits, rather than publishing guarantees.
 
 PDF pages load PDF.js on demand. Both application Vite configs enable `pdfPreviewAssets()` from `packages/social-preview/pdf-assets.ts`, which ships the installed PDF.js character maps, fonts, decoders, and licenses under `/pdfjs/<version>/`. Keep those files on the same origin and match the renderer version; documents fetch them only when needed.
+
+## Composer editing
+
+The All tab keeps the shared editor. Account tabs share their row with a linked/unlinked control, Full preview, and More. The link control snapshots text and media when detached and restores shared inheritance when linked; provider poll and link settings remain independent. Explicit unlink retains overrides even when values match All. Display sync from actual text and media inheritance, including platform captions, rather than variant-record presence. The native post card starts directly below; text reset lives in More. Account editors supply `PreviewEditing` snippets for text, titles, cards, and polls. The shared package owns placement and read-only fallback; the composer owns mutations through its existing text, media, poll, and provider-setting actions. Full preview opens the read-only page shell. Accounts without a native renderer retain caption editing in a neutral fallback.
+
+Typing inherited text creates only that account's text override. Media and provider settings remain independent. Joined outputs edit canonical source slices through `source_overrides`; generated poll text remains separate from authored captions. Provider-specific captions, such as YouTube descriptions and Facebook Reel descriptions, use the adapter's actual setting owner.
+
+Card and poll editors stage changes until Save. Cancel and Escape discard them and restore focus. Account-resolved fields control which settings are editable. LinkedIn article metadata belongs inside the card, while its poll question remains separate from post text. Unsupported polls require a saved text or omit choice and retain their notice. Text versions retain authored language without adding engagement prompts.
+
+Canonical segment `settings.link.destinations[accountID]` owns the URL choice: `post` detects the first HTTP(S) URL in authored account text, `custom` keeps an explicit URL, and `legacy` preserves earlier native URI settings. Missing link state preserves legacy behavior. Adoption checks both destination and segment settings, retaining other accounts' explicit URLs. Balanced parentheses in URLs survive detection.
+
+`services/publicationlink` resolves provider settings at persistence, validation, and delivery using effective destination and segment settings. It suppresses inherited cards that conflict with media, Bluesky quotes, or polls; explicit conflicting Bluesky cards remain validation errors. Generated native URI values are projections excluded from authorship comparisons. Removing canonical link ownership clears its generated segment values, preserving legacy settings and card metadata.
 
 ## Reference baseline
 
