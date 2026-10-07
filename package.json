@@ -29,7 +29,8 @@
     "test": "bun scripts/tasks.mjs test",
     "test:backend:pkg": "go test -tags dev",
     "test:file": "bun test",
-    "verify": "bun scripts/tasks.mjs verify"
+    "verify": "bun scripts/tasks.mjs verify",
+    "capture:mobile-screenshots": "bun scripts/capture-mobile-screenshots.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
@@ -61,11 +62,14 @@
     "js-yaml": "4.3.2",
     "nanoid": "3.3.18",
     "postcss": "8.5.23",
+    "postcss-selector-parser": "7.1.6",
     "qs": "6.16.0",
     "sharp": "0.35.4",
+    "source-map-js": "1.2.2",
     "tar": "7.5.22",
     "undici": "7.29.1",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "vue": "3.5.42"
   },
   "packageManager": "bun@1.3.11",
   "patchedDependencies": {
