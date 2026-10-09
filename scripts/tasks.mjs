@@ -51,6 +51,7 @@ const checks = {
   "build-graph": stage("build graph", [
     bunTest(
       "scripts/build-graph.test.mjs",
+      "scripts/ui-build-lock.test.mjs",
       "scripts/build-telemetry-env.test.mjs",
       "scripts/frontend-vite-build.test.mjs",
       "scripts/paraglide-offline.test.mjs",
@@ -60,7 +61,7 @@ const checks = {
     bun("scripts/check-build-graph.mjs"),
   ]),
   assets: stage("asset surfaces", [
-    bunTest("scripts/asset-surfaces.test.mjs"),
+    bunTest("scripts/asset-surfaces.test.mjs", "scripts/readme-demos.test.mjs"),
     bun("scripts/asset-surfaces.mjs"),
   ]),
   workflows: stage("GitHub Actions workflows", [

@@ -57,7 +57,10 @@
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=_mZf3HzQaN8">
-    <img src="./assets/screenshots/readme-hero-dark.webp" alt="OpenPost composer with platform-specific drafts, previews, and scheduling controls" width="100%">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="./assets/screenshots/readme-hero-dark.webp">
+      <img src="./assets/demos/publishing.gif" alt="Write a post, create a meme, schedule it with confetti, then open analytics and the inbox" width="100%">
+    </picture>
   </a>
 </p>
 
@@ -69,41 +72,17 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/screenshots/mobile-gallery-dark.webp">
-    <img src="./assets/screenshots/mobile-gallery-light.webp" alt="OpenPost on iOS: Drafts, Post, Calendar, Queue, Video, and Analytics, each shown in a labelled phone mockup" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/screenshots/mobile-gallery-dark.png">
+    <img src="./assets/screenshots/mobile-gallery-light.png" alt="OpenPost on iOS: Drafts, Post, Calendar, and Analytics, each shown in a labelled phone mockup" width="100%">
   </picture>
 </p>
 
-<table>
-  <tr>
-    <td width="50%" align="center">
-      <a href="https://app.openpo.st/image-editor">
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="./assets/screenshots/image-editor-dark.webp">
-          <img src="./assets/screenshots/image-editor-light.webp" alt="OpenPost image editor with a design canvas, layers, and editing controls" width="100%">
-        </picture>
-      </a>
-      <br><strong>Design images and carousels</strong>
-    </td>
-    <td width="50%" align="center">
-      <a href="https://app.openpo.st/video-editor">
-        <picture>
-          <source media="(prefers-color-scheme: dark)" srcset="./assets/screenshots/video-editor-dark.webp">
-          <img src="./assets/screenshots/video-editor-light.webp" alt="OpenPost video editor with a video preview and multitrack timeline" width="100%">
-        </picture>
-      </a>
-      <br><strong>Edit and caption videos</strong>
-    </td>
-  </tr>
-</table>
+Demos use sample accounts and data. [How to refresh them](./docs/development/readme-demos.md).
 
 ## What you can do
 
 - <img src="./assets/brand/features/accounts.svg" alt="" width="24" height="24" align="top"> **[Connect accounts](https://openpo.st/docs/guides/accounts).** Manage your social connections in one workspace. Each provider keeps its own capabilities and publishing limits.
 - <img src="./assets/brand/features/compose.svg" alt="" width="24" height="24" align="top"> **[Compose for each platform](https://openpo.st/docs/guides/publishing).** Write posts and threads, then adjust the text and media for each account. Preview each version before publishing. Save account groups as Social Sets to reuse them.
-- <img src="./assets/brand/features/image-editor.svg" alt="" width="24" height="24" align="top"> **[Image editor](https://openpo.st/docs/image-editor).** Design images and multi-page carousels with layers, templates, and custom fonts. Remove backgrounds in your browser. Export individual pages or the full carousel, or attach them to your post.
-- <img src="./assets/brand/features/video-editor.svg" alt="" width="24" height="24" align="top"> **[Video editor](https://openpo.st/docs/video-editor).** Trim and arrange clips on a multitrack timeline. Add captions, transitions, effects, and audio. Cut footage by selecting words in its transcript.
-- <img src="./assets/brand/features/recorder.svg" alt="" width="24" height="24" align="top"> **[Recorder](https://openpo.st/docs/video-editor/quick-cut-and-recorder).** Capture your screen, camera, and microphone, then bring the recording into your video edit.
 - <img src="./assets/brand/features/calendar.svg" alt="" width="24" height="24" align="top"> **[Calendar and queues](https://openpo.st/docs/guides/scheduling).** Choose a publishing time or the next free slot in a queue. Plan your posts in the calendar, stagger publishing across accounts, and get reminders when your queue runs low.
 - <img src="./assets/brand/features/workflows.svg" alt="" width="24" height="24" align="top"> **[Workflows](https://openpo.st/docs/workflows).** Turn GitHub releases, RSS feeds, and scheduled prompts into drafts. Connect steps on a visual canvas, add AI or conditions, review posts before scheduling, and inspect each run. Use HTTP requests and JavaScript for custom data.
 - <img src="./assets/brand/features/repost.svg" alt="" width="24" height="24" align="top"> **Auto repost.** Set delays and engagement rules for native reposts on supported networks. Override the defaults for individual posts.
@@ -115,6 +94,34 @@
 - <img src="./assets/brand/features/ideas.svg" alt="" width="24" height="24" align="top"> **AI writing and ideas.** Generate ideas, compare draft directions, and adapt posts for your selected platforms. You review the result before publishing. AI writing is optional. [Self-hosted AI setup](https://openpo.st/docs/self-hosting/ai).
 - <img src="./assets/brand/features/automation.svg" alt="" width="24" height="24" align="top"> **[API, SDK, CLI, MCP, and n8n](https://openpo.st/docs/automate).** Create drafts, schedule posts, and check publishing results from your scripts, agents, or n8n workflows. Install the [TypeScript SDK](https://www.npmjs.com/package/@getopenpost/sdk) or the [CLI](https://www.npmjs.com/package/@getopenpost/cli) from npm. See the [API reference](https://openpo.st/docs/api-reference) for endpoints.
 - <img src="./assets/brand/features/workspaces.svg" alt="" width="24" height="24" align="top"> **[Teams and workspaces](https://openpo.st/docs/guides/workspaces).** Keep brands and clients in separate workspaces and control who can edit them. Protect your account with passkeys, two-factor authentication, and session controls.
+
+### Design images and carousels
+
+Design thumbnails and multi-page carousels with layers, templates, and custom fonts.
+Remove backgrounds in your browser, then export your design or attach it to a post.
+[Try the image editor](https://app.openpo.st/image-editor) · [Image editor guide](https://openpo.st/docs/image-editor)
+
+<a href="https://app.openpo.st/image-editor">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="./assets/screenshots/image-editor-dark.webp">
+    <img src="./assets/demos/image-editor.gif" alt="Recreate a RISC-V YouTube thumbnail by dragging, resizing, and styling its logo and text" width="640">
+  </picture>
+</a>
+
+### Edit and record videos
+
+Trim and arrange clips on a multitrack timeline. Add captions, animations, transitions,
+effects, and audio, or cut footage by selecting words in its transcript.
+The [Recorder](https://openpo.st/docs/video-editor/quick-cut-and-recorder) captures your
+screen, camera, and microphone for the same timeline.
+[Try the video editor](https://app.openpo.st/video-editor) · [Video editor guide](https://openpo.st/docs/video-editor)
+
+<a href="https://app.openpo.st/video-editor">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="./assets/screenshots/video-editor-dark.webp">
+    <img src="./assets/demos/video-editor.gif" alt="Animate a title in and out, add music, cut footage, apply a transition and effects, and adjust its color" width="640">
+  </picture>
+</a>
 
 ## Get started
 

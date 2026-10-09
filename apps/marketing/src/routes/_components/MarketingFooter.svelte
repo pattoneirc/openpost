@@ -4,7 +4,7 @@
 	import HeroAccent from './HeroAccent.svelte';
 	import ThemeImage from './ThemeImage.svelte';
 	import ArrowUpRight from '@lucide/svelte/icons/arrow-up-right';
-	import { Button } from '$lib/components/ui/button';
+	import { Button } from '@openpost/ui/components/button';
 	import Github from '@lucide/svelte/icons/github';
 	import MessageCircle from '@lucide/svelte/icons/message-circle';
 	import Volume2 from '@lucide/svelte/icons/volume-2';
@@ -98,6 +98,15 @@
 						Discord
 					</a>
 				</div>
+				<Button
+					{...externalHref('https://www.google.com/preferences/source?q=openpo.st')}
+					variant="outline"
+					target="_blank"
+					rel="noopener noreferrer"
+					class="mt-5 min-h-11"
+				>
+					Prefer OpenPost on Google <ArrowUpRight data-icon="inline-end" />
+				</Button>
 				<div
 					class="platform-guides mt-6 text-muted-foreground"
 					aria-label="Platform publishing guides"

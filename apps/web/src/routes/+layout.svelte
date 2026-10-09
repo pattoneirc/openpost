@@ -17,6 +17,7 @@
 	import InlineNotice from '$lib/components/inline-notice.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { m } from '$lib/paraglide/messages';
+	import { provideUiMessages } from '@openpost/ui/messages';
 	import { onboardingPathForPlan, paddleTransactionIDFromSearchParams } from '$lib/billing';
 	import { safeSameOriginRedirect } from '$lib/redirects';
 	import { soundPreferences } from '$lib/stores/sound-preferences.svelte';
@@ -38,6 +39,7 @@
 	import { ui } from '$lib/stores/ui.svelte';
 
 	let { children } = $props();
+	provideUiMessages(m);
 	provideApplicationThemePreview();
 	const unsavedChanges = setUnsavedChanges(new UnsavedChangesContext());
 	const publicationQueryInvalidationBridge = createPublicationQueryInvalidationBridge(queryClient);
@@ -110,6 +112,7 @@
 	];
 
 	const standaloneRoutes = [
+		'/draft-import',
 		'/onboarding',
 		'/checkout',
 		'/verify-email',
@@ -167,6 +170,7 @@
 	);
 	let isPublicRoute = $derived(
 		currentPath === '/' ||
+			currentPath === '/draft-import' ||
 			isErrorRoute ||
 			isPublicProfileRoute ||
 			isPublicImageEditorRoute ||
@@ -192,6 +196,7 @@
 	let isOrganizationOwnershipRoute = $derived(isOrganizationOwnershipSettingsRoute($page.url));
 	let routeSkipsWorkspaceBootstrap = $derived(
 		currentPath === '/onboarding' ||
+			currentPath === '/draft-import' ||
 			currentPath === '/checkout' ||
 			currentPath === '/ownership-transfer' ||
 			isOrganizationOwnershipRoute ||
@@ -226,6 +231,9 @@
 
 		const redirect = safeSameOriginRedirect($page.url, '');
 		if (redirect) target.searchParams.set('redirect', redirect);
+		if (!redirect && currentPath === '/' && $page.url.searchParams.has('tool_draft')) {
+			target.searchParams.set('redirect', `${currentPath}${$page.url.search}`);
+		}
 		if (
 			!redirect &&
 			currentPath.startsWith('/image-editor/local_design_') &&
@@ -242,6 +250,7 @@
 	}
 
 	let pendingRedirect = $derived.by(() => {
+		if (currentPath === '/draft-import') return null;
 		if (authState.isLoading) return null;
 		if (authState.initializationError) return null;
 

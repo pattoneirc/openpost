@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -72,6 +72,7 @@ test("origin Vary headers cover only canonical HTML and explicit Markdown within
     "  Vary: Accept",
     "/*.md",
     "  Content-Type: text/markdown; charset=utf-8",
+    "  X-Robots-Tag: noindex",
     "  Vary: Accept",
     "/llms.txt",
     "  Content-Type: text/plain; charset=utf-8",
@@ -80,10 +81,9 @@ test("origin Vary headers cover only canonical HTML and explicit Markdown within
   const pages = [{ canonical: "https://openpo.st/" }, { canonical: "https://openpo.st/features" }];
   const rendered = renderOriginVaryHeaders(base, pages);
 
-  assert.match(
-    rendered,
-    /\/\*\.md\n  Content-Type: text\/markdown; charset=utf-8\n  Vary: Accept/u,
-  );
+  assert.ok(headerRuleHas(rendered, "/index.md", "Content-Type: text/markdown; charset=utf-8"));
+  assert.ok(headerRuleHas(rendered, "/index.md", "Vary: Accept"));
+  assert.ok(headerRuleHas(rendered, "/index.md", "X-Robots-Tag: noindex"));
   assert.match(rendered, /(?:^|\n)\/\n  Link: [^\n]+\n  Vary: Accept\n/u);
   assert.match(rendered, /<\/\.well-known\/api-catalog>; rel="api-catalog"/u);
   assert.equal((rendered.match(/^\/$/gmu) ?? []).length, 1);
@@ -472,12 +472,30 @@ const marketingHTML = `<!doctype html>
 test("marketing production projection emits deterministic homepage Markdown and discovery", async () => {
   const directory = await fixtureDirectory();
   const htmlPath = path.join(directory, "index.html");
-  await writeFile(htmlPath, marketingHTML);
+  await writeFile(
+    htmlPath,
+    marketingHTML.replace(
+      "</main>",
+      '<a href="/"><h2>Read this page</h2><p>A linked card keeps its heading and description.</p><span>Open guide</span></a></main>',
+    ),
+  );
 
   const projection = {
     surface: "marketing",
     outputDirectory: directory,
-    pages: [{ sourcePath: htmlPath, outputPath: "index.md" }],
+    corpus: { title: "OpenPost product", surface: "marketing" },
+    pages: [
+      {
+        sourcePath: htmlPath,
+        outputPath: "index.md",
+        route: {
+          title: "OpenPost - Social publishing",
+          description: "Create, adapt, and publish from one workspace.",
+          canonical: "https://openpo.st",
+          agentDiscovery: { membership: "primary" },
+        },
+      },
+    ],
     knownCanonicalURLs: ["https://openpo.st/", "https://openpo.st/features"],
     discovery: {
       title: "OpenPost",
@@ -497,6 +515,15 @@ test("marketing production projection emits deterministic homepage Markdown and 
   await generateAgentSurface(projection);
   const firstMarkdown = await readFile(path.join(directory, "index.md"), "utf8");
   const firstDiscovery = await readFile(path.join(directory, "llms.txt"), "utf8");
+  const corpus = await readFile(path.join(directory, "llms-full.txt"), "utf8");
+  assert.match(corpus, /Prepare one idea for every destination\./u);
+  assert.match(firstMarkdown, /^## \[Read this page\]\(https:\/\/openpo\.st\/\)$/mu);
+  assert.match(corpus, /\[Read this page\]\(https:\/\/openpo\.st\/index\.md\)/u);
+  assert.match(corpus, /A linked card keeps its heading and description\./u);
+  assert.doesNotMatch(corpus, /Navigation noise|privateState/u);
+  const sitemap = await readFile(path.join(directory, "sitemap.md"), "utf8");
+  assert.match(sitemap, /\[OpenPost - Social publishing\]\(https:\/\/openpo\.st\/index\.md\)/u);
+  assert.match(sitemap, /Canonical: https:\/\/openpo\.st/u);
   await generateAgentSurface(projection);
 
   assert.equal(await readFile(path.join(directory, "index.md"), "utf8"), firstMarkdown);
@@ -1434,9 +1461,12 @@ test(
       ],
     ]) {
       const headers = await readFile(headersPath, "utf8");
-      assert.match(
-        headers,
-        /\/\*\.md\n  Content-Type: text\/markdown; charset=utf-8\n  Vary: Accept/u,
+      assert.ok(
+        headerRuleHas(headers, "/index.md", "Content-Type: text/markdown; charset=utf-8"),
+        `${surface} Markdown artifacts must keep their media type`,
+      );
+      assert.ok(
+        headerRuleHas(headers, "/index.md", "Vary: Accept"),
         `${surface} Markdown artifacts must vary at the origin`,
       );
       for (const pathname of plainTextPaths) {
@@ -1501,6 +1531,7 @@ test(
       await filesWithSuffix(marketingDirectory, ".md"),
       [
         "auth.md",
+        "sitemap.md",
         "image-editor-models/LICENSE.md",
         "image-editor-models/README.md",
         ...expectedMarketingMarkdown,
@@ -1523,6 +1554,8 @@ test(
       "openapi.json",
       "auth.md",
       "llms.txt",
+      "llms-full.txt",
+      "sitemap.md",
       "sitemap.xml",
       ...expectedMarketingMarkdown,
     ]);
@@ -1671,10 +1704,50 @@ test(
     );
     assert.deepEqual(
       await filesWithSuffix(docsDirectory, ".md"),
-      expectedDocsMarkdown.toSorted(),
+      ["sitemap.md", ...expectedDocsMarkdown].toSorted(),
       "every catalogue-owned documentation route must have one Markdown artifact and no stale alias",
     );
     const docsHTML = await filesWithSuffix(docsDirectory, ".html");
+    const indexableDocsHTML = [];
+    for (const file of docsHTML) {
+      const html = await readFile(path.join(docsDirectory, file), "utf8");
+      if (!/<meta[^>]+name="robots"[^>]+content="[^"]*\bnoindex\b/iu.test(html)) {
+        indexableDocsHTML.push(file);
+      }
+    }
+    const docsHomePath = path.join(docsDirectory, "index.html");
+    const docsHomeHTML = await readFile(docsHomePath, "utf8");
+    // The pinned Bun test runner can lose piped child diagnostics.
+    const metadataDirectory = await fixtureDirectory();
+    const metadataDiagnosticPath = path.join(metadataDirectory, "stderr.txt");
+    try {
+      for (const robots of [
+        '<meta name="robots" content="noindex" />',
+        '<meta name="robots" content="NOINDEX" />',
+        '<meta content="noindex" name="robots" />',
+      ]) {
+        try {
+          await writeFile(docsHomePath, docsHomeHTML.replace("</head>", `${robots}</head>`));
+          const check = Bun.spawn(["bun", "apps/docs/scripts/check-social-metadata-output.mjs"], {
+            cwd: root,
+            stdout: "ignore",
+            stderr: Bun.file(metadataDiagnosticPath),
+          });
+          const exitCode = await check.exited;
+          const stderr = await readFile(metadataDiagnosticPath, "utf8");
+          assert.equal(exitCode, 1, "a catalogue page must reject noindex");
+          assert.match(
+            stderr,
+            /index\.html: a catalogue page must remain indexable/u,
+            "a downloadable kit must not make the metadata gate ignore noindex on a real page",
+          );
+        } finally {
+          await writeFile(docsHomePath, docsHomeHTML);
+        }
+      }
+    } finally {
+      await rm(metadataDirectory, { recursive: true, force: true });
+    }
     for (const file of expectedDocsHTML) assert.ok(docsHTML.includes(file), `Missing ${file}`);
     const schema = JSON.parse(await readFile(path.join(docsDirectory, "openapi.json"), "utf8"));
     const operations = Object.values(schema.paths).flatMap((item) =>
@@ -1694,6 +1767,7 @@ test(
       "_headers",
       "llms-full.txt",
       "llms.txt",
+      "sitemap.md",
       "sitemap.xml",
       ...expectedDocsMarkdown,
     ]);
@@ -1774,7 +1848,7 @@ test(
     assert.match(docsCorpus, /not part of the llms\.txt v2 proposal/u);
     assert.doesNotMatch(
       docsCorpus,
-      /Generated from the canonical|^Title:|^Description:|^Canonical:/m,
+      /Generated from the canonical|^Title:[^\n]*\nDescription:[^\n]*\nCanonical:/m,
     );
     assert.doesNotMatch(docsCorpus, /"openapi"\s*:\s*"3\./u);
     assert.doesNotMatch(
@@ -1808,7 +1882,7 @@ test(
     assert.doesNotMatch(docsSitemap, /\.md(?:<|$)/u);
     assert.deepEqual(
       [...docsSitemap.matchAll(/<loc>([^<]+)<\/loc>/gu)].map((match) => match[1]).toSorted(),
-      docsHTML
+      indexableDocsHTML
         .filter((file) => !["404.html", "_not-found.html", "_not-found/index.html"].includes(file))
         .map((file) =>
           file === "index.html"

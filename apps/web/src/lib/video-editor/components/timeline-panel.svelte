@@ -5223,7 +5223,7 @@
 							{/if}
 							<!-- Ruler -->
 							<div
-								class="sticky top-0 z-20 h-6 cursor-ew-resize touch-none border-b border-[var(--video-editor-border)] bg-[var(--timeline-track)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--video-editor-focus)]"
+								class="sticky top-0 z-40 h-6 cursor-ew-resize touch-none border-b border-[var(--video-editor-border)] bg-[var(--timeline-track)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--video-editor-focus)]"
 								role="slider"
 								tabindex="0"
 								aria-label={m.video_editor_playhead()}
@@ -5252,7 +5252,7 @@
 								{/each}
 							</div>
 							<div
-								class="pointer-events-none sticky top-0 z-40 -mt-6 mb-6 h-0"
+								class="pointer-events-none sticky top-0 z-50 -mt-6 mb-6 h-0"
 								role="group"
 								aria-label={m.video_editor_markers_lane()}
 							>
@@ -5297,7 +5297,7 @@
 								{@const renderPlan = timelineRenderPlan(track.id)}
 								{@const trackTransitions = visibleTransitionsForTrack(track.id, renderPlan)}
 								<div
-									class="relative border-b border-[var(--video-editor-border)] {resolvedTrack.visible ===
+									class="relative isolate border-b border-[var(--video-editor-border)] {resolvedTrack.visible ===
 										false ||
 									(track.kind === 'audio' && resolvedTrack.muted)
 										? 'bg-[var(--video-editor-control)]'
@@ -5979,10 +5979,12 @@
 							{/if}
 
 							<!-- Playhead -->
-							<div
-								class="pointer-events-none absolute top-0 bottom-0 z-30 w-px bg-[oklch(0.66_0.14_45)]"
-								style="left:{timelineX(timelineStore.currentFrame)}px"
-							></div>
+							{#if timelineX(timelineStore.currentFrame) >= timelineViewport.scrollLeft + TRACK_HEADER_WIDTH}
+								<div
+									class="pointer-events-none absolute top-0 bottom-0 z-30 w-px bg-[oklch(0.66_0.14_45)]"
+									style="left:{timelineX(timelineStore.currentFrame)}px"
+								></div>
+							{/if}
 							<!-- In/out range shade -->
 							{#if timelineStore.inPoint !== null && timelineStore.outPoint !== null}
 								<div

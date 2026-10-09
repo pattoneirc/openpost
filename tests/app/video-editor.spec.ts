@@ -48,7 +48,7 @@ async function createProject(
   await page.getByRole("button", { name: "Choose folder" }).click();
   const projects = page.getByRole("heading", { name: "Projects" });
   const openEditor = page.getByRole("button", { name: "Open Video Editor", exact: true });
-  await expect(projects.or(openEditor)).toBeVisible();
+  await expect(projects.or(openEditor).first()).toBeVisible();
   if (await projects.isVisible()) {
     await page.getByRole("button", { name: "Custom project" }).click();
     await page.getByRole("textbox", { name: "Project name" }).fill(name);
@@ -527,6 +527,115 @@ test("timeline hover preview stays outside track headers and uses one navigator"
   await expect(readout).toBeHidden();
   await expect(page.locator("[data-timeline-navigator]")).toBeVisible();
   expect(await timeline.evaluate((el) => getComputedStyle(el).scrollbarWidth)).toBe("none");
+});
+
+test("the timeline ruler keeps its own row above track labels", async ({ page }, info) => {
+  await createProject(page, "Ruler boundary");
+  await addTextItem(page);
+  await page.keyboard.press("ControlOrMeta+s");
+  await expect(page.getByRole("banner").locator('[role="status"][data-state]')).toHaveAttribute(
+    "data-state",
+    "saved",
+  );
+  const timeline = page.locator("#video-editor-timeline-scroll");
+  const ruler = page.getByRole("slider", { name: "Timeline playhead", exact: true });
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+    await page.evaluate((mode) => localStorage.setItem("mode-watcher-mode", mode), scheme);
+    await page.reload();
+    await expect(page.locator("[data-timeline-item-id]")).toHaveCount(1);
+    for (const width of [1280, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await ruler.press("Home");
+      await ruler.press("ArrowRight");
+      await expect(ruler).toHaveAttribute("aria-valuenow", "1");
+      await expect(ruler).toBeFocused();
+      expect(await ruler.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe(
+        "none",
+      );
+      await timeline.evaluate((element) => {
+        element.scrollTop = 0;
+      });
+      const ticks = (await ruler.boundingBox())!;
+      const labels = (await page.locator("[data-track-header]").first().boundingBox())!;
+      expect(
+        labels.y,
+        "The ruler must have its own row above the first track",
+      ).toBeGreaterThanOrEqual(ticks.y + ticks.height);
+      await timeline.evaluate((element) => {
+        element.scrollTop = 24;
+      });
+      await page.screenshot({ path: info.outputPath(`scrolled-ruler-${scheme}-${width}.png`) });
+      expect(
+        await ruler.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          return element.contains(document.elementFromPoint(bounds.x + 40, bounds.y + 12));
+        }),
+        "The pinned ruler must cover track labels that scroll underneath it",
+      ).toBe(true);
+      const resize = (await page.locator("[data-track-resize]").first().boundingBox())!;
+      await timeline.evaluate(
+        (element, offset) => {
+          element.scrollTop += offset;
+        },
+        resize.y + resize.height / 2 - ticks.y - ticks.height / 2,
+      );
+      expect(
+        await ruler.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          return element.contains(document.elementFromPoint(bounds.x + 200, bounds.y + 12));
+        }),
+        "Track resize handles must not intercept the pinned ruler",
+      ).toBe(true);
+    }
+  }
+});
+
+test("horizontal timeline scrolling keeps the playhead behind track headers", async ({
+  page,
+}, info) => {
+  await createProject(page, "Playhead boundary");
+  await addTextItem(page);
+  const timeline = page.locator("#video-editor-timeline-scroll");
+  const header = page.locator("[data-track-header]").first();
+  await page.getByRole("slider", { name: "Timeline playhead", exact: true }).press("Home");
+  await page.mouse.move(0, 0);
+  const bounds = (await header.boundingBox())!;
+  const playheadSlice = () =>
+    page.screenshot({
+      clip: {
+        x: bounds.x + bounds.width + 8,
+        y: bounds.y + 8,
+        width: 100,
+        height: bounds.height - 16,
+      },
+    });
+  const withoutPlayhead = await playheadSlice();
+  const ruler = page.getByRole("slider", { name: "Timeline playhead", exact: true });
+  await ruler.press("Shift+ArrowRight");
+  const visiblePlayhead = await playheadSlice();
+  expect(visiblePlayhead.equals(withoutPlayhead), "The playhead must paint a visible line").toBe(
+    false,
+  );
+  const before = await header.screenshot();
+  await timeline.evaluate((element) => {
+    element.scrollLeft = 90;
+  });
+  await expect.poll(() => timeline.evaluate((element) => element.scrollLeft)).toBe(90);
+  await page.screenshot({ path: info.outputPath("scrolled-playhead.png") });
+  const after = await header.screenshot();
+  expect(
+    after.equals(before),
+    "Panning the timeline must not draw its playhead over track labels",
+  ).toBe(true);
+  await timeline.evaluate((element) => {
+    element.scrollLeft = 0;
+  });
+  await expect.poll(() => timeline.evaluate((element) => element.scrollLeft)).toBe(0);
+  expect(
+    (await playheadSlice()).equals(visiblePlayhead),
+    "Scrolling back must restore the visible playhead",
+  ).toBe(true);
 });
 
 test("imports video and a photo, places both, and reopens the timeline", async ({ page }) => {

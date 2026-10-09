@@ -13,6 +13,7 @@
 	import PreviewPollEditor from './compose/preview-poll-editor.svelte';
 	import type { PreviewCard, PreviewPoll, PreviewSegment } from '@openpost/social-preview';
 	import type { Snippet } from 'svelte';
+	import type { PreparedToolDraft } from '$lib/composer/tool-draft-storage';
 	import SharedPollEditor from './compose/shared-poll-editor.svelte';
 	import {
 		readSharedPoll,
@@ -284,6 +285,7 @@
 	}
 
 	interface Props {
+		initialToolDraft?: PreparedToolDraft | null;
 		initialPublication?: Publication | null;
 		initialScheduleDate?: string | null;
 		initialScheduleTime?: string | null;
@@ -305,6 +307,7 @@
 	// Props & core state
 	// --------------------------------------------------------------------------
 	let {
+		initialToolDraft = null,
 		initialPublication = null,
 		initialScheduleDate = null,
 		initialScheduleTime = null,
@@ -427,6 +430,7 @@
 	let repurposePrivateContextNotes = $state('');
 	let repurposeReviewActive = $state(false);
 	let appliedRepurposeHandoffID = '';
+	let toolDraftApplied = false;
 	let aiVoiceName = $state<string>(m.compose_ai_default_voice());
 	let aiVoiceProfileID = $state('');
 	let aiActiveBuild = $state.raw<PublicationBuild | null>(null);
@@ -3335,6 +3339,45 @@
 		) {
 			void applyRepurposeHandoff(handoff);
 		}
+	});
+
+	$effect(() => {
+		const draft = initialToolDraft;
+		if (
+			!draft ||
+			toolDraftApplied ||
+			initialPublication ||
+			loadingWorkspaces ||
+			loadingAccounts ||
+			!selectedWorkspaceId
+		)
+			return;
+		toolDraftApplied = true;
+		posts = draft.parts.map((content, index) => {
+			const post: PostItem = {
+				...makeEmptyPost(),
+				content,
+				mediaIds: index === 0 ? draft.media.map((item) => item.id) : []
+			};
+			if (index === 0 && draft.poll) {
+				post.poll = {
+					question: draft.poll.question,
+					options: draft.poll.options.map((text) => ({ id: crypto.randomUUID(), text })),
+					duration_seconds: draft.poll.durationSeconds,
+					destinations: {}
+				};
+			}
+			return post;
+		});
+		linkUrl = draft.link || firstComposerURL(draft.parts[0] ?? '');
+		activePostIndex = 0;
+		variants = new Map();
+		activeVariantAccountId = null;
+		mediaAltTexts = new SvelteMap(draft.media.map((item) => [item.id, item.alt_text]));
+		mediaMimeTypes = new SvelteMap(draft.media.map((item) => [item.id, item.mime_type]));
+		mediaSizes = new SvelteMap(draft.media.map((item) => [item.id, item.size]));
+		void startFirstComposition(draft.media.length ? 'media' : 'text');
+		scheduleAutoSave();
 	});
 
 	$effect(() => {
@@ -6661,6 +6704,8 @@
 											variant="ghost"
 											size="icon"
 											aria-label={m.compose_add_poll()}
+											disabled={accountControlLoading}
+											aria-busy={accountControlLoading}
 											onclick={() => {
 												pollCreationAccountID = activeVariantAccount!.id;
 												pollEditorPostKey = post.key;
@@ -6864,7 +6909,9 @@
 												{#if !post.poll}
 													<button
 														type="button"
-														class="flex size-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:size-7"
+														class="flex size-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 md:size-7"
+														disabled={accountControlLoading}
+														aria-busy={accountControlLoading}
 														onclick={() => {
 															pollCreationAccountID = undefined;
 															pollEditorPostKey = post.key;

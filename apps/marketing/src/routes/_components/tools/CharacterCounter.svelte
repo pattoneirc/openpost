@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { RotateCcw, Sparkles } from '@lucide/svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Textarea } from '$lib/components/ui/textarea';
+	import { Button } from '@openpost/ui/components/button';
+	import { Textarea } from '@openpost/ui/components/textarea';
 	import PlatformIcon from '$lib/components/platform-icon.svelte';
+	import DraftNextAction from './DraftNextAction.svelte';
 	import {
 		COUNTER_PLATFORMS,
 		graphemeCount,
@@ -59,6 +60,10 @@
 				<dd>{lines.toLocaleString()}</dd>
 			</div>
 		</dl>
+		<DraftNextAction
+			draft={{ version: 1, parts: [draft], files: [], link: '' }}
+			disabled={!draft.trim()}
+		/>
 	</div>
 	<section aria-labelledby="platform-counts-title">
 		<h2 id="platform-counts-title">How it fits</h2>
