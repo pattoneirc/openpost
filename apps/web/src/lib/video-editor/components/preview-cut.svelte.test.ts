@@ -20,7 +20,11 @@ it.each(['auto', 'full'] as const)(
 	async (quality) => {
 		await page.viewport(1000, 650);
 		const previousQuality = previewPlaybackSettings.previewQuality;
+		const previousVolume = previewPlaybackSettings.volume;
+		const previousMuted = previewPlaybackSettings.muted;
 		previewPlaybackSettings.setPreviewQuality(quality);
+		previewPlaybackSettings.setVolume(1);
+		previewPlaybackSettings.setMuted(false);
 		const project = createBlankProject('Cut playback');
 		project.timeline!.items = [
 			{
@@ -67,6 +71,8 @@ it.each(['auto', 'full'] as const)(
 		mediaPool.loadAll([media]);
 		editorSession.project = project;
 		sequenceStore.load(project.timeline!, project.metadata);
+		editorSession.stopPlayback();
+		editorSession.clock.setFps(project.metadata.fps);
 		await prewarmPreviewFrame(media, 2);
 		const screen = await render(PreviewPlayer, { onedit: () => {} });
 		screen.container.style.cssText = 'display:flex;width:960px;height:600px';
@@ -81,10 +87,10 @@ it.each(['auto', 'full'] as const)(
 		const sample = async () => {
 			await tick();
 			if (!sampling) return;
-			const levels = readMixerMasterLevels();
-			audioPeak = Math.max(audioPeak, levels.peakLeft, levels.peakRight);
 			const frame = timelineStore.currentFrame;
-			if (frame >= 30 && frame < 40) {
+			if (frame >= 30 && frame < 60) {
+				const levels = readMixerMasterLevels();
+				audioPeak = Math.max(audioPeak, levels.peakLeft, levels.peakRight);
 				sampled++;
 				const layer = screen.container.querySelector('[data-preview-item="after"]');
 				const video = layer?.querySelector('video');
@@ -123,11 +129,13 @@ it.each(['auto', 'full'] as const)(
 			await peekSharedPreviewAudioContext()?.suspend();
 			await userEvent.click(screen.container);
 			requestAnimationFrame(sample);
-			editorSession.clock.seek(20);
-			editorSession.startPlayback({ start: 20, end: 50 });
+			// Play the lead-in so audio can start before the cut. Observe a full second
+			// after it rather than depending on a few animation frames under test load.
+			editorSession.clock.seek(0);
+			editorSession.startPlayback({ start: 0, end: 90 });
 			await expect
 				.poll(() => timelineStore.currentFrame, { timeout: 5000 })
-				.toBeGreaterThanOrEqual(45);
+				.toBeGreaterThanOrEqual(75);
 			expect(sampled).toBeGreaterThan(0);
 			expect(audioPeak).toBeGreaterThan(0);
 			expect(blankFrames).toEqual([]);
@@ -141,6 +149,8 @@ it.each(['auto', 'full'] as const)(
 			sequenceStore.reset();
 			editorSession.project = null;
 			previewPlaybackSettings.setPreviewQuality(previousQuality);
+			previewPlaybackSettings.setVolume(previousVolume);
+			previewPlaybackSettings.setMuted(previousMuted);
 		}
 	},
 	30000

@@ -167,12 +167,6 @@
 		return layer?.image?.crop[key] ?? (key === 'width' || key === 'height' ? 1 : 0);
 	}
 
-	function alignmentLabel(alignment: string): string {
-		if (alignment === 'left') return m.image_editor_align_left();
-		if (alignment === 'center') return m.image_editor_align_center();
-		return m.image_editor_align_right();
-	}
-
 	function setTextCurveType(type: ImageEditorTextCurveType): void {
 		if (!layer?.text || !editor.document || layerLocked) return;
 		editor.mutate('Change text curve', (document) => {
@@ -279,7 +273,9 @@
 		{/if}
 	</div>
 	<div
-		class="image-editor-properties-scroll min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3"
+		class={colorWorkspace
+			? 'min-h-0 min-w-0 flex-1 overflow-hidden'
+			: 'image-editor-properties-scroll min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3'}
 	>
 		{#if colorWorkspace}
 			<ImageColorWorkspace />
@@ -743,34 +739,7 @@
 									)}
 							/>
 						</label>
-						<label class="grid gap-1 text-xs">
-							<span>{m.image_editor_color()}</span>
-							<ColorPicker
-								label={m.image_editor_color()}
-								value={selectedTextStyle?.color ?? layer.text.color}
-								disabled={!editor.canEdit || layerLocked}
-								{brandColors}
-								recentColors={editor.recentColors}
-								onChange={(value) =>
-									editor.updateTextStyle(layer.id, 'color', value, `text-color:${layer.id}`)}
-								onCommit={(value) => editor.rememberColor(value)}
-							/>
-						</label>
-						<div class="grid grid-cols-3 gap-1">
-							{#each ['left', 'center', 'right'] as alignment (alignment)}
-								<Button
-									variant={layer.text.align === alignment ? 'secondary' : 'outline'}
-									size="sm"
-									onclick={() =>
-										editor.updateLayer(layer.id, {
-											text: {
-												...layer.text!,
-												align: alignment as 'left' | 'center' | 'right'
-											}
-										})}>{alignmentLabel(alignment)}</Button
-								>
-							{/each}
-						</div>
+
 						<div class="space-y-2 rounded-md border p-2">
 							<label class="grid gap-1 text-xs">
 								<span>{m.image_editor_text_curve()}</span>
@@ -1260,8 +1229,10 @@
 </div>
 
 <style>
-	.image-editor-properties-scroll :global(.grid > *),
-	.image-editor-properties-scroll :global(.flex > *) {
-		min-width: 0;
+	@layer base {
+		.image-editor-properties-scroll :global(.grid > *),
+		.image-editor-properties-scroll :global(.flex > *) {
+			min-width: 0;
+		}
 	}
 </style>

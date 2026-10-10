@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
+import {
+	IMAGE_COLOR_GRADE_VERSION,
+	defaultEditorColorGradeAdjustments
+} from '$lib/editor-color-grade/model';
 import type { Canvas, IText } from 'fabric';
 import { renderImageEditorPage } from './static-renderer';
 import { OpenPostFabricAdapter } from './fabric-adapter';
@@ -127,6 +131,95 @@ function pixelDigest(canvas: HTMLCanvasElement): number {
 	}
 	return hash >>> 0;
 }
+
+it('keeps the artwork visible while switching page color comparison', async () => {
+	const page = pageFixture([renderLayer('orange', 0, 0, 360, 240)]);
+	page.color_grade_version = IMAGE_COLOR_GRADE_VERSION;
+	page.color_grade = { ...defaultEditorColorGradeAdjustments(), saturation: -1 };
+	const mounted = await mountAdapter(documentFixture(page), page);
+	try {
+		await settleCanvas();
+		const graded = pixelAt(mounted.canvas, 180, 120);
+		expect(graded[3]).toBe(255);
+		expect(Math.abs(graded[0] - graded[2])).toBeLessThanOrEqual(1);
+		for (const before of [true, false, true, false]) {
+			const previous = pixelAt(mounted.canvas, 180, 120);
+			const switching = mounted.adapter.setColorGradeComparisonBefore({
+				page: before,
+				layerIDs: []
+			});
+			// Comparison must retain a complete frame even before the next repaint.
+			expect(pixelAt(mounted.canvas, 180, 120)).toEqual(previous);
+			await switching;
+			await settleCanvas();
+			expect(pixelAt(mounted.canvas, 180, 120)).toEqual(before ? [249, 115, 22, 255] : graded);
+		}
+	} finally {
+		mounted.adapter.dispose();
+	}
+});
+
+it.each(['background', 'layer', 'font'] as const)(
+	'retires a pending %s image without reporting it missing',
+	async (target) => {
+		const page = pageFixture();
+		if (target === 'background')
+			page.background = { type: 'image', opacity: 1, image: { media_id: 'slow', fit: 'cover' } };
+		else {
+			const editor = new ImageEditorController();
+			editor.load({
+				id: 'design',
+				workspace_id: 'local',
+				created_by_id: 'test',
+				revision: 1,
+				can_edit: true,
+				created_at: '2026-10-09',
+				updated_at: '2026-10-09',
+				document: documentFixture(page)
+			});
+			if (target === 'font') {
+				editor.addText('Brand headline');
+				editor.selectedLayers[0].text!.font_asset_id = 'slow-font-retirement';
+			} else editor.addImage({ id: 'slow', name: 'Photo', width: 64, height: 64 });
+			page.layers = editor.activePage!.layers;
+		}
+		const response = Promise.withResolvers<Response>();
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockReturnValue(response.promise);
+		const missing = vi.fn();
+		const dimensions = vi.fn();
+		const canvas = document.createElement('canvas');
+		document.body.append(canvas);
+		const adapter = new OpenPostFabricAdapter({
+			canvas,
+			document: documentFixture(page),
+			page,
+			readOnly: true,
+			staticCanvas: true,
+			onSelection() {},
+			onTransform() {},
+			onTextChange() {},
+			onMissingMedia: missing,
+			onImageDimensions: dimensions
+		});
+		try {
+			const mounting = adapter.mount();
+			await expect.poll(() => fetchMock.mock.calls.length).toBe(1);
+			adapter.dispose();
+			// A response can already be queued when cancellation wins. It must stay retired.
+			const source = document.createElement('canvas');
+			source.width = source.height = 2;
+			const blob = await new Promise<Blob>((resolve) => source.toBlob((blob) => resolve(blob!)));
+			response.resolve(new Response(blob));
+			await mounting;
+			expect(missing).not.toHaveBeenCalled();
+			expect(dimensions).not.toHaveBeenCalled();
+		} finally {
+			adapter.dispose();
+			canvas.remove();
+			fetchMock.mockRestore();
+		}
+	}
+);
 
 it('preserves flat multiline layout across live font changes and fresh renders', async () => {
 	const layer: ImageEditorLayer = {

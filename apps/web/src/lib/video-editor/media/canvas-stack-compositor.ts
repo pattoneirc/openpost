@@ -12,6 +12,7 @@ import { mediaDrawGeometry, type MediaDrawGeometry } from './render-geometry';
 import { applyCropFeatherMask, hasCropFeather } from './crop-layout';
 import { transitionRegistry } from '../transitions';
 import { TransitionPipeline } from '../transitions/gpu/pipeline';
+import { createCanvasGpuDevice } from './canvas-gpu-device';
 import { ShapeMaskRasterizer } from '../shapes/masks';
 import { drawCornerPinImage, hasCornerPin, resolveCornerPinForSize } from '../preview/corner-pin';
 import { clampBackground } from '../backgrounds/types';
@@ -38,6 +39,8 @@ export interface StackLayerSource {
 	source: CanvasImageSource & TexImageSource;
 	width: number;
 	height: number;
+	/** Native source or authored raster dimensions before rendering at another quality. */
+	referenceSize?: { width: number; height: number };
 }
 
 export interface StackTransitionParticipant {
@@ -60,6 +63,7 @@ export interface BackgroundDiagnostics {
 
 export interface CanvasStackCompositorOptions {
 	backgroundAdapter?: BackgroundGpuAdapter | null;
+	referenceSize?: { width: number; height: number };
 }
 
 function createRawCanvas(width: number, height: number): StackCanvas {
@@ -279,7 +283,7 @@ export class CanvasStackCompositor {
 	constructor(
 		private readonly canvas: StackCanvas,
 		withTransitionBranches = true,
-		options?: CanvasStackCompositorOptions
+		private readonly options?: CanvasStackCompositorOptions
 	) {
 		const context = canvas.getContext('2d');
 		if (!context) throw new Error('Failed to create the composition canvas context.');
@@ -316,19 +320,15 @@ export class CanvasStackCompositor {
 			this.transitionRightCanvas = acquireCanvas(1, 1);
 			this.transitionOutputCanvas = acquireCanvas(1, 1);
 			this.transitionOutputContext = this.transitionOutputCanvas.getContext('2d');
-			const leftStackOptions: CanvasStackCompositorOptions | undefined =
-				options && 'backgroundAdapter' in options
-					? { backgroundAdapter: options.backgroundAdapter }
-					: undefined;
 			this.transitionLeftStack = new CanvasStackCompositor(
 				this.transitionLeftCanvas,
 				false,
-				leftStackOptions
+				options
 			);
 			this.transitionRightStack = new CanvasStackCompositor(
 				this.transitionRightCanvas,
 				false,
-				leftStackOptions
+				options
 			);
 			void this.initializeTransitionPipeline();
 		} else {
@@ -342,22 +342,55 @@ export class CanvasStackCompositor {
 	}
 
 	private async initializeTransitionPipeline(): Promise<void> {
-		const gpu = globalThis.navigator?.gpu;
-		if (!gpu) return;
+		const device = await createCanvasGpuDevice();
+		if (!device) return;
+		let pipeline: TransitionPipeline | null = null;
 		try {
-			const adapter = await gpu.requestAdapter({
-				powerPreference: 'high-performance'
-			});
-			if (!adapter || this.disposed) return;
-			const device = await adapter.requestDevice();
-			if (this.disposed) {
-				device.destroy();
+			if (this.disposed) return;
+			pipeline = TransitionPipeline.create(device);
+			if (!pipeline) return;
+			// An accepted upload does not prove that a driver can render and return
+			// canvas pixels. Exercise the same round trip before replacing Canvas2D.
+			const left = new OffscreenCanvas(16, 16);
+			const right = new OffscreenCanvas(16, 16);
+			const leftContext = left.getContext('2d');
+			const rightContext = right.getContext('2d');
+			const result = new OffscreenCanvas(16, 16).getContext('2d');
+			if (!leftContext || !rightContext || !result) return;
+			leftContext.fillStyle = '#ff0000';
+			leftContext.fillRect(0, 0, 16, 16);
+			rightContext.fillStyle = '#0000ff';
+			rightContext.fillRect(0, 0, 16, 16);
+			const output = pipeline.render('fade', left, right, 0.5, 16, 16);
+			if (!output) return;
+			result.drawImage(output, 0, 0);
+			const pixel = result.getImageData(8, 8, 1, 1).data;
+			await device.queue.onSubmittedWorkDone();
+			if (
+				this.disposed ||
+				pixel[0] < 127 ||
+				pixel[0] > 128 ||
+				pixel[1] !== 0 ||
+				pixel[2] < 127 ||
+				pixel[2] > 128 ||
+				pixel[3] !== 255
+			)
 				return;
-			}
 			this.transitionDevice = device;
-			this.transitionPipeline = TransitionPipeline.create(device);
+			this.transitionPipeline = pipeline;
+			void device.lost.then(() => {
+				if (this.transitionDevice !== device) return;
+				this.transitionPipeline?.destroy();
+				this.transitionPipeline = null;
+				this.transitionDevice = null;
+			});
 		} catch {
 			// Canvas2D remains the exact fallback when WebGPU is unavailable or blocked.
+		} finally {
+			if (this.transitionDevice !== device) {
+				pipeline?.destroy();
+				device.destroy();
+			}
 		}
 	}
 
@@ -510,7 +543,17 @@ export class CanvasStackCompositor {
 			source.width,
 			source.height,
 			effects,
-			{ time }
+			{
+				time,
+				referenceSize:
+					source.referenceSize ??
+					(item.type === 'background' && this.options?.referenceSize
+						? {
+								width: (source.width * this.options.referenceSize.width) / this.width,
+								height: (source.height * this.options.referenceSize.height) / this.height
+							}
+						: undefined)
+			}
 		);
 		if (!rendered) {
 			this.recordExactRenderFailure(
@@ -538,7 +581,7 @@ export class CanvasStackCompositor {
 			this.width,
 			this.height,
 			gpuEffects,
-			{ time }
+			{ time, referenceSize: this.options?.referenceSize }
 		);
 		if (!rendered) {
 			this.recordExactRenderFailure(

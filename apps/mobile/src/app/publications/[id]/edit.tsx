@@ -39,10 +39,12 @@ import { errorHaptic, selectionHaptic, successHaptic } from "@/lib/haptics";
 import {
   MAX_ATTACHMENT_BYTES,
   MAX_MOBILE_ATTACHMENT_COUNT,
+  ORIGINAL_IMAGE_QUALITY,
   uploadAttachment,
   type PendingAttachment,
 } from "@/lib/media";
 import { takePendingAttachments } from "@/lib/share";
+import { publicationContentUpdate } from "@/lib/publication-content";
 import { invalidatePublicationData, type Publication } from "@/lib/query-cache";
 import { currentWorkspaceId, useAccounts, usePublication, useSocialSets } from "@/lib/queries";
 import type { PublicationActivity } from "@/lib/query-policy";
@@ -68,7 +70,7 @@ type Attachment = {
 };
 
 function attachmentsFromPublication(pub: PublicationDetail): Attachment[] {
-  return (pub.media ?? []).map((media) => ({
+  return (pub.segments?.[0]?.media ?? pub.media ?? []).map((media) => ({
     localId: `remote-${media.id}`,
     mediaId: media.id,
     uri: media.url,
@@ -89,7 +91,12 @@ type EditorMutationScope = WorkspaceQueryScope & {
 };
 
 function bodyFromPublication(pub: PublicationDetail): string {
-  return pub.source_text ?? pub.renditions?.find((rendition) => rendition.body)?.body ?? "";
+  return (
+    pub.segments?.[0]?.body ??
+    pub.source_text ??
+    pub.renditions?.find((rendition) => rendition.body)?.body ??
+    ""
+  );
 }
 
 function selectedAccountsFromPublication(pub: PublicationDetail): Set<string> {
@@ -212,6 +219,7 @@ function Composer({
   const bodyInputRef = useRef<TextInput | null>(null);
   const [initialPendingAttachments] = useState(() => takePendingAttachments());
   const editorDirty = useRef(initialPendingAttachments.length > 0);
+  const contentSnapshot = useRef(pub);
 
   const [body, setBody] = useState(() => bodyFromPublication(pub));
   const [revision, setRevision] = useState(pub.revision ?? 0);
@@ -244,12 +252,12 @@ function Composer({
       status: "local" as const,
     })),
   ]);
-  const initialMediaIds = pub.media?.map((media) => media.id) ?? [];
   const autoBuildStarted = useRef(false);
   const celebratedIdea = useRef(celebrateOnOpen);
 
   useEffect(() => {
     if (editorDirty.current) return;
+    contentSnapshot.current = pub;
     setBody(bodyFromPublication(pub));
     setRevision(pub.revision ?? 0);
     setScheduledAt(pub.scheduled_at ? new Date(pub.scheduled_at) : null);
@@ -301,11 +309,15 @@ function Composer({
     });
   }
 
-  async function httpError(response: Response | undefined, fallback: string): Promise<Error> {
+  async function httpError(
+    response: Response | undefined,
+    fallback: string,
+    problem: unknown,
+  ): Promise<Error> {
     if (response?.status === 409) {
       return new Error("This post changed elsewhere. Close and reopen it before trying again.");
     }
-    return new Error(await errorMessage(response, fallback));
+    return new Error(await errorMessage(response, fallback, problem));
   }
 
   async function resolveAttachments(
@@ -369,15 +381,6 @@ function Composer({
     scheduleOverride?: Date,
   ): Promise<number> {
     requireCurrentQueryActor(scope);
-    let mediaChanged = false;
-    for (const attachment of attachments) {
-      if (!attachment.mediaId || !initialMediaIds.includes(attachment.mediaId)) {
-        mediaChanged = true;
-        break;
-      }
-    }
-    if (attachments.length !== initialMediaIds.length) mediaChanged = true;
-
     const media = await resolveAttachments(scope, requestApi);
     requireCurrentQueryActor(scope);
     const desired = [...activeAccounts];
@@ -398,9 +401,8 @@ function Composer({
       params: { path: { id: scope.publicationId } },
       body: {
         expected_revision: revision,
-        source_text: body,
+        ...publicationContentUpdate(contentSnapshot.current, body, media),
         ...(activeSocialSetId ? { social_set_id: activeSocialSetId } : {}),
-        ...(mediaChanged ? { media: media.map((mediaId) => ({ media_id: mediaId })) } : {}),
         ...(scheduledChanged
           ? effectiveScheduledAt
             ? { scheduled_at: effectiveScheduledAt.toISOString() }
@@ -408,9 +410,13 @@ function Composer({
           : {}),
       },
     });
-    if (error) throw await httpError(response, "Could not save");
+    if (error) throw await httpError(response, "Could not save", error);
     requireCurrentQueryActor(scope);
     let nextRevision = updated?.revision ?? revision + 1;
+    if (workspaceScopeIsCurrent(scope) && updated) {
+      contentSnapshot.current = updated;
+      setRevision(nextRevision);
+    }
 
     if (desired.length > 0) {
       const upsert = await requestApi.PUT("/publications/{id}/renditions", {
@@ -423,7 +429,8 @@ function Composer({
           })),
         },
       });
-      if (upsert.error) throw await httpError(upsert.response, "Could not update destinations");
+      if (upsert.error)
+        throw await httpError(upsert.response, "Could not update destinations", upsert.error);
       requireCurrentQueryActor(scope);
       nextRevision = upsert.data?.revision ?? nextRevision + 1;
     }
@@ -439,7 +446,8 @@ function Composer({
           query: { confirm: true, expected_revision: nextRevision },
         },
       });
-      if (removal.error) throw await httpError(removal.response, "Could not remove destination");
+      if (removal.error)
+        throw await httpError(removal.response, "Could not remove destination", removal.error);
       requireCurrentQueryActor(scope);
       nextRevision += 1;
     }
@@ -496,7 +504,7 @@ function Composer({
         params: { path: { id: scope.publicationId } },
         body: { expected_revision: nextRevision },
       });
-      if (error) throw await httpError(response, "Could not schedule");
+      if (error) throw await httpError(response, "Could not schedule", error);
       requireCurrentQueryActor(scope);
     },
     onSuccess: (_, scope) => {
@@ -528,7 +536,7 @@ function Composer({
         params: { path: { id: scope.publicationId } },
         body: { expected_revision: nextRevision },
       });
-      if (error) throw await httpError(response, "Could not publish");
+      if (error) throw await httpError(response, "Could not publish", error);
       requireCurrentQueryActor(scope);
     },
     onSuccess: (_, scope) => {
@@ -557,7 +565,7 @@ function Composer({
           query: { confirm: true, expected_revision: revision },
         },
       });
-      if (error) throw await httpError(response, "Could not delete");
+      if (error) throw await httpError(response, "Could not delete", error);
       requireCurrentQueryActor(scope);
     },
     onSuccess: (_, scope) => {
@@ -580,7 +588,7 @@ function Composer({
       const { data, error, response } = await api().GET("/posting-schedules/next-slot", {
         params: { query: { workspace_id: scope.workspaceId } },
       });
-      if (error || !data) throw new Error(await errorMessage(response, "No slot found"));
+      if (error || !data) throw new Error(await errorMessage(response, "No slot found", error));
       requireCurrentQueryActor(scope);
       return new Date(data.slot_time);
     },
@@ -601,7 +609,7 @@ function Composer({
       const { data, error, response } = await requestApi.GET("/posting-schedules/next-slot", {
         params: { query: { workspace_id: scope.workspaceId } },
       });
-      if (error || !data) throw new Error(await errorMessage(response, "No slot found"));
+      if (error || !data) throw new Error(await errorMessage(response, "No slot found", error));
       requireCurrentQueryActor(scope);
       const slot = new Date(data.slot_time);
       if (workspaceScopeIsCurrent(scope)) {
@@ -613,7 +621,8 @@ function Composer({
         params: { path: { id: scope.publicationId } },
         body: { expected_revision: nextRevision },
       });
-      if (scheduled.error) throw await httpError(scheduled.response, "Could not queue post");
+      if (scheduled.error)
+        throw await httpError(scheduled.response, "Could not queue post", scheduled.error);
       requireCurrentQueryActor(scope);
       return slot;
     },
@@ -648,7 +657,7 @@ function Composer({
         },
       });
       if (error || !data)
-        throw new Error(await errorMessage(response, "Could not generate this draft"));
+        throw new Error(await errorMessage(response, "Could not generate this draft", error));
       requireCurrentQueryActor(scope);
       return data;
     },
@@ -777,7 +786,7 @@ function Composer({
       mediaTypes: ["images", "videos"],
       allowsMultipleSelection: true,
       selectionLimit: 10,
-      quality: 0.9,
+      quality: ORIGINAL_IMAGE_QUALITY,
     });
     if (!result.canceled) {
       appendAttachments(result.assets.map((asset, index) => attachmentFromAsset(asset, index)));
@@ -791,7 +800,7 @@ function Composer({
       void errorHaptic();
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.9 });
+    const result = await ImagePicker.launchCameraAsync({ quality: ORIGINAL_IMAGE_QUALITY });
     if (!result.canceled && result.assets[0]) {
       addAttachment(result.assets[0]);
     }

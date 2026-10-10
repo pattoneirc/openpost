@@ -1,6 +1,7 @@
 <!-- One frame-synced visual layer in the composited editor preview. -->
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
+	import { createLogger } from '$lib/video-editor/workspace-fs/logger';
 	import type { CropSettings, ItemTransform, TimelineItem } from '$lib/video-editor/project/types';
 	import { editorSession } from '$lib/video-editor/editor.svelte';
 	import { timelineStore } from '$lib/video-editor/timeline/stores/timeline-store.svelte';
@@ -103,9 +104,12 @@
 		decodedPreviewAudio,
 		previewAudioContext
 	} from '$lib/video-editor/audio/reverse-preview-audio';
+	import { timelineOffsetToSourceFrame } from '$lib/video-editor/timeline/source-time-map';
 	import { createReverseShuttleScheduler } from '$lib/video-editor/audio/reverse-shuttle-scheduler';
 	import { attachAudioSourceToMixer, setMixerMaster } from '$lib/video-editor/audio/audio-mixer';
 	import { mixerDbToGain } from '$lib/video-editor/audio/mixer-utils';
+
+	const logger = createLogger('PreviewLayer');
 
 	let {
 		item,
@@ -178,6 +182,10 @@
 	let rasterCanvas = $state<HTMLCanvasElement | null>(null);
 	let gpuCanvas = $state<HTMLCanvasElement | null>(null);
 	let compositionCanvas = $state<HTMLCanvasElement | null>(null);
+	const nestedCompositionId = $derived(
+		item.type === 'composition' ? item.compositionId : undefined
+	);
+	const nestedControlOverrides = $derived(item.compositionControlOverrides);
 	let lottieCanvas = $state<HTMLCanvasElement | null>(null);
 	let lottieRenderer = $state<LottieRenderer | null>(null);
 	let lottieBytes = $state<Uint8Array | null>(null);
@@ -187,7 +195,7 @@
 	let compositor = $state<GpuCompositor | null>(null);
 	let rasterRevision = $state(0);
 	let compositionRevision = $state(0);
-	let renderCompositionFrame = $state<(() => void) | null>(null);
+	let renderCompositionFrame = $state<((frame: number) => void) | null>(null);
 	let lastRasterCanvas: HTMLCanvasElement | null = null;
 	let lastRasterKey = '';
 	let lastScopeAt = Number.NEGATIVE_INFINITY;
@@ -206,6 +214,20 @@
 					)
 				)
 	);
+	const nestedSourceFrame = $derived.by(() => {
+		const composition = nestedCompositionId
+			? sequenceStore.compositionById.get(nestedCompositionId)
+			: undefined;
+		if (!composition) return null;
+		return Math.max(
+			0,
+			Math.floor(
+				frameToSourceSeconds(item, visualFrame, editorSession.fps) *
+					(item.sourceFps ?? composition.fps)
+			)
+		);
+	});
+
 	const baseResolved = $derived(
 		resolveAnimatedItemAt(item, visualFrame, {
 			fps: timelineStore.fps,
@@ -370,10 +392,14 @@
 					context,
 					buffer,
 					bufferStartSeconds: 0,
-					getSourceCursorSeconds: () =>
-						frameToSourceSeconds(item, timelineStore.currentFrame, editorSession.fps),
-					authoredPlaybackRate: item.speed ?? 1,
-					authoredReversed: !!item.isReversed,
+					getSourceTimeAtOffset: (offset) =>
+						timelineOffsetToSourceFrame(
+							item,
+							timelineStore.currentFrame -
+								item.from +
+								offset * editorSession.playbackRate * editorSession.fps,
+							editorSession.fps
+						) / (item.sourceFps && item.sourceFps > 0 ? item.sourceFps : editorSession.fps),
 					getTransportRate: () => editorSession.playbackRate,
 					getGain: () => 1,
 					destination: gain
@@ -879,14 +905,14 @@
 
 	$effect(() => {
 		const canvas = compositionCanvas;
-		const compositionId = item.compositionId;
-		if (item.type !== 'composition' || !compositionId || !canvas || !editorSession.project) return;
+		const compositionId = nestedCompositionId;
+		if (!compositionId || !canvas || !editorSession.project) return;
 		const composition = sequenceStore.compositionById.get(compositionId);
 		if (!composition) return;
 		const compositionItems = applyCompositionControlOverrides(
 			composition.items,
 			composition.compositionControls,
-			item.compositionControlOverrides
+			nestedControlOverrides
 		);
 		const renderer = new TimelineFrameRenderer(
 			{
@@ -910,26 +936,41 @@
 		canvas.height = composition.height;
 		let disposed = false;
 		let request = 0;
-		const draw = async () => {
-			const revision = ++request;
-			const frame = untrack(() => visualFrame);
-			const nestedFrame = Math.max(
-				0,
-				Math.floor(
-					frameToSourceSeconds(item, frame, editorSession.fps) * (item.sourceFps ?? composition.fps)
-				)
-			);
-			const source = await renderer.render(nestedFrame);
-			if (disposed || revision !== request) return;
-			const context = canvas.getContext('2d');
-			if (!context) return;
-			context.clearRect(0, 0, canvas.width, canvas.height);
-			context.drawImage(source, 0, 0, canvas.width, canvas.height);
-			compositionRevision += 1;
-			onsourcechange?.();
+		let rendering = false;
+		let requestedFrame = 0;
+		const draw = async (frame: number) => {
+			requestedFrame = frame;
+			request++;
+			if (rendering || disposed) return;
+			rendering = true;
+			try {
+				while (!disposed) {
+					const revision = request;
+					let source: OffscreenCanvas;
+					try {
+						source = await renderer.render(requestedFrame);
+					} catch (error) {
+						if (disposed) return;
+						if (revision !== request) continue;
+						logger.warn('Could not render nested composition', error);
+						return;
+					}
+					if (disposed) return;
+					// Seek and playback updates replace the pending frame while decode is busy.
+					if (revision !== request) continue;
+					const context = canvas.getContext('2d');
+					if (!context) return;
+					context.clearRect(0, 0, canvas.width, canvas.height);
+					context.drawImage(source, 0, 0, canvas.width, canvas.height);
+					compositionRevision += 1;
+					onsourcechange?.();
+					return;
+				}
+			} finally {
+				rendering = false;
+			}
 		};
-		renderCompositionFrame = () => void draw();
-		void draw();
+		renderCompositionFrame = (frame) => void draw(frame);
 		return () => {
 			disposed = true;
 			if (renderCompositionFrame) renderCompositionFrame = null;
@@ -938,9 +979,9 @@
 	});
 
 	$effect(() => {
-		const frame = visualFrame;
+		const frame = nestedSourceFrame;
 		const render = renderCompositionFrame;
-		if (frame >= 0) render?.();
+		if (frame !== null) render?.(frame);
 	});
 
 	$effect(() => {
@@ -1103,19 +1144,19 @@
 		if (canvas.height !== frames.height) canvas.height = frames.height;
 		const context = canvas.getContext('2d');
 		if (!context) return;
+		const index = animatedFrameIndexForItem({
+			frame,
+			fromFrame: item.from,
+			sourceStart: item.sourceStart,
+			sourceFps: item.sourceFps,
+			fps: editorSession.fps,
+			speed: item.speed ?? 1,
+			reversed: item.isReversed === true,
+			totalDurationMs: frames.totalDurationMs,
+			cumulativeDelaysMs: frames.cumulativeDelaysMs
+		});
 		const pendingRaf = requestAnimationFrame(() => {
-			const bitmap =
-				frames.frames[
-					animatedFrameIndexForItem({
-						frame,
-						fromFrame: item.from,
-						fps: editorSession.fps,
-						speed: item.speed ?? 1,
-						reversed: item.isReversed === true,
-						totalDurationMs: frames.totalDurationMs,
-						cumulativeDelaysMs: frames.cumulativeDelaysMs
-					})
-				];
+			const bitmap = frames.frames[index];
 			if (!bitmap) return;
 			context.clearRect(0, 0, canvas.width, canvas.height);
 			context.drawImage(bitmap, 0, 0);
@@ -1126,6 +1167,15 @@
 			cancelAnimationFrame(pendingRaf);
 		};
 	});
+
+	function sourceReferenceSize(width: number, height: number) {
+		if (item.type !== 'video') return { width, height };
+		const media = item.mediaId ? mediaPool.get(item.mediaId) : undefined;
+		return {
+			width: media?.width ?? item.sourceWidth ?? width,
+			height: media?.height ?? item.sourceHeight ?? height
+		};
+	}
 
 	function rawSource() {
 		if (resolved.type === 'image' && animatedCanvas && animatedFrames && animatedRevision > 0) {
@@ -1144,14 +1194,16 @@
 			return {
 				source: proxyFallbackCanvas,
 				width: proxyFallbackCanvas.width,
-				height: proxyFallbackCanvas.height
+				height: proxyFallbackCanvas.height,
+				referenceSize: sourceReferenceSize(proxyFallbackCanvas.width, proxyFallbackCanvas.height)
 			};
 		}
 		if (resolved.type === 'video' && mediaElement?.videoWidth && mediaElement.videoHeight) {
 			return {
 				source: mediaElement,
 				width: mediaElement.videoWidth,
-				height: mediaElement.videoHeight
+				height: mediaElement.videoHeight,
+				referenceSize: sourceReferenceSize(mediaElement.videoWidth, mediaElement.videoHeight)
 			};
 		}
 		if (resolved.type === 'image' && decodedImageElement) {
@@ -1261,7 +1313,8 @@
 			const renderHeight = Math.max(1, Math.round(height * previewScale));
 			const rendered = instance.render(source, renderWidth, renderHeight, effects, {
 				time: untrack(() => visualFrame) / editorSession.fps,
-				blendMode
+				blendMode,
+				referenceSize: sourceReferenceSize(width, height)
 			});
 			canvas.hidden = !rendered;
 			if (itemType === 'image' && image) image.style.visibility = rendered ? 'hidden' : '';

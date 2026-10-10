@@ -28,6 +28,7 @@
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import FeedbackDialog from '$lib/components/feedback-dialog.svelte';
 	import ImageEditorGuideDialog from './image-editor-guide-dialog.svelte';
+	import ImageEditorAssistant from './image-editor-assistant.svelte';
 	import CheckpointRemove from './checkpoint-remove.svelte';
 	import ImageEditorResizeDialog from './image-editor-resize-dialog.svelte';
 	import { ui } from '$lib/stores/ui.svelte';
@@ -206,6 +207,7 @@
 		})
 	);
 	let agentConnectionStatus = $state<'connected' | 'disconnected' | 'working'>('disconnected');
+	let agentSessionID = $state<string | null>(null);
 	$effect(() => {
 		const workspaceID = editor.workspaceID;
 		const projectID = editor.id;
@@ -215,7 +217,8 @@
 			projectID,
 			kind: 'image',
 			handle: (request) => handleImageAgentRequest(editor, request),
-			onStatus: (status) => (agentConnectionStatus = status)
+			onStatus: (status) => (agentConnectionStatus = status),
+			onSession: (session) => (agentSessionID = session)
 		});
 	});
 	$effect(() => {
@@ -3192,6 +3195,13 @@
 			/>
 		{/snippet}
 		{#snippet actions()}
+			{#if !guestMode && editor.canEdit}
+				<ImageEditorAssistant
+					workspaceId={editor.workspaceID}
+					projectId={editor.id}
+					sessionId={agentSessionID}
+				/>
+			{/if}
 			{#if agentConnectionStatus !== 'disconnected'}
 				<span
 					class="inline-flex items-center gap-1.5 text-xs text-muted-foreground"
@@ -5209,6 +5219,18 @@
 		.image-editor-theme :global(button) {
 			min-width: 2.75rem;
 			min-height: 2.75rem;
+		}
+	}
+
+	@media (min-width: 40rem) and (max-width: 63.999rem) and (max-height: 32rem) {
+		.image-editor-workspace[data-workspace='color'] {
+			grid-template-columns: minmax(0, 1fr) minmax(280px, 45%);
+			grid-template-rows: minmax(0, 1fr);
+		}
+
+		.image-editor-mobile-color {
+			border-top: 0;
+			border-left-width: 1px;
 		}
 	}
 

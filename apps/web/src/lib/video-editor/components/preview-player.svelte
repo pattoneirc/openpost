@@ -58,7 +58,12 @@
 	import { mediaPool } from '$lib/video-editor/media/pool.svelte';
 	import { getMediaObjectUrl, revokeMediaObjectUrl } from '$lib/video-editor/media/media-source';
 	import { getAutomaticProxy, shouldUseAutomaticProxy } from '$lib/video-editor/media/proxy-client';
-	import { paintOrder, planNestedMixdown } from '$lib/video-editor/media/render-plan';
+	import {
+		paintOrder,
+		planNestedMixdown,
+		prepareTransitionBlends,
+		transitionBlendsAtFrame
+	} from '$lib/video-editor/media/render-plan';
 	import { collectMixEntryDuckWindows } from '$lib/video-editor/audio/audio-ducking';
 	import {
 		resolveAnimatedItemAt,
@@ -79,8 +84,7 @@
 	import {
 		incomingOpacity,
 		outgoingOpacity,
-		transitionsStore,
-		transitionAtFrame
+		transitionsStore
 	} from '$lib/video-editor/timeline/actions/transitions.svelte';
 	import PreviewLayer from './preview-layer.svelte';
 	import PreviewAudioLayer from './preview-audio-layer.svelte';
@@ -197,6 +201,7 @@
 		previewPlaybackSettings.previewQuality === 'auto' ? adaptivePreviewQuality.scale : 1
 	);
 	let urls = $state<Record<string, string>>({});
+	const requestedMediaIds = new Set<string>();
 	let proxyUrls = $state<Record<string, string>>({});
 	let proxyBlobs = $state<Record<string, Blob>>({});
 	let proxyProgress = $state<Record<string, number>>({});
@@ -236,14 +241,14 @@
 		height: number;
 	} | null = null;
 	const sourceProviders = new Map<string, PreviewSourceProvider>();
-	const activeTransition = $derived.by(() => {
-		for (const transition of transitionsStore.list) {
-			const state = transitionAtFrame(transition, displayFrame, editorSession.fps);
-			if (state) return state;
-		}
-		return null;
-	});
 	const orderedItems = $derived(paintOrder(timelineStore.items, timelineStore.tracks));
+	const preparedTransitions = $derived(
+		prepareTransitionBlends(
+			transitionsStore.list,
+			new Map(orderedItems.map((item) => [item.id, item]))
+		)
+	);
+	const activeTransitions = $derived(transitionBlendsAtFrame(preparedTransitions, displayFrame));
 	const activeItems = $derived.by(() =>
 		orderedItems.filter(
 			(item) =>
@@ -258,8 +263,7 @@
 					'background'
 				].includes(item.type) &&
 				((displayFrame >= item.from && displayFrame < item.from + item.durationInFrames) ||
-					item.id === activeTransition?.outgoing ||
-					item.id === activeTransition?.incoming)
+					activeTransitions.has(item.id))
 		)
 	);
 	// Keep the nearest cuts decoded before they become visible. Mounting a video
@@ -304,7 +308,7 @@
 		collectAdjustmentLayers(timelineStore.items, timelineStore.tracks)
 	);
 	const needsStackedComposition = $derived(
-		activeTransition !== null ||
+		activeTransitions.size > 0 ||
 			adjustmentLayers.some(({ layer }) => layer.sequenceColorGrade === true) ||
 			colorPreviewStore.comparisonMode !== 'after' ||
 			colorPreviewStore.activePicker !== null ||
@@ -407,8 +411,10 @@
 	$effect(() => {
 		for (const media of mediaPool.mediaList) {
 			if (urls[media.id]) continue;
+			requestedMediaIds.add(media.id);
 			void getMediaObjectUrl(media)
 				.then((url) => {
+					if (destroyed) return;
 					urls = { ...urls, [media.id]: url };
 				})
 				.catch(() => undefined);
@@ -493,7 +499,7 @@
 		proxyControllers.clear();
 		if (stackFrameRequest !== null) cancelAnimationFrame(stackFrameRequest);
 		stackFrameRequest = null;
-		for (const id of Object.keys(urls)) revokeMediaObjectUrl(id);
+		for (const id of requestedMediaIds) revokeMediaObjectUrl(id);
 		for (const url of Object.values(proxyUrls)) URL.revokeObjectURL(url);
 		const editingItemId = spatialEffectEditorStore.editingItemId;
 		const editingEffectId = spatialEffectEditorStore.editingEffectId;
@@ -575,9 +581,9 @@
 	});
 
 	function transitionOpacity(item: TimelineItem): number {
-		const state = activeTransition;
-		if (state?.outgoing === item.id) return outgoingOpacity(state.type, state.progress);
-		if (state?.incoming === item.id) return incomingOpacity(state.type, state.progress);
+		const state = activeTransitions.get(item.id);
+		if (state?.outgoingId === item.id) return outgoingOpacity(state.type, state.progress);
+		if (state?.incomingId === item.id) return incomingOpacity(state.type, state.progress);
 		return 1;
 	}
 
@@ -683,6 +689,13 @@
 			const resolved = scaleItemForCanvas(
 				{
 					...baseResolved,
+					effects: effectiveEffects(
+						item,
+						inputs.layers,
+						inputs.orders,
+						frame,
+						beforeColor ? comparisonItemIds : new Set()
+					),
 					cornerPin: directDraft
 						? (draftCornerPin ?? baseResolved.cornerPin)
 						: baseResolved.cornerPin,
@@ -693,13 +706,6 @@
 				},
 				inputs.width / canvasWidth,
 				inputs.height / canvasHeight
-			);
-			resolved.effects = effectiveEffects(
-				item,
-				inputs.layers,
-				inputs.orders,
-				frame,
-				beforeColor ? comparisonItemIds : new Set()
 			);
 			return resolved;
 		};
@@ -719,18 +725,16 @@
 				masks: shapeMasksForTrack(activeMasks, inputs.orders.get(item.trackId) ?? 0, inputs.orders)
 			};
 		};
-		let transitionRendered = false;
+		const renderedTransitions = new Set<string>();
 		for (const item of inputs.items) {
-			if (
-				activeTransition &&
-				(item.id === activeTransition.outgoing || item.id === activeTransition.incoming)
-			) {
-				if (transitionRendered) continue;
+			const activeTransition = activeTransitions.get(item.id);
+			if (activeTransition) {
+				if (renderedTransitions.has(activeTransition.transition.id)) continue;
 				const outgoingItem = inputs.items.find(
-					(candidate) => candidate.id === activeTransition.outgoing
+					(candidate) => candidate.id === activeTransition.outgoingId
 				);
 				const incomingItem = inputs.items.find(
-					(candidate) => candidate.id === activeTransition.incoming
+					(candidate) => candidate.id === activeTransition.incomingId
 				);
 				if (!outgoingItem || !incomingItem) continue;
 				const outgoing = resolveParticipant(outgoingItem, comparisonMode === 'before');
@@ -756,7 +760,7 @@
 						);
 					}
 				}
-				transitionRendered = true;
+				renderedTransitions.add(activeTransition.transition.id);
 				continue;
 			}
 			const participant = resolveParticipant(item, comparisonMode === 'before');
@@ -794,8 +798,8 @@
 		publishStackScope(stackCanvas);
 		const gpu = stack.diagnostics();
 		previewDiagnostics.setGpuStatus(gpu.webgl2Ready, gpu.webgpuTransitionsReady);
-		previewDiagnostics.recordTransitionSession(activeTransition !== null);
-		previewDiagnostics.setRenderSource(activeTransition !== null ? 'transition' : 'player');
+		previewDiagnostics.recordTransitionSession(activeTransitions.size > 0);
+		previewDiagnostics.setRenderSource(activeTransitions.size > 0 ? 'transition' : 'player');
 		previewDiagnostics.recordRender(performance.now() - renderStartedAt, stack.failureReason());
 	}
 
@@ -867,7 +871,9 @@
 	$effect(() => {
 		const canvas = compareCanvas;
 		if (!canvas || colorPreviewStore.comparisonMode !== 'split') return;
-		const stack = new CanvasStackCompositor(canvas);
+		const stack = new CanvasStackCompositor(canvas, true, {
+			referenceSize: { width: canvasWidth, height: canvasHeight }
+		});
 		compareCompositor = stack;
 		scheduleStackFrame();
 		return () => {
@@ -879,7 +885,9 @@
 	$effect(() => {
 		const canvas = stackCanvas;
 		if (!canvas || !needsStackedComposition) return;
-		const stack = new CanvasStackCompositor(canvas);
+		const stack = new CanvasStackCompositor(canvas, true, {
+			referenceSize: { width: canvasWidth, height: canvasHeight }
+		});
 		stackCompositor = stack;
 		scheduleStackFrame();
 		return () => {
@@ -907,8 +915,8 @@
 			webgpuTransitionsReady: gpu.webgpuTransitionsReady
 		});
 		if (!needsStackedComposition) {
-			previewDiagnostics.recordTransitionSession(activeTransition !== null);
-			previewDiagnostics.setRenderSource(activeTransition !== null ? 'transition' : 'player');
+			previewDiagnostics.recordTransitionSession(activeTransitions.size > 0);
+			previewDiagnostics.setRenderSource(activeTransitions.size > 0 ? 'transition' : 'player');
 			previewDiagnostics.recordRender(null, null);
 		}
 	});

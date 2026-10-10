@@ -1,5 +1,5 @@
 import type { ResolvedAudioNoiseReductionSettings } from './audio-noise-reduction';
-import { applyNoiseReduction } from './audio-noise-reduction';
+import { applyNoiseReduction, isNoiseReductionActive } from './audio-noise-reduction';
 import type {
 	NoiseReductionAbort,
 	NoiseReductionCompleteResponse,
@@ -9,14 +9,32 @@ import type {
 } from './audio-noise-reduction.worker';
 
 let worker: Worker | null = null;
+const pendingFailures = new Map<string, (error: Error) => void>();
+
+function failWorker(activeWorker: Worker, error: Error): void {
+	if (worker !== activeWorker) return;
+	worker = null;
+	activeWorker.terminate();
+	for (const fail of [...pendingFailures.values()]) fail(error);
+}
 
 function getWorker(): Worker | null {
 	// oxlint-disable-next-line anti-slop/no-runtime-typeof -- worker availability probe
 	if (typeof Worker === 'undefined') return null;
 	if (worker) return worker;
 	try {
-		worker = new Worker(new URL('./audio-noise-reduction.worker.ts', import.meta.url), {
+		const activeWorker = new Worker(new URL('./audio-noise-reduction.worker.ts', import.meta.url), {
 			type: 'module'
+		});
+		worker = activeWorker;
+		activeWorker.addEventListener('error', (event: ErrorEvent) => {
+			failWorker(
+				activeWorker,
+				event.error instanceof Error ? event.error : new Error(event.message)
+			);
+		});
+		activeWorker.addEventListener('messageerror', () => {
+			failWorker(activeWorker, new Error('Noise-reduction response could not be read.'));
 		});
 		return worker;
 	} catch {
@@ -26,8 +44,7 @@ function getWorker(): Worker | null {
 
 export function disposeNoiseReductionPreviewWorker(): void {
 	if (worker) {
-		worker.terminate();
-		worker = null;
+		failWorker(worker, new DOMException('Noise-reduction preview closed.', 'AbortError'));
 	}
 }
 
@@ -64,12 +81,15 @@ export async function processPreviewNoiseReduction(
 	return new Promise((resolve, reject) => {
 		const handleAbort = (): void => {
 			cleanup();
-			// SAFETY: abort payload matches worker's typed discriminant.
-			activeWorker.postMessage({
-				type: 'abort',
-				requestId
-			} satisfies NoiseReductionAbort);
 			reject(new DOMException('Aborted', 'AbortError'));
+			try {
+				activeWorker.postMessage({
+					type: 'abort',
+					requestId
+				} satisfies NoiseReductionAbort);
+			} catch {
+				// Cancellation is settled even if the worker can no longer receive it.
+			}
 		};
 		signal?.addEventListener('abort', handleAbort, { once: true });
 
@@ -96,30 +116,66 @@ export async function processPreviewNoiseReduction(
 			}
 		};
 
-		const onError = (e: ErrorEvent): void => {
-			cleanup();
-			reject(e.error ?? new Error(e.message));
-		};
-
 		function cleanup(): void {
+			pendingFailures.delete(requestId);
 			signal?.removeEventListener('abort', handleAbort);
 			activeWorker.removeEventListener('message', onMessage);
-			activeWorker.removeEventListener('error', onError);
 		}
 
+		pendingFailures.set(requestId, (error) => {
+			cleanup();
+			reject(error);
+		});
 		activeWorker.addEventListener('message', onMessage);
-		activeWorker.addEventListener('error', onError);
 		// SAFETY: request payload matches worker's typed contract; buffers are transferred.
-		activeWorker.postMessage(
-			{
-				type: 'process',
-				requestId,
-				sampleRate,
-				amount: settings.amount,
-				channelBuffers,
-				channelLengths
-			} satisfies NoiseReductionRequest,
-			previewTransferOptions(channelBuffers)
-		);
+		try {
+			activeWorker.postMessage(
+				{
+					type: 'process',
+					requestId,
+					sampleRate,
+					amount: settings.amount,
+					channelBuffers,
+					channelLengths
+				} satisfies NoiseReductionRequest,
+				previewTransferOptions(channelBuffers)
+			);
+		} catch (error) {
+			cleanup();
+			reject(error);
+		}
 	});
+}
+
+/** Prepare decoded audio without mutating the shared source or retaining cancelled work. */
+export async function prepareNoiseReducedPreviewAudio(
+	decoded: AudioBuffer,
+	settings: ResolvedAudioNoiseReductionSettings | undefined,
+	signal: AbortSignal
+): Promise<AudioBuffer> {
+	signal.throwIfAborted();
+	if (!settings || !isNoiseReductionActive(settings)) return decoded;
+	try {
+		const channels = Array.from({ length: decoded.numberOfChannels }, (_, channel) =>
+			decoded.getChannelData(channel)
+		);
+		const processed = await processPreviewNoiseReduction(
+			channels,
+			decoded.sampleRate,
+			settings,
+			signal
+		);
+		signal.throwIfAborted();
+		const result = new AudioBuffer({
+			length: decoded.length,
+			numberOfChannels: decoded.numberOfChannels,
+			sampleRate: decoded.sampleRate
+		});
+		for (let channel = 0; channel < decoded.numberOfChannels; channel++)
+			result.copyToChannel(new Float32Array(processed[channel]!), channel);
+		return result;
+	} catch {
+		signal.throwIfAborted();
+		return decoded;
+	}
 }

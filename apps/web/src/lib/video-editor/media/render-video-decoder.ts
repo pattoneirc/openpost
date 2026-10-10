@@ -8,6 +8,7 @@ interface RenderedVideoFrame {
 	source: VideoFrame;
 	width: number;
 	height: number;
+	referenceSize: { width: number; height: number };
 	timestamp: number;
 }
 
@@ -157,19 +158,26 @@ export class ResilientVideoFrameDecoder {
 	}
 
 	private async renderSample(sample: VideoSample): Promise<RenderedVideoFrame> {
-		// Transform only the selected source frame. The library preserves rotation, pixel aspect
-		// ratio, black letterboxing and mipmapped downscaling without painting skipped frames.
+		// Decode a bounded source image, not a project-sized letterboxed canvas. The compositor
+		// owns placement and crop; padding here would be stretched into the clip's transform.
+		const scale = Math.min(
+			1,
+			this.options.width / sample.displayWidth,
+			this.options.height / sample.displayHeight
+		);
+		const width = Math.max(1, Math.round(sample.displayWidth * scale));
+		const height = Math.max(1, Math.round(sample.displayHeight * scale));
 		const transformed = await sample.transform({
-			width: this.options.width,
-			height: this.options.height,
-			fit: 'contain',
-			alpha: 'discard'
+			width,
+			height,
+			fit: 'fill'
 		});
 		try {
 			return {
 				source: transformed.toVideoFrame(),
-				width: this.options.width,
-				height: this.options.height,
+				width,
+				height,
+				referenceSize: { width: sample.displayWidth, height: sample.displayHeight },
 				timestamp: sample.timestamp
 			};
 		} finally {

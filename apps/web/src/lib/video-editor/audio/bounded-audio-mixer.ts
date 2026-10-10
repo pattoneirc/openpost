@@ -1,6 +1,6 @@
 import { timerToneSample } from '../timers/audio';
 /* oxlint-disable anti-slop/no-conditional-empty-object-spread, anti-slop/require-safety-comment-for-type-assertion */
-import type { MixEntry } from '../media/render-plan';
+import { mixEntryPlaybackRateAtTime, type MixEntry } from '../media/render-plan';
 import { collectMixEntryDuckWindows, type MixEntryDuckWindow } from './audio-ducking';
 import { mediaPool } from '../media/pool.svelte';
 import { resolveMediaBlob } from '../media/resolve-media-blob';
@@ -238,6 +238,8 @@ class EntryAutomation {
 		endSample: number;
 		isIncoming: boolean;
 		dipToSilence: boolean;
+		progressPoints?: Array<{ sample: number; progress: number }>;
+		progressIndex: number;
 	}[];
 	private gainIndex = 0;
 	private spanIndex = 0;
@@ -255,7 +257,12 @@ class EntryAutomation {
 				startSample: Math.round(span.startSeconds * MIX_SAMPLE_RATE),
 				endSample: Math.round((span.startSeconds + span.durationSeconds) * MIX_SAMPLE_RATE),
 				isIncoming: span.isIncoming,
-				dipToSilence: span.dipToSilence
+				dipToSilence: span.dipToSilence,
+				progressPoints: span.progressPoints?.map((point) => ({
+					sample: Math.round(point.whenSeconds * MIX_SAMPLE_RATE),
+					progress: point.progress
+				})),
+				progressIndex: 0
 			}))
 			.sort((left, right) => left.startSample - right.startSample);
 		diagnostics?.onAutomationPrepared?.(this.gainPoints.length, this.spans.length);
@@ -290,28 +297,28 @@ class EntryAutomation {
 			if (span.startSample > sample) break;
 			if (sample >= span.endSample) continue;
 			const duration = span.endSample - span.startSample;
-			const progress = duration <= 1 ? 1 : (sample - span.startSample) / (duration - 1);
+			let progress = duration <= 1 ? 1 : (sample - span.startSample) / (duration - 1);
+			const points = span.progressPoints;
+			if (points?.length) {
+				while (
+					span.progressIndex + 1 < points.length &&
+					points[span.progressIndex + 1]!.sample <= sample
+				)
+					span.progressIndex++;
+				const left = points[span.progressIndex]!;
+				const right = points[span.progressIndex + 1];
+				progress =
+					!right || right.sample <= left.sample
+						? left.progress
+						: left.progress +
+							((sample - left.sample) / (right.sample - left.sample)) *
+								(right.progress - left.progress);
+			}
 			gain *= transitionGainAtProgress(progress, span.isIncoming, span.dipToSilence);
 			if (gain === 0) return 0;
 		}
 		return Math.max(0, gain);
 	}
-}
-
-function playbackRateAtEntrySecond(entry: MixEntry, seconds: number): number {
-	const curve = entry.playbackRateCurve;
-	if (!curve || curve.length === 0) return entry.playbackRate;
-	if (seconds <= curve[0]!.atSeconds) return curve[0]!.rate;
-	for (let index = 1; index < curve.length; index += 1) {
-		const right = curve[index]!;
-		if (seconds > right.atSeconds) continue;
-		const left = curve[index - 1]!;
-		const duration = right.atSeconds - left.atSeconds;
-		if (duration <= 0) return right.rate;
-		const progress = (seconds - left.atSeconds) / duration;
-		return left.rate + (right.rate - left.rate) * progress;
-	}
-	return curve.at(-1)!.rate;
 }
 
 async function* streamEntryAudio(
@@ -367,7 +374,10 @@ async function* streamEntryAudio(
 
 	while (emittedFrames < targetFrames) {
 		throwIfAborted(signal);
-		const currentRate = playbackRateAtEntrySecond(entry, emittedFrames / MIX_SAMPLE_RATE);
+		const currentRate = mixEntryPlaybackRateAtTime(
+			entry,
+			entry.whenSeconds + emittedFrames / MIX_SAMPLE_RATE
+		);
 		const sourceWindowSeconds =
 			(hasVariableSpeed ? 0.12 : SOURCE_WINDOW_SECONDS) * Math.min(1, currentRate);
 		const chunkStart = entry.reversed

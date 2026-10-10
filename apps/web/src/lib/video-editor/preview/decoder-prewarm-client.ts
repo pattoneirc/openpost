@@ -1,15 +1,11 @@
 /** Bounded main-thread cache for exact frames decoded by the preview prewarm worker. */
 import { resolveMediaBlob } from '../media/resolve-media-blob';
 import type { MediaMetadata } from '../media/types';
-import type {
-	DecoderPrewarmWorkerRequest,
-	DecoderPrewarmWorkerResponse
-} from './decoder-prewarm.worker';
+import { PreviewDecoderConnection } from './decoder-prewarm-connection';
 
 const PREWARM_HEIGHT = 540;
 const MAX_CACHE_PIXELS = 12_000_000;
 const MAX_CACHE_ENTRIES = 12;
-const DECODE_TIMEOUT_MS = 8_000;
 
 interface CachedFrame {
 	key: string;
@@ -19,15 +15,17 @@ interface CachedFrame {
 	pixels: number;
 }
 
-let worker: Worker | null = null;
-let requestSequence = 0;
+const decoder = new PreviewDecoderConnection();
+let session = new AbortController();
 let lane = Promise.resolve();
 let cachedPixels = 0;
 const cache = new Map<string, CachedFrame>();
-const inflight = new Map<string, Promise<void>>();
-const sourceVersionByMedia = new Map<string, string>();
-const blobVersionIds = new WeakMap<Blob, number>();
-let blobVersionSequence = 0;
+const inflight = new Map<string, { signal: AbortSignal; promise: Promise<void> }>();
+const sources = new Map<string, { version: string; controller: AbortController }>();
+type PreviewSource = Blob | FileSystemFileHandle;
+const sourceIds = new WeakMap<PreviewSource, number>();
+let sourceSequence = 0;
+let resolvedSource: { key: string; signal: AbortSignal; blob: Promise<Blob> } | null = null;
 
 function quantizedTimestamp(timestamp: number, fps: number): number {
 	const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 30;
@@ -38,42 +36,46 @@ function frameKey(mediaId: string, timestamp: number): string {
 	return `${mediaId}:${timestamp.toFixed(6)}`;
 }
 
-function sourceKey(media: MediaMetadata, blob: Blob): string {
-	return [
-		media.id,
-		media.contentHash ?? '',
-		media.fileLastModified ?? '',
-		blob.size,
-		blob.type,
-		PREWARM_HEIGHT
-	].join(':');
+function sourceIdentity(source: PreviewSource | undefined): number | undefined {
+	if (!source) return undefined;
+	let id = sourceIds.get(source);
+	if (id === undefined) {
+		id = ++sourceSequence;
+		sourceIds.set(source, id);
+	}
+	return id;
 }
 
 function sourceVersion(media: MediaMetadata, blobOverride?: Blob): string {
-	let overrideId = '';
-	if (blobOverride) {
-		let id = blobVersionIds.get(blobOverride);
-		if (id === undefined) {
-			id = ++blobVersionSequence;
-			blobVersionIds.set(blobOverride, id);
-		}
-		overrideId = String(id);
-	}
-	return [
-		media.contentHash ?? '',
-		media.fileLastModified ?? '',
+	return JSON.stringify([
+		media.contentHash,
+		media.fileLastModified,
 		media.fileSize,
 		media.fileName,
-		blobOverride?.size ?? '',
-		blobOverride?.type ?? '',
-		overrideId
-	].join(':');
+		media.storageType,
+		media.remoteUrl,
+		sourceIdentity(media.fileHandle),
+		sourceIdentity(blobOverride)
+	]);
 }
 
-function getWorker(): Worker {
-	if (worker) return worker;
-	worker = new Worker(new URL('./decoder-prewarm.worker.ts', import.meta.url), { type: 'module' });
-	return worker;
+function sourceBlob(
+	key: string,
+	media: MediaMetadata,
+	signal: AbortSignal,
+	override?: Blob
+): Promise<Blob> {
+	if (resolvedSource?.key === key && !resolvedSource.signal.aborted) return resolvedSource.blob;
+	const entry = {
+		key,
+		signal,
+		blob: override ? Promise.resolve(override) : resolveMediaBlob(media, { signal })
+	};
+	resolvedSource = entry;
+	return entry.blob.catch((error) => {
+		if (resolvedSource === entry) resolvedSource = null;
+		throw error;
+	});
 }
 
 function dropEntry(key: string): void {
@@ -109,54 +111,9 @@ function storeFrame(mediaId: string, timestamp: number, bitmap: ImageBitmap): vo
 	}
 }
 
-function decode(
-	media: MediaMetadata,
-	blob: Blob,
-	timestamps: number[]
-): Promise<Array<{ timestamp: number; bitmap: ImageBitmap }>> {
-	const requestId = `preview-prewarm-${++requestSequence}`;
-	const decoder = getWorker();
-	return new Promise((resolve, reject) => {
-		const timeout = setTimeout(() => {
-			cleanup();
-			reject(new Error('Preview decoder prewarm timed out.'));
-		}, DECODE_TIMEOUT_MS);
-		const cleanup = () => {
-			clearTimeout(timeout);
-			decoder.removeEventListener('message', onMessage);
-			decoder.removeEventListener('error', onError);
-		};
-		const onMessage = (event: MessageEvent<DecoderPrewarmWorkerResponse>) => {
-			if (event.data.requestId !== requestId) return;
-			cleanup();
-			if (event.data.type === 'decoded') resolve(event.data.entries);
-			else if (event.data.type === 'error') reject(new Error(event.data.error));
-			else resolve([]);
-		};
-		const onError = (event: ErrorEvent) => {
-			cleanup();
-			reject(event.error instanceof Error ? event.error : new Error(event.message));
-		};
-		decoder.addEventListener('message', onMessage);
-		decoder.addEventListener('error', onError);
-		decoder.postMessage({
-			type: 'decode',
-			requestId,
-			sourceKey: sourceKey(media, blob),
-			blob,
-			timestamps,
-			maxHeight: PREWARM_HEIGHT
-		} satisfies DecoderPrewarmWorkerRequest);
-	});
-}
-
 export function warmPreviewDecoder(): void {
 	try {
-		const decoder = getWorker();
-		decoder.postMessage({
-			type: 'warm',
-			requestId: `preview-warm-${++requestSequence}`
-		} satisfies DecoderPrewarmWorkerRequest);
+		decoder.warm();
 	} catch {
 		// Prewarming is optional; the regular video element remains authoritative.
 	}
@@ -170,30 +127,51 @@ export function prewarmPreviewFrame(
 	const timestamp = quantizedTimestamp(timestampSeconds, media.fps);
 	const key = frameKey(media.id, timestamp);
 	const version = sourceVersion(media, blobOverride);
-	const previousVersion = sourceVersionByMedia.get(media.id);
-	if (previousVersion !== version) {
+	const sourceKey = JSON.stringify([media.id, version, PREWARM_HEIGHT]);
+	let source = sources.get(media.id);
+	if (source?.version !== version) {
+		source?.controller.abort();
 		dropMediaEntries(media.id);
-		sourceVersionByMedia.set(media.id, version);
+		source = { version, controller: new AbortController() };
+		sources.set(media.id, source);
 	}
 	if (cache.has(key)) return Promise.resolve();
 	const jobKey = `${key}:${version}`;
 	const pending = inflight.get(jobKey);
-	if (pending) return pending;
-	const task = lane
+	if (pending && !pending.signal.aborted) return pending.promise;
+	const signal = AbortSignal.any([session.signal, source.controller.signal]);
+	const cancelled = Promise.withResolvers<void>();
+	const onAbort = () => cancelled.resolve();
+	signal.addEventListener('abort', onAbort, { once: true });
+	const work = lane
 		.catch(() => undefined)
 		.then(async () => {
-			const blob = blobOverride ?? (await resolveMediaBlob(media));
-			const entries = await decode(media, blob, [timestamp]);
-			if (sourceVersionByMedia.get(media.id) !== version) {
+			if (signal.aborted) return;
+			const blob = await sourceBlob(sourceKey, media, signal, blobOverride);
+			if (signal.aborted) return;
+			const entries = await decoder.decode(
+				{
+					sourceKey,
+					blob,
+					timestamps: [timestamp],
+					maxHeight: PREWARM_HEIGHT
+				},
+				signal
+			);
+			if (signal.aborted) {
 				for (const entry of entries) entry.bitmap.close();
 				return;
 			}
 			for (const entry of entries) storeFrame(media.id, entry.timestamp, entry.bitmap);
-		})
+		});
+	const task = Promise.race([work, cancelled.promise])
 		.catch(() => undefined)
-		.finally(() => inflight.delete(jobKey));
+		.finally(() => {
+			signal.removeEventListener('abort', onAbort);
+			if (inflight.get(jobKey)?.promise === task) inflight.delete(jobKey);
+		});
 	lane = task;
-	inflight.set(jobKey, task);
+	inflight.set(jobKey, { signal, promise: task });
 	return task;
 }
 
@@ -219,10 +197,12 @@ export async function clonePrewarmedPreviewFrame(
 }
 
 export function clearPreviewDecoderPrewarm(): void {
+	session.abort();
+	session = new AbortController();
 	for (const key of [...cache.keys()]) dropEntry(key);
 	inflight.clear();
-	sourceVersionByMedia.clear();
-	worker?.terminate();
-	worker = null;
+	sources.clear();
+	resolvedSource = null;
+	decoder.clear();
 	lane = Promise.resolve();
 }
