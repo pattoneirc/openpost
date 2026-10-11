@@ -550,6 +550,7 @@ func main() {
 
 	analyticsService := analyticsservice.NewService(db, tokenManager)
 	analyticsService.SetCursorSigningKey(cfg.JWTSecret)
+	analyticsService.SetUsage(usageService)
 	analyticsService.SetProviderReadiness(providerReadinessService)
 	if telegramConnectionService != nil {
 		analyticsService.SetExternalSource(capabilities.ProviderTelegram, telegramConnectionService)
@@ -826,6 +827,7 @@ func main() {
 	mcpHandler.SetServerVersion(version)
 	mcpHandler.SetMediaStorage(storage)
 	mcpHandler.SetMediaHandler(mediaHandler)
+	mcpHandler.SetPublicMediaVerifier(publicMediaVerifier)
 	mcpHandler.SetPublicURL(cfg.PublicURL)
 	mcpHandler.SetAllowedOrigins(cfg.CORSOrigins)
 	mcpHandler.SetProviderCatalog(providers, mastodonAppService != nil)

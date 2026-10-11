@@ -37,6 +37,7 @@ import (
 	"github.com/openpost/backend/internal/services/providerreadiness"
 	"github.com/openpost/backend/internal/services/publicationauth"
 	publicationservice "github.com/openpost/backend/internal/services/publications"
+	"github.com/openpost/backend/internal/services/publicurl"
 	"github.com/openpost/backend/internal/services/usage"
 	"github.com/uptrace/bun"
 )
@@ -271,6 +272,7 @@ type MCPHandler struct {
 	usage             *usage.Service
 	mediaStorage      mediastore.BlobStorage
 	mediaHandler      *MediaHandler
+	publicMedia       *publicurl.MediaVerifier
 	mediaURLHTTP      *http.Client
 	mediaURLValidator func(context.Context, *url.URL) error
 	publicURL         string
@@ -315,6 +317,10 @@ func (h *MCPHandler) SetMediaStorage(storage mediastore.BlobStorage) {
 
 func (h *MCPHandler) SetMediaHandler(handler *MediaHandler) {
 	h.mediaHandler = handler
+}
+
+func (h *MCPHandler) SetPublicMediaVerifier(verifier *publicurl.MediaVerifier) {
+	h.publicMedia = verifier
 }
 
 func (h *MCPHandler) SetPublicURL(publicURL string) {
@@ -380,6 +386,7 @@ func (h *MCPHandler) publicationHandler() *PublicationHandler {
 	handler.providers = h.providerMapSnapshot()
 	handler.tokenSource = h.tokenSource
 	handler.readiness = h.readiness
+	handler.SetPublicMediaVerifier(h.publicMedia)
 	return handler
 }
 
@@ -3679,6 +3686,7 @@ func (h *MCPHandler) listProviderCatalog(ctx context.Context) any {
 }
 
 type mcpAccount struct {
+	Alias           string `json:"alias,omitempty"`
 	ID              string `json:"id"`
 	Platform        string `json:"platform"`
 	Slug            string `json:"slug"`
@@ -3716,6 +3724,7 @@ func (h *MCPHandler) listAccounts(ctx context.Context, userID string, args map[s
 			ID:              row.ID,
 			Platform:        row.Platform,
 			Slug:            row.Slug,
+			Alias:           row.Alias,
 			AccountID:       row.AccountID,
 			AccountUsername: row.AccountUsername,
 			InstanceURL:     row.InstanceURL,
