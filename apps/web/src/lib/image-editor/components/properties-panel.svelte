@@ -25,10 +25,12 @@
 	let {
 		onOpenMedia = () => undefined,
 		onOpenLayers,
+		onAIEdit,
 		colorWorkspace = false
 	}: {
 		onOpenMedia?: () => void;
 		onOpenLayers?: () => void;
+		onAIEdit?: () => void;
 		colorWorkspace?: boolean;
 	} = $props();
 
@@ -1041,6 +1043,12 @@
 				{/if}
 
 				{#if layer.type === 'image' && layer.image}
+					{#if onAIEdit}<Button
+							variant="outline"
+							class="w-full [@media(pointer:coarse)]:min-h-11"
+							disabled={!editor.canEdit || layerLocked || editor.selectedLayers.length !== 1}
+							onclick={onAIEdit}><ThemeIcon role="image-add" />{m.image_ai_edit()}</Button
+						>{/if}
 					<section class="space-y-2 border-t pt-4">
 						<h3 class="text-xs font-medium text-muted-foreground">
 							{m.image_editor_image()}

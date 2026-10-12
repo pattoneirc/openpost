@@ -25,6 +25,8 @@
 	import { settingLabel } from '$lib/setting-label';
 	import { showToast } from '$lib/toast';
 	import DiscordEmbedEditor from './discord-embed-editor.svelte';
+	import type { TextCardResult } from '$lib/text-cards';
+	import TextCardSettings from './text-card-settings.svelte';
 
 	type SettingDefinition = components['schemas']['SettingDefinition'];
 	type SettingCondition = components['schemas']['SettingCondition'];
@@ -54,6 +56,9 @@
 		formatValue?: string;
 		formatOptions?: Array<{ value: string; label: string }>;
 		formatRequired?: boolean;
+		textCardSavedPreview?: TextCardResult;
+		textCardText?: string;
+		textCardAttachmentCount?: number;
 		onChange: (key: string, value: ComposerSettingValue) => void;
 		onFormatChange?: (value: string) => void;
 		onMediaChange?: (mediaId: string, key: string, value: ComposerSettingValue) => void;
@@ -89,6 +94,9 @@
 		formatValue = '',
 		formatOptions = [],
 		formatRequired = false,
+		textCardSavedPreview,
+		textCardText = '',
+		textCardAttachmentCount = 0,
 		onChange,
 		onFormatChange,
 		onMediaChange,
@@ -128,6 +136,8 @@
 				group,
 				settings: settings.filter(
 					(setting) =>
+						setting.key !== 'text_card' &&
+						!setting.key.startsWith('text_card_') &&
 						setting.scope !== 'media_item' &&
 						setting.group === group &&
 						dependenciesMet(setting, values) &&
@@ -402,7 +412,7 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Content
-		class="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col rounded-none p-0 sm:h-auto sm:max-h-[85vh] sm:max-w-xl sm:rounded-lg"
+		class="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-0 overflow-clip rounded-none p-0 sm:h-auto sm:max-h-[85vh] sm:max-w-xl sm:rounded-lg"
 	>
 		<Dialog.Header class="shrink-0 border-b px-5 py-4 text-left">
 			<Dialog.Title>
@@ -478,6 +488,17 @@
 				</section>
 			{/if}
 
+			{#if account && settings.some((setting) => setting.key === 'text_card') && formatValue !== 'instagram.reel'}
+				<TextCardSettings
+					savedPreview={textCardSavedPreview}
+					{account}
+					{values}
+					outputProfile={formatValue}
+					text={textCardText}
+					attachmentCount={textCardAttachmentCount}
+					{onChange}
+				/>
+			{/if}
 			{#each groupedSettings as entry (entry.group)}
 				<section class="space-y-3" aria-labelledby="setting-group-{entry.group}">
 					<h3

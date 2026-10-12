@@ -1,6 +1,6 @@
 ---
 title: AI providers
-description: Configure OpenRouter for post generation and media captions.
+description: Configure OpenRouter for text and captions, and fal for image generation and editing.
 icon: Sparkles
 ---
 
@@ -36,3 +36,19 @@ Post generation sends the idea and selected context to the configured model thro
 If a request fails, check the container logs for an OpenRouter error, then check the key, model ID, balance, provider slug, and zero-retention setting. A text-only model may not be suitable for image captions.
 
 Workflow AI decisions use Jev through OpenRouter's Decisions API. They route through TypeSafe and retain the content AI zero-data-retention requirement. Existing saved model settings take precedence over these defaults.
+
+## Image generation with fal
+
+Add a server-side [fal API key](https://fal.ai/dashboard/keys) with access to model inference and billing events:
+
+```dotenv
+FAL_KEY=your-fal-key
+```
+
+You can also set the **fal API key** in instance Settings, or use `FAL_KEY_FILE` for a mounted secret. Restart the server and worker after changing the key. Keep it out of browser code.
+
+The Image Editor uses [GPT Image 2.5 Flare](https://fal.ai/models/openai/gpt-image-2.5/flare/text-to-image/api) by default. Users can select Sunburst in the panel. The [edit endpoint](https://fal.ai/models/openai/gpt-image-2.5/flare/edit/api) handles selected image edits and masked fills. These requests use fal independently of the OpenRouter key and routing settings above.
+
+Sign in, open an editable project saved to OpenPost and choose **AI images**. Follow [Generate and edit images with AI](/image-editor/ai-images) to submit and review a result. This check makes a paid provider request.
+
+The web and worker roles need the same key. Requests and provider receipts are saved in the database, so restarting a worker does not regenerate an accepted image. OpenPost records the request's cost in the existing AI usage ledger using [fal billing events](https://fal.ai/docs/platform-apis/v1/models/billing-events). Missing billing access leaves costs pending and eventually unavailable; it never records a missing charge as zero. No image-specific spending limits are enforced by OpenPost.

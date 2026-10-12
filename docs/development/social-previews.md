@@ -51,3 +51,15 @@ Reviewed on 26 September 2026. Logged-in Brave observations informed X, Threads,
 Open-source interfaces were consulted as behavioral references: [Bluesky](https://github.com/bluesky-social/social-app), [Lemmy](https://github.com/LemmyNet/lemmy-ui), [PeerTube](https://github.com/Chocobozzz/PeerTube), and [Pixelfed](https://github.com/pixelfed/pixelfed). No interface source was copied. Reddit and Google glyph paths come from [Simple Icons](https://github.com/simple-icons/simple-icons), under [CC0](https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md); Pinterest reuses the existing repository glyph.
 
 When updating fidelity, compare real cards containing text, links, polls, multiple images, portrait media, and warnings. Check cards and full pages at 320px, 390px, and desktop widths in both schemes. Keep regression tests at the renderer, composer mapping, or browser-flow boundary that owns the behavior.
+
+## Generated text cards
+
+Instagram and Pixelfed text cards use the deterministic Go renderer in `internal/textcards`. Capability planning and rendering share its layout and pagination. `services/publicationcards` snapshots JPEGs through `BlobStorage` during the publication mutation; delivery uses the existing media upload and provider receipt owners.
+
+`text_card` and `text_card_*` are destination settings. New supported destinations default to `text_only`; legacy missing values remain off. Social Sets copy these defaults when creating posts, including with Automatic format selection. `always` prepends cards to the deduplicated attachments in canonical order. Joined source versions retain `source_overrides`. Generated images count toward native format limits; unsupported formats such as Reels do not convert.
+
+The media role and provenance `text_card` are internal generated state. Rendition segment `media` exposes authored attachments for editing; `output_media` exposes the complete delivery sequence. Never put generated cards into canonical media, source overrides, or client mutation inputs. Authorship revisions must not change merely because an image was rendered.
+
+Persisted previews use saved `output_media` until relevant text, attachment count, layout or style changes. The read-only preview endpoint and MCP tool share the publishing renderer, but a preview request does not create library assets. Identity is the connected account's alias or username, handle and bounded profile photo. Do not fetch provider content during publication reads.
+
+Rendering uses the repository's embedded fonts, a 2,200-character bound, at most ten cards, and cancellable per-image work. Failed database mutations compensate new blob writes. Replaced cards are retired through the media lifecycle owner once no post, editor, or library organization retains them. Storage admission counts the replacement after retirement, excluding internal design and template previews. Keep incomplete drafts editable, but reject publishing when required card generation or native media validation fails.

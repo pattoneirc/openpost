@@ -45,3 +45,5 @@ export * from "./repurpose";
 export * from "./publication-builds";
 
 export * from "./analytics-overview";
+
+export * from "./image-generation";

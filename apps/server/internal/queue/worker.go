@@ -24,6 +24,7 @@ import (
 	"github.com/openpost/backend/internal/services/externalwebhooks"
 	"github.com/openpost/backend/internal/services/feedback"
 	growthservice "github.com/openpost/backend/internal/services/growth"
+	"github.com/openpost/backend/internal/services/imagegeneration"
 	"github.com/openpost/backend/internal/services/medialifecycle"
 	"github.com/openpost/backend/internal/services/mediastore"
 	messagingservice "github.com/openpost/backend/internal/services/messaging"
@@ -83,6 +84,7 @@ type BackgroundWorker struct {
 	growth                *growthservice.Service
 	publicationBuilder    *publicationbuilder.Application
 	repurposeSuggestions  *repurpose.Service
+	imageGeneration       *imagegeneration.Service
 	postImports           *postimportservice.Service
 	accountPreflight      *accountpreflightservice.Service
 	externalWebhooks      *externalwebhooks.Service
@@ -220,6 +222,11 @@ func (w *BackgroundWorker) SetPublicationBuilderService(service *publicationbuil
 		}
 		return w.publicationBuilder.HandleJob(ctx, job.Type, job.Payload)
 	}
+}
+
+func (w *BackgroundWorker) SetImageGenerationService(service *imagegeneration.Service) {
+	w.imageGeneration = service
+	w.executors[jobregistry.ExecuteImageGeneration] = func(ctx context.Context, job *models.Job) error { return service.HandleJob(ctx, job.Payload) }
 }
 
 func (w *BackgroundWorker) SetRepurposeSuggestionsService(service *repurpose.Service) {
@@ -799,6 +806,8 @@ func (w *BackgroundWorker) finishFailedJob(ctx context.Context, job *models.Job,
 		markTerminalFailure = w.publicationBuilder.MarkTerminalJobFailure
 	case job.Status == jobStatusFailed && job.Type == jobregistry.TypeRepurposeSuggestions && w.repurposeSuggestions != nil:
 		markTerminalFailure = w.repurposeSuggestions.MarkTerminalJobFailure
+	case job.Status == jobStatusFailed && job.Type == jobregistry.TypeImageGeneration && w.imageGeneration != nil:
+		markTerminalFailure = w.imageGeneration.MarkTerminalJobFailure
 	}
 	if markTerminalFailure != nil {
 		dbErr = w.db.RunInTx(ctx, &sql.TxOptions{}, func(txCtx context.Context, tx bun.Tx) error {
@@ -1025,6 +1034,12 @@ func classifyRepurposeFailure(err error) classifiedJobFailure {
 }
 
 func classifyJobContinuation(processErr error) (classifiedJobFailure, bool) {
+	if errors.Is(processErr, imagegeneration.ErrBillingPending) || errors.Is(processErr, imagegeneration.ErrUnavailable) {
+		return classifiedJobFailure{retryable: true, retryAfter: 5 * time.Minute, message: "Image generation is waiting for configuration or billing.", preserveAttempts: true}, true
+	}
+	if errors.Is(processErr, imagegeneration.ErrPending) {
+		return classifiedJobFailure{retryable: true, retryAfter: 15 * time.Second, message: "Image generation is waiting for the provider.", preserveAttempts: true}, true
+	}
 	var directed *publisher.RetryableError
 	if errors.As(processErr, &directed) && (directed.Failure.Code == "provider_submission_pending" || directed.Failure.Code == "tiktok_inbox_delivered") {
 		return classifiedJobFailure{retryable: true, retryAfter: directed.Failure.RetryAfter, message: directed.Failure.Message, preserveAttempts: true}, true

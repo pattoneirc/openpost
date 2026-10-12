@@ -449,3 +449,51 @@ func TestXResumableImageRecoversFromReadinessBudgetRejection(t *testing.T) {
 		})
 	}
 }
+
+func TestXResumableUploadReadsLazyStoredMedia(t *testing.T) {
+	for _, mimeType := range []string{"image/png", "video/mp4"} {
+		t.Run(mimeType, func(t *testing.T) {
+			var uploaded []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+					file, _, err := r.FormFile("media")
+					if err != nil {
+						t.Error(err)
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					defer file.Close()
+					data, err := io.ReadAll(file)
+					if err != nil {
+						t.Error(err)
+					}
+					uploaded = append(uploaded, data...)
+					if r.FormValue("command") == "APPEND" {
+						w.WriteHeader(http.StatusNoContent)
+						return
+					}
+				}
+				_, _ = io.WriteString(w, `{"media_id_string":"media-1","expires_after_secs":3600}`)
+			}))
+			defer server.Close()
+			adapter := NewXAdapter("", "", "")
+			defer close(adapter.cleanupDone)
+			adapter.uploadBaseURL = server.URL
+			media := "stored-media"
+			var saved ResumableMediaUploadState
+			id, err := adapter.UploadMediaResumable(t.Context(), "access|secret", "account", UploadMediaRequest{
+				MimeType: mimeType,
+				Size:     int64(len(media)),
+				OpenReaderAt: func(offset int64) (io.ReadCloser, error) {
+					return io.NopCloser(strings.NewReader(media[offset:])), nil
+				},
+			}, ResumableMediaUploadState{}, func(next ResumableMediaUploadState) error { saved = next; return nil })
+			if err != nil {
+				t.Fatalf("stored media upload failed: %v", err)
+			}
+			if id != "media-1" || saved.ProviderMediaID != id || string(uploaded) != media {
+				t.Fatalf("upload lost media or receipt: id=%s state=%+v uploaded=%q", id, saved, uploaded)
+			}
+		})
+	}
+}

@@ -173,9 +173,9 @@ func (handler *PublicationDiscoveryHandler) loadDiscoveryRecentPublications(
 	}
 	for _, row := range rows {
 		summary := firstNonEmptyDiscoveryText(row.SourceText, row.Title)
-		publishedAt := row.ActualRunAt
-		if publishedAt.IsZero() {
-			publishedAt = row.UpdatedAt
+		publishedAt := row.UpdatedAt
+		if row.Status == models.PublicationStatusPublished && !row.ActualRunAt.IsZero() {
+			publishedAt = row.ActualRunAt
 		}
 		if publishedAt.IsZero() {
 			publishedAt = row.CreatedAt

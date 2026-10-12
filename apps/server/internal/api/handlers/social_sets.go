@@ -17,6 +17,7 @@ import (
 	"github.com/openpost/backend/internal/capabilities"
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/platform"
+	"github.com/openpost/backend/internal/textcards"
 	"github.com/uptrace/bun"
 )
 
@@ -367,6 +368,9 @@ func (h *SocialSetHandler) resolvePresetCapability(
 	ctx context.Context, account models.SocialAccount, profile string, settings map[string]any, locale, region string,
 ) (capabilities.ResolvedCapability, error) {
 	profile = strings.TrimSpace(profile)
+	if profile == "" && textcards.Supported(account.Platform, "") {
+		return capabilities.ResolvedCapability{Capability: capabilities.Capability{Provider: account.Platform, Settings: capabilities.TextCardSettings()}, Compatible: true}, nil
+	}
 	if profile == "" {
 		return capabilities.ResolvedCapability{}, huma.Error400BadRequest("choose a format before setting Social Set defaults")
 	}
@@ -476,7 +480,7 @@ func (h *SocialSetHandler) validateSocialSetAccountDefaults(ctx context.Context,
 		context[key] = value
 	}
 	profile := strings.TrimSpace(input.DefaultOutputProfile)
-	if profile == "" {
+	if profile == "" && !textcards.Supported(account.Platform, "") {
 		if len(context) > 0 {
 			return huma.Error400BadRequest("choose a format before setting Social Set defaults")
 		}
@@ -485,6 +489,11 @@ func (h *SocialSetHandler) validateSocialSetAccountDefaults(ctx context.Context,
 	resolved, err := h.resolvePresetCapability(ctx, account, profile, context, locale, region)
 	if err != nil {
 		return err
+	}
+	if textcards.Supported(account.Platform, profile) {
+		if _, err := textcards.Parse(context); err != nil {
+			return huma.Error400BadRequest(err.Error())
+		}
 	}
 	if len(context) > 0 {
 		if err := verifySocialSetPresetResolution(resolved); err != nil {

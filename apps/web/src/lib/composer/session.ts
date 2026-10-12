@@ -12,6 +12,7 @@ export interface ComposerPublication {
 	workspace_id: string;
 	revision: number;
 	status: string;
+	renditions?: components['schemas']['PublicationResponse']['renditions'];
 	/** The server-normalized draft returned when a new Publication is created. */
 	draft?: PublicationDraft;
 }

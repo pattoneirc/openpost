@@ -453,7 +453,9 @@ function testPlan(requestedScope, requestedOptions) {
     throw unsupported("test", requestedScope, supported);
   }
   const backendArguments = ["test", "-tags", "dev"];
-  if (process.env.OPENPOST_GO_TEST_RACE === "1") backendArguments.push("-race");
+  if (process.env.OPENPOST_GO_TEST_RACE === "1") {
+    backendArguments.push("-race", "-timeout=20m");
+  }
   if (process.env.OPENPOST_GO_COVERAGE_FILE) {
     backendArguments.push(`-coverprofile=${process.env.OPENPOST_GO_COVERAGE_FILE}`);
   }

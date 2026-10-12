@@ -156,6 +156,7 @@ var operations = []Operation{
 	withSelectors(read("get-publication", ExposureAlpha), workspaceSelector(), publicationSelector()),
 	withSelectors(readPaged("list-publication-events", ExposureAlpha), workspaceSelector(), publicationSelector()),
 	withSelectors(read("validate-publication", ExposureAlpha), workspaceSelector(), publicationSelector()),
+	readDisabled("preview-text-card"),
 	withSelectors(read("get-analytics-overview", ExposureAlpha), workspaceSelector()),
 	withSelectors(read("list-jobs", ExposureAlpha), workspaceSelector()),
 	withSelectors(read("list-notifications", ExposureAlpha), workspaceSelector()),

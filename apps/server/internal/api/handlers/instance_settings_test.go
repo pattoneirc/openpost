@@ -90,9 +90,11 @@ func TestInstanceSettingsAdminListsAndSavesRedactedSettings(t *testing.T) {
 		{"key": "OPENPOST_EMAIL_PROVIDER", "value": "resend"},
 		{"key": "OPENPOST_EMAIL_FROM", "value": "OpenPost <hello@example.com>"},
 		{"key": "OPENPOST_RESEND_API_KEY", "value": "re_private"},
+		{"key": "FAL_KEY", "value": "fal_private"},
 	}})
 	require.Equal(t, http.StatusOK, save.Code, save.Body.String())
 	require.NotContains(t, save.Body.String(), "re_private")
+	require.NotContains(t, save.Body.String(), "fal_private")
 	var saved InstanceSettingsResponse
 	require.NoError(t, json.Unmarshal(save.Body.Bytes(), &saved))
 	require.True(t, saved.RequiresRestart)
@@ -106,6 +108,16 @@ func TestInstanceSettingsAdminListsAndSavesRedactedSettings(t *testing.T) {
 	require.True(t, resendKey.SecretConfigured)
 	require.Empty(t, resendKey.Value)
 	require.Equal(t, "database", resendKey.Source)
+	var falKey InstanceSettingResponse
+	for _, setting := range saved.Settings {
+		if setting.Key == "FAL_KEY" {
+			falKey = setting
+			break
+		}
+	}
+	require.True(t, falKey.SecretConfigured)
+	require.Empty(t, falKey.Value)
+	require.Equal(t, "database", falKey.Source)
 }
 
 func TestInstanceSettingsAdminOverridesEnvironmentManagedValue(t *testing.T) {

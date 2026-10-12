@@ -217,6 +217,9 @@ func (h *PublicationHandler) loadPublicationListRenditions(
 	}
 	seenPublicationMedia := make(map[string]map[string]struct{}, len(publicationIDs))
 	for _, row := range mediaRows {
+		if row.Role == "text_card" {
+			continue
+		}
 		item := mediaSummary(
 			row.MediaAttachment,
 			row.Role,
@@ -301,6 +304,9 @@ func (h *PublicationHandler) loadPublicationListRenditionSegments(
 			row.ThumbnailTimestampMS,
 		)
 		_ = json.Unmarshal([]byte(row.SettingsJSON), &item.Settings)
+		if row.Role == "text_card" {
+			item.Settings = nil
+		}
 		mediaBySegment[row.RenditionSegmentID] = append(
 			mediaBySegment[row.RenditionSegmentID],
 			item,
@@ -400,7 +406,8 @@ func renditionSegmentResponses(
 			ErrorRetryable:       segment.ErrorRetryable,
 			ErrorRetryAt:         formatOptionalTime(segment.ErrorRetryAt),
 			ErrorAction:          segment.ErrorAction,
-			Media:                mediaBySegment[segment.ID],
+			Media:                authoredPublicationMedia(mediaBySegment[segment.ID]),
+			OutputMedia:          mediaBySegment[segment.ID],
 		})
 	}
 	return out

@@ -67,5 +67,9 @@ func PublishingSettingsContract(provider string) PublishingSettingContract {
 			AdapterKeys: []string{"channel_id", "embed", "mention_policy", "mention_user_ids", "mention_role_ids"},
 		},
 	}
-	return contracts[provider]
+	contract := contracts[provider]
+	if provider == providerInstagram || provider == providerPixelfed {
+		contract.PipelineKeys = append(contract.PipelineKeys, "text_card", "text_card_appearance", "text_card_background", "text_card_color", "text_card_color_end", "text_card_rounded", "text_card_shadow")
+	}
+	return contract
 }

@@ -13,10 +13,12 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humaecho"
 	"github.com/labstack/echo/v4"
+	"github.com/openpost/backend/internal/ai"
 	"github.com/openpost/backend/internal/api/middleware"
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/services/apitokens"
 	"github.com/openpost/backend/internal/services/publicationdiscovery"
+	"github.com/openpost/backend/internal/services/sourcecontext"
 	"github.com/openpost/backend/internal/services/voiceprofiles"
 	"github.com/stretchr/testify/require"
 	"github.com/uptrace/bun"
@@ -72,10 +74,38 @@ func TestPublicationDiscoveryHandlerReturnsPlanningCardsForWorkspaceEditors(t *t
 	require.Equal(t, "Rodrigo", stub.input.Voice.Name)
 	require.Len(t, stub.input.RecentPublications, 2)
 	require.Equal(t, "A stored post about reliable agents.", stub.input.RecentPublications[0].Summary)
+	require.Equal(t, time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC), stub.input.RecentPublications[0].PublishedAt)
 	var result publicationdiscovery.Result
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
 	require.Len(t, result.Opportunities, 1)
 	require.Equal(t, "opportunity-1", result.Opportunities[0].ID)
+}
+
+func TestPublicationDiscoveryHandlerKeepsScheduledPostsInRecentContext(t *testing.T) {
+	now := time.Now().UTC()
+	generated := false
+	generator := editorUsageGenerator(func(_ context.Context, request ai.GenerateRequest) (ai.GenerateResult, error) {
+		generated = true
+		require.Contains(t, request.UserPrompt, "An upcoming launch already planned.")
+		return ai.GenerateResult{}, errors.New("test provider reached")
+	})
+	loader, err := sourcecontext.New(sourcecontext.Config{})
+	require.NoError(t, err)
+	service, err := publicationdiscovery.New(generator, publicationdiscovery.Config{Model: "test-model", SourceLoader: loader})
+	require.NoError(t, err)
+	server := newPublicationDiscoveryTestServer(t, service)
+	_, err = server.db.NewInsert().Model(&models.Publication{
+		ID: "scheduled-post", WorkspaceID: "ws-1", CreatedByID: "user-1",
+		SourceText: "An upcoming launch already planned.", Status: "scheduled",
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now, ActualRunAt: now.Add(48 * time.Hour),
+	}).Exec(t.Context())
+	require.NoError(t, err)
+
+	response := publicationDiscoveryRequest(t, server.echo, "web-token", publicationDiscoveryRequestBody())
+
+	require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
+	require.True(t, generated, "valid stored planning context must reach the AI provider")
+	require.Contains(t, response.Body.String(), "Publication discovery failed")
 }
 
 func TestPublicationDiscoveryHandlerRejectsCredentialCrossingAndViewers(t *testing.T) {
@@ -181,7 +211,7 @@ func newPublicationDiscoveryTestServer(
 		ID: "publication-1", WorkspaceID: "ws-1", CreatedByID: "user-1",
 		Title: "Reliable agents", SourceText: "A stored post about reliable agents.",
 		SourceContent: "A stored post about reliable agents.", Status: "published",
-		CreatedAt: now, UpdatedAt: now, ActualRunAt: now,
+		CreatedAt: now, UpdatedAt: now.Add(time.Hour), ActualRunAt: now,
 	}).Exec(t.Context())
 	require.NoError(t, err)
 

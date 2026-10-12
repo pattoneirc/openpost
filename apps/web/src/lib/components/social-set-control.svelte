@@ -43,6 +43,7 @@
 		getPlatformName
 	} from '$lib/utils';
 	import { m } from '$lib/paraglide/messages';
+	import { supportsTextCards } from '$lib/text-cards';
 
 	type SocialSet = components['schemas']['SocialSetResponse'];
 	type SocialSetAccountInput = components['schemas']['SocialSetAccountInput'];
@@ -913,7 +914,8 @@
 											type="button"
 											variant="outline"
 											class="h-11"
-											disabled={!editorOutputProfiles[account.id] ||
+											disabled={(!editorOutputProfiles[account.id] &&
+												!supportsTextCards(account.platform)) ||
 												(settingsResolveLoading && settingsEditorAccountId === account.id)}
 											onclick={() => openSettingsEditor(account)}
 										>
@@ -969,6 +971,7 @@
 
 <DestinationSettingsDialog
 	bind:open={settingsEditorOpen}
+	formatValue={editorOutputProfiles[settingsEditorAccountId] ?? ''}
 	account={settingsEditorAccount}
 	settings={settingsEditorFields}
 	values={settingsEditorValues}

@@ -20,7 +20,7 @@ func (x *XAdapter) UploadMediaResumable(ctx context.Context, token, _ string, re
 	if checkpoint == nil {
 		return "", fmt.Errorf("x media checkpoint is required")
 	}
-	if req.Size <= 0 || req.Reader == nil {
+	if req.Size <= 0 || (req.Reader == nil && req.OpenReaderAt == nil) {
 		return "", fmt.Errorf("x media requires a reader and known size")
 	}
 	if err := validateXMediaCheckpoint(state, req.Size); err != nil {
@@ -30,6 +30,12 @@ func (x *XAdapter) UploadMediaResumable(ctx context.Context, token, _ string, re
 		return state.ProviderMediaID, nil
 	}
 	category := xMediaCategory(req.MimeType)
+	source, err := openXMediaSource(req, state)
+	if err != nil {
+		return "", err
+	}
+	defer source.Close()
+	req.Reader = source
 	if state.ProviderMediaID == "" && category == "tweet_image" && req.Size <= xMediaUploadChunkSize {
 		var err error
 		state, err = x.uploadSimpleMediaRequest(ctx, token, req)
@@ -41,11 +47,6 @@ func (x *XAdapter) UploadMediaResumable(ctx context.Context, token, _ string, re
 		}
 		return state.ProviderMediaID, nil
 	}
-	source, err := openXMediaSource(req, state)
-	if err != nil {
-		return "", err
-	}
-	defer source.Close()
 	return x.uploadMediaChunkedResumable(ctx, token, req.MimeType, category, source, req.Size, state, func(next ResumableMediaUploadState) error { state = next; return checkpoint(next) })
 }
 
@@ -95,13 +96,17 @@ func xMediaCategory(mimeType string) string {
 	return "tweet_image"
 }
 func openXMediaSource(req UploadMediaRequest, state ResumableMediaUploadState) (io.ReadCloser, error) {
-	if state.ProviderMediaID == "" || state.OpaqueState != "appending" || state.UploadedBytes == 0 {
+	var offset int64
+	if state.ProviderMediaID != "" && state.OpaqueState == "appending" {
+		offset = state.UploadedBytes
+	}
+	if offset == 0 && req.Reader != nil {
 		return io.NopCloser(req.Reader), nil
 	}
 	if req.OpenReaderAt == nil {
 		return nil, fmt.Errorf("x upload resume requires a reader at its byte offset")
 	}
-	return req.OpenReaderAt(state.UploadedBytes)
+	return req.OpenReaderAt(offset)
 }
 func (x *XAdapter) uploadSimpleMediaRequest(ctx context.Context, token string, req UploadMediaRequest) (ResumableMediaUploadState, error) {
 	data, err := io.ReadAll(io.LimitReader(req.Reader, req.Size+1))

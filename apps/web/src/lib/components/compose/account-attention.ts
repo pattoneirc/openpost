@@ -7,7 +7,7 @@ type ValidationIssue = components['schemas']['ValidationIssue'];
 const informationalIssueCodes = new Set(['quota_warning']);
 
 export function isActionableAccountIssue(issue: ValidationIssue): boolean {
-	return !informationalIssueCodes.has(issue.code);
+	return issue.severity !== 'info' && !informationalIssueCodes.has(issue.code);
 }
 
 export function accountCapabilityNeedsAttention(capability: ResolvedAccountCapability): boolean {

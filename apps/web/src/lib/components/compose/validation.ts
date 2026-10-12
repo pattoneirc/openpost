@@ -70,6 +70,7 @@ export function composerIssues(
 		});
 	}
 	for (const issue of validationIssues) {
+		if (issue.severity === 'info') continue;
 		const matchingDestinations = isAccountSpecificIssue(issue)
 			? destinations.filter((destination) => issueMatchesProvider(issue, destination.provider))
 			: [];

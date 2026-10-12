@@ -33,6 +33,7 @@ import (
 	"github.com/openpost/backend/internal/services/providerreadiness"
 	"github.com/openpost/backend/internal/services/providerwrite"
 	"github.com/openpost/backend/internal/services/publicationauth"
+	"github.com/openpost/backend/internal/services/publicationcards"
 	"github.com/openpost/backend/internal/services/publicationlink"
 	"github.com/openpost/backend/internal/services/publicationpoll"
 	publicationservice "github.com/openpost/backend/internal/services/publications"
@@ -77,6 +78,7 @@ type PublicationHandler struct {
 	readiness   *providerreadiness.Service
 	connectors  *connectors.Registry
 	telemetry   telemetry.Recorder
+	textCards   *publicationcards.Service
 	// beforeQueueTransaction is a deterministic concurrency seam for tests.
 	// Production constructors leave it nil.
 	beforeQueueTransaction func(context.Context) error
@@ -283,6 +285,7 @@ type PublicationLifecycleActor = publicationservice.PublicationLifecycleActor
 type PublicationLifecycleError = publicationservice.PublicationLifecycleError
 
 func (h *PublicationHandler) RegisterRoutes(api huma.API) {
+	h.previewTextCard(api)
 	h.createPublication(api)
 	h.listPublications(api)
 	h.getPublication(api)
@@ -827,6 +830,9 @@ func (h *PublicationHandler) replaceAllPublicationRenditions(
 	renditionInputs []RenditionInput,
 	accounts map[string]models.SocialAccount,
 ) error {
+	if err := h.defaultNewTextCardDestinations(ctx, tx, publication.ID, renditionInputs, accounts); err != nil {
+		return err
+	}
 	var renditionIDs []string
 	if err := tx.NewSelect().
 		Model((*models.Rendition)(nil)).
@@ -872,6 +878,8 @@ func (h *PublicationHandler) upsertRenditions(api huma.API) {
 		Tags:        []string{tagPublications},
 		Middlewares: huma.Middlewares{middleware.AuthMiddleware(api, h.auth)},
 	}, func(ctx context.Context, input *UpsertRenditionsInput) (*PublicationOutput, error) {
+		ctx, cleanupTextCards := h.textCards.Mutation(ctx)
+		defer cleanupTextCards()
 		if err := h.requireExternalPublicationAccounts(ctx, input.PathID); err != nil {
 			return nil, err
 		}
@@ -945,6 +953,9 @@ func (h *PublicationHandler) upsertRenditionsTx(
 		return PublicationResponse{}, err
 	}
 	before := response
+	if err := h.defaultNewTextCardDestinations(ctx, tx, publication.ID, renditions, accountMap); err != nil {
+		return PublicationResponse{}, err
+	}
 	if len(renditions) > 0 {
 		positions, err := renditionUpsertPositionsTx(ctx, tx, publication.ID, renditions, accountMap)
 		if err != nil {
@@ -974,6 +985,9 @@ func (h *PublicationHandler) upsertRenditionsTx(
 			return PublicationResponse{}, err
 		}
 		if err := h.insertRenditions(ctx, tx, publication, segments, segmentInputs, renditions, nil, accountMap, positions); err != nil {
+			return PublicationResponse{}, err
+		}
+		if err := h.refreshPublicationTextCards(ctx, tx, publication.ID, false, publicationTextCardIDs(before.response)...); err != nil {
 			return PublicationResponse{}, err
 		}
 		now := time.Now().UTC()
@@ -1581,6 +1595,9 @@ func (h *PublicationHandler) insertPublicationSegments(
 	now := time.Now().UTC()
 	segments := make([]models.PublicationSegment, 0, len(inputs))
 	for position, input := range inputs {
+		if err := validateAuthoredMediaRoles(input.Media); err != nil {
+			return nil, err
+		}
 		segment := models.PublicationSegment{
 			ID:            uuid.New().String(),
 			PublicationID: publication.ID,
@@ -1829,6 +1846,19 @@ func (h *PublicationHandler) insertRenditions(
 	}
 	seenTargets := make(map[renditionservice.TargetIdentity]struct{}, len(inputs))
 	for position, input := range inputs {
+		if err := validateAuthoredMediaRoles(input.Media); err != nil {
+			return err
+		}
+		for _, segment := range input.Segments {
+			if err := validateAuthoredMediaRoles(segment.Media); err != nil {
+				return err
+			}
+			for _, source := range segment.SourceOverrides {
+				if err := validateAuthoredMediaRoles(source.Media); err != nil {
+					return err
+				}
+			}
+		}
 		account, ok := accounts[input.SocialAccountID]
 		if !ok {
 			return huma.Error400BadRequest("one or more social accounts are invalid, disconnected, or outside this workspace")
@@ -1890,6 +1920,13 @@ func (h *PublicationHandler) insertRenditions(
 		}
 
 		segmentInputs := input.Segments
+		if resolved.SegmentStrategy == "join" && textCardSettingsEnabled(rendition.SettingsJSON) && len(segmentInputs) > 1 && len(canonicalSegments) > 1 {
+			joined, err := joinTextCardSources(input, canonicalSegments, canonicalInputs)
+			if err != nil {
+				return err
+			}
+			segmentInputs = []RenditionSegmentInput{joined}
+		}
 		if len(segmentInputs) == 0 {
 			if resolved.SegmentStrategy == "join" && len(canonicalSegments) > 1 {
 				segmentInputs = []RenditionSegmentInput{joinedRenditionSegmentInput(canonicalSegments, canonicalInputs, input)}
@@ -2143,27 +2180,33 @@ func (h *PublicationHandler) resolveRenditionCapability(
 	input RenditionInput,
 	segments []PublicationSegmentInput,
 ) capabilities.ResolvedCapability {
-	resolveSegments := make([]capabilities.ResolveSegment, 0, len(segments))
-	for position, segment := range segments {
-		renditionSegment := RenditionSegmentInput{}
-		if position < len(input.Segments) {
-			renditionSegment = input.Segments[position]
+	canonical := make([]models.PublicationSegment, len(segments))
+	for i, source := range segments {
+		canonical[i] = models.PublicationSegment{ID: source.ID, Body: source.Body, Title: source.Title, URL: source.URL}
+	}
+	inputs := input.Segments
+	if len(inputs) == 0 {
+		inputs = make([]RenditionSegmentInput, len(segments))
+		if len(inputs) > 0 {
+			inputs[0] = RenditionSegmentInput{Body: input.Body, Title: input.Title, Media: input.Media}
 		}
-		mediaInputs := renditionSegment.Media
-		if len(mediaInputs) == 0 {
-			mediaInputs = segment.Media
+	}
+	resolveSegments := make([]capabilities.ResolveSegment, 0, len(inputs))
+	for position, variant := range inputs {
+		source := canonicalPublicationSegment(position, variant.PublicationSegmentID, canonical, segments)
+		if len(variant.SourceOverrides) > 0 {
+			variant = projectJoinedSourceOverrides(variant, canonical, segments)
 		}
-		if position == 0 && len(input.Media) > 0 {
-			mediaInputs = input.Media
+		body := source.Body
+		joined := len(inputs) == 1 && len(segments) > 1
+		if joined {
+			body = joinedPublicationBody(canonical)
 		}
-		resolveSegment := capabilities.ResolveSegment{
-			ID:    publicationFirstNonEmpty(segment.ID, fmt.Sprintf("segment-%d", position+1)),
-			Body:  publicationFirstNonEmpty(renditionSegment.Body, segment.Body),
-			Title: publicationFirstNonEmpty(renditionSegment.Title, segment.Title),
-			URL:   publicationFirstNonEmpty(renditionSegment.URL, segment.URL),
-			Media: h.capabilityMediaItems(ctx, db, mediaInputs),
-		}
-		resolveSegments = append(resolveSegments, resolveSegment)
+		mediaInputs := effectiveRenditionMedia(variant, source.ID, segments, joined)
+		_, body = renditionTextOverride(variant.BodyOverride, variant.Body, body)
+		_, title := renditionTextOverride(variant.TitleOverride, variant.Title, source.Title)
+		_, uri := renditionTextOverride(variant.URLOverride, variant.URL, source.URL)
+		resolveSegments = append(resolveSegments, capabilities.ResolveSegment{ID: publicationFirstNonEmpty(source.ID, fmt.Sprintf("segment-%d", position+1)), Body: body, Title: title, URL: uri, Media: h.capabilityMediaItems(ctx, db, mediaInputs)})
 	}
 	resolveInput := capabilities.ResolveInput{
 		Intent:                 publication.Intent,
@@ -2171,11 +2214,36 @@ func (h *PublicationHandler) resolveRenditionCapability(
 		RequestedOutputProfile: input.OutputProfile,
 		SourceURL:              publication.SourceURL,
 		Segments:               resolveSegments,
+		Settings:               input.Settings,
+	}
+	// Source overrides still describe a joined authored inventory, even though
+	// their effective text and media have already been projected above.
+	if len(input.Segments) == 1 && len(input.Segments[0].SourceOverrides) > 0 {
+		for i := 1; i < len(segments); i++ {
+			resolveInput.Segments = append(resolveInput.Segments, capabilities.ResolveSegment{ID: segments[i].ID})
+		}
 	}
 	if connectorCapabilities, connectorBacked, err := h.connectorCapabilitiesWithDB(ctx, db, account); err == nil && connectorBacked {
 		return capabilities.ResolveCatalog(account.Platform, connectorCapabilities, resolveInput)
 	}
 	return capabilities.Resolve(account.Platform, resolveInput)
+}
+
+func effectiveRenditionMedia(variant RenditionSegmentInput, sourceID string, sources []PublicationSegmentInput, joined bool) []PublicationMediaInput {
+	inherited := len(variant.Media) == 0
+	if variant.MediaInherited != nil {
+		inherited = *variant.MediaInherited
+	}
+	if !inherited || len(variant.SourceOverrides) > 0 {
+		return variant.Media
+	}
+	var media []PublicationMediaInput
+	for _, source := range sources {
+		if joined || source.ID == sourceID {
+			media = append(media, source.Media...)
+		}
+	}
+	return uniqueJoinedMedia(media)
 }
 
 func (h *PublicationHandler) connectorCapabilitiesWithDB(
@@ -2240,7 +2308,7 @@ func joinedRenditionSegmentInput(
 		Title:                canonicalSegments[0].Title,
 		Description:          canonicalSegments[0].Description,
 		URL:                  canonicalSegments[0].URL,
-		Media:                media,
+		Media:                uniqueJoinedMedia(media),
 	}
 	if input.Body != "" {
 		segment.Body = input.Body
@@ -2482,7 +2550,8 @@ func (h *PublicationHandler) loadRenditionSegmentResponsesWithDB(
 			ErrorRetryable:       segment.ErrorRetryable,
 			ErrorRetryAt:         formatOptionalTime(segment.ErrorRetryAt),
 			ErrorAction:          segment.ErrorAction,
-			Media:                mediaBySegment[segment.ID],
+			Media:                authoredPublicationMedia(mediaBySegment[segment.ID]),
+			OutputMedia:          mediaBySegment[segment.ID],
 		})
 	}
 	return out, nil
@@ -2525,6 +2594,9 @@ func (h *PublicationHandler) loadRenditionSegmentMediaWithDB(
 			row.ThumbnailTimestampMS,
 		)
 		_ = json.Unmarshal([]byte(row.SettingsJSON), &item.Settings)
+		if row.Role == "text_card" {
+			item.Settings = nil
+		}
 		out[row.RenditionSegmentID] = append(out[row.RenditionSegmentID], item)
 	}
 	return out, nil
@@ -2758,6 +2830,9 @@ func (h *PublicationHandler) loadRenditionMediaWithDB(ctx context.Context, db bu
 	seenPublicationMedia := map[string]struct{}{}
 	for _, row := range rows {
 		item := mediaSummary(row.MediaAttachment, row.Role, row.DisplayOrder, row.AltText, row.ThumbnailTimestampMS)
+		if item.Role == "text_card" {
+			continue
+		}
 		out[row.RenditionID] = append(out[row.RenditionID], item)
 		if _, ok := seenPublicationMedia[item.ID]; !ok {
 			seenPublicationMedia[item.ID] = struct{}{}
@@ -2968,7 +3043,8 @@ func validateDynamicConstraints(rendition models.Rendition, segment RenditionSeg
 	if limit, ok := dynamicInt(constraints["text_limit"]); ok && limit > 0 && capabilities.TextLength(rendition.Platform, segment.Body) > limit {
 		appendIssue("dynamic_text_limit", fmt.Sprintf("Text is over the current %d character limit.", limit), "body")
 	}
-	if limit, ok := dynamicInt(constraints["media_max_count"]); ok && limit > 0 && len(segment.Media) > limit {
+	outputMedia := deliveredSegmentMedia(segment)
+	if limit, ok := dynamicInt(constraints["media_max_count"]); ok && limit > 0 && len(outputMedia) > limit {
 		appendIssue("dynamic_media_limit", fmt.Sprintf("This account currently supports at most %d media items.", limit), "media")
 	}
 	issues = append(issues, validateDynamicVideoConstraints(rendition, segment, position, constraints)...)
@@ -3078,7 +3154,8 @@ func (h *PublicationHandler) validatePublicationByIDWithDB(ctx context.Context, 
 		for segmentIndex, segment := range segments {
 			issues = append(issues, validatePublicationPoll(rendition, segment, canonicalSegments, len(segments))...)
 			segmentSettings := mergePublicationSettings(destinationSettings, segment.Settings)
-			segmentMedia := segment.Media
+			issues = append(issues, validateTextCardOutput(rendition, segment, segmentSettings)...)
+			segmentMedia := deliveredSegmentMedia(segment)
 			if strings.HasPrefix(segment.ID, "legacy:") {
 				segmentMedia = mediaByRendition[rendition.ID]
 			}

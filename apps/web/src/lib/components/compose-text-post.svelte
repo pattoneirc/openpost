@@ -109,6 +109,16 @@
 	import ComposerRepostControl from './composer-repost-control.svelte';
 	import ComposerValidationMenu from './composer-validation-menu.svelte';
 	import DestinationSettingsDialog from './destination-settings-dialog.svelte';
+	import InlineNotice from './inline-notice.svelte';
+	import TextCardPreview from './text-card-preview.svelte';
+	import {
+		supportsTextCards,
+		textCardRequest,
+		textCardRequestKey,
+		savedTextCardPreviews,
+		withTextCardImages,
+		type TextCardResult
+	} from '$lib/text-cards';
 	import WorkspaceSetupGuide from './workspace-setup-guide.svelte';
 	import WorkspaceActivationCompletion from './workspace-activation-completion.svelte';
 	import PlatformIcon from './platform-icon.svelte';
@@ -497,6 +507,9 @@
 	let captionGenerationError = $state('');
 	let editingAltMediaId = $state<string | null>(null);
 	let settingsByAccount = $state<Record<string, ComposerSettings>>({});
+	const textCardResults = new SvelteMap<string, TextCardResult>();
+	let textCardNoticeDismissed = $state(false);
+	let savedCardPreviews = $state<Record<string, TextCardResult>>({});
 	let segmentSettingsByPost = $state<Record<string, Record<string, ComposerSettings>>>({});
 	let mediaSettingsByAccount = $state<Record<string, Record<string, ComposerSettings>>>({});
 	let mediaPickerOpen = $state(false);
@@ -1307,7 +1320,14 @@
 		});
 	}
 	function settingsForAccount(account: SocialAccount): ComposerSettings {
-		return normalizeSettings(account, settingsByAccount[account.id] ?? {}, 'destination');
+		const defaults: ComposerSettings = supportsTextCards(getPlatformKey(account.platform))
+			? { text_card: 'text_only' }
+			: {};
+		return normalizeSettings(
+			account,
+			{ ...defaults, ...settingsByAccount[account.id] },
+			'destination'
+		);
 	}
 
 	function segmentSettingsForAccount(account: SocialAccount): ComposerSettings {
@@ -1504,7 +1524,7 @@
 		return '';
 	}
 
-	function previewForAccount(account: SocialAccount) {
+	function authoredPreviewForAccount(account: SocialAccount) {
 		const joined =
 			resolvedCapabilities[account.id]?.segment_strategy === 'join' && posts.length > 1;
 		const segments = posts.map((post) => {
@@ -1584,6 +1604,27 @@
 			linkUrl: segments[0]?.url ?? ''
 		});
 	}
+
+	function cardRequestForAccount(account: SocialAccount) {
+		return textCardRequest(
+			account.id,
+			authoredPreviewForAccount(account),
+			settingsForAccount(account),
+			requestedOutputProfiles[account.id] || resolvedCapabilities[account.id]?.output_profile || ''
+		);
+	}
+
+	function previewForAccount(account: SocialAccount) {
+		const model = authoredPreviewForAccount(account);
+		const requestKey = textCardRequestKey(cardRequestForAccount(account));
+		const saved = savedCardPreviews[account.id];
+		const result = saved?.key === requestKey ? saved : textCardResults.get(account.id);
+		return result?.key === requestKey ? withTextCardImages(model, result.images) : model;
+	}
+
+	const textCardAccounts = $derived(
+		selectedAccounts.filter((account) => cardRequestForAccount(account))
+	);
 
 	function openAccountPreview(account: SocialAccount) {
 		previewSessions.get(account.id)?.close();
@@ -1859,13 +1900,16 @@
 	function accountIssueMessages(account: SocialAccount): string[] {
 		const provider = getPlatformKey(account.platform);
 		const sourcePosts = isThread ? posts : activePost ? [activePost] : [];
-		const mediaWarnings = sourcePosts.flatMap((post) => {
-			const mediaIds = getVariantMediaIds(account.id, post.key) ?? post.mediaIds;
-			return providerMediaWarningMessages(
-				provider,
-				mediaCapabilityItemsFromIds(mediaIds, mediaMimeTypes, mediaSizes)
-			);
-		});
+		// The server validates generated cards with the complete delivery media.
+		const mediaWarnings = cardRequestForAccount(account)
+			? []
+			: sourcePosts.flatMap((post) => {
+					const mediaIds = getVariantMediaIds(account.id, post.key) ?? post.mediaIds;
+					return providerMediaWarningMessages(
+						provider,
+						mediaCapabilityItemsFromIds(mediaIds, mediaMimeTypes, mediaSizes)
+					);
+				});
 		return uniqueIssueMessages([
 			...accountBlockers(account, false),
 			...accountReadinessMessages(account),
@@ -1873,7 +1917,12 @@
 				.filter((issue) => isAccountSpecificIssue(issue) && isActionableAccountIssue(issue))
 				.map((issue) => issue.message),
 			...validationIssues
-				.filter((issue) => isAccountSpecificIssue(issue) && issueMatchesProvider(issue, provider))
+				.filter(
+					(issue) =>
+						isActionableAccountIssue(issue) &&
+						isAccountSpecificIssue(issue) &&
+						issueMatchesProvider(issue, provider)
+				)
 				.map((issue) => issue.message),
 			...mediaWarnings
 		]);
@@ -2150,10 +2199,13 @@
 		);
 		linkUrl = firstComposerURL(posts[0]?.content ?? '') || publication.source_url || '';
 		settingsByAccount = Object.fromEntries(
-			(publication.renditions ?? []).map((rendition) => [
-				rendition.social_account_id,
-				parseComposerSettingsRecord(rendition.settings ?? {})
-			])
+			(publication.renditions ?? []).map((rendition) => {
+				const settings = parseComposerSettingsRecord(rendition.settings ?? {});
+				if (supportsTextCards(rendition.platform) && settings.text_card === undefined) {
+					settings.text_card = 'off';
+				}
+				return [rendition.social_account_id, settings];
+			})
 		);
 		const canonicalSegments = [...(publication.segments ?? [])].sort(
 			(left, right) => left.position - right.position
@@ -3135,6 +3187,7 @@
 			].map((media) => [media.id, media.alt_text ?? ''])
 		);
 		hydrateCanonicalSettings(publication);
+		savedCardPreviews = savedTextCardPreviews(publication.renditions ?? []);
 		if (resolveAfter) await resolveCapabilities();
 		lastSavedSnapshot = getSaveSnapshot();
 	}
@@ -3972,6 +4025,7 @@
 			const createdPublication = !startingPublicationId;
 			publicationId = savedPublicationId;
 			revision = saved.revision;
+			savedCardPreviews = savedTextCardPreviews(saved.renditions ?? []);
 			draftConflict = null;
 			lastSavedSnapshot = snapshot;
 			showSavedIndicator();
@@ -4037,6 +4091,7 @@
 		const saved = await session.overwriteConflict();
 		publicationId = saved.id;
 		revision = saved.revision;
+		savedCardPreviews = savedTextCardPreviews(saved.renditions ?? []);
 		lastSavedSnapshot = getSaveSnapshot();
 		draftConflict = null;
 		success = m.compose_changes_saved();
@@ -6669,6 +6724,42 @@
 					</div>
 				{/if}
 
+				{#if textCardAccounts.length && !textCardNoticeDismissed}
+					<InlineNotice
+						class="mb-3"
+						message={m.text_card_notice({
+							platform: [
+								...new Set(textCardAccounts.map((account) => getPlatformName(account.platform)))
+							].join(', ')
+						})}
+						dismissLabel={m.common_dismiss()}
+						onDismiss={() => (textCardNoticeDismissed = true)}
+					>
+						{#snippet actions()}<Button
+								variant="ghost"
+								size="sm"
+								aria-label={m.text_card_customize()}
+								onclick={() =>
+									openDestinationSettings(
+										activeVariantAccount && textCardAccounts.includes(activeVariantAccount)
+											? activeVariantAccount
+											: textCardAccounts[0]
+									)}
+								><ThemeIcon role="settings" class="size-4 sm:hidden" /><span
+									class="hidden sm:inline">{m.text_card_customize()}</span
+								></Button
+							>{/snippet}
+					</InlineNotice>
+				{/if}
+				{#each selectedAccounts as account (account.id)}
+					<TextCardPreview
+						request={cardRequestForAccount(account)}
+						savedPreview={savedCardPreviews[account.id]}
+						showImages={false}
+						onResult={(result) => textCardResults.set(account.id, result)}
+					/>
+				{/each}
+
 				{#if activeVariantAccount}
 					{@const accountPreview = previewForAccount(activeVariantAccount)}
 					{@const post = activePost}
@@ -7324,6 +7415,15 @@
 
 <DestinationSettingsDialog
 	bind:open={settingsDialogOpen}
+	textCardSavedPreview={settingsAccount ? savedCardPreviews[settingsAccount.id] : undefined}
+	textCardText={settingsAccount
+		? authoredPreviewForAccount(settingsAccount)
+				.segments.map((segment) => segment.text)
+				.join('\n\n')
+		: ''}
+	textCardAttachmentCount={settingsAccount
+		? authoredPreviewForAccount(settingsAccount).media.length
+		: 0}
 	account={settingsAccount}
 	settings={settingsDialogFields}
 	emptySettingsHint={settingsDialogEmptyHint}

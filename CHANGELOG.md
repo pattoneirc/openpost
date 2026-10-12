@@ -4,6 +4,34 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [7.17.5] - 2026-10-11
+
+### Fixed
+
+- Give the race-instrumented backend suites an explicit package time allowance so the expanded rendering integration tests can finish in CI.
+- Preserve composer loading, legacy link cards, joined captions, and Social Set formats when a saved destination has empty settings.
+- Keep idea discovery available when a Workspace has future scheduled posts, while still using those posts to avoid repetitive suggestions.
+- Keep Image Editor save failures readable beside AI controls, with responsive feedback in both appearance modes.
+- Allow the fal image-generation key to be saved securely in administrator settings and applied when the server restarts.
+- Resolve Pixelfed runtime configuration by its instance, consistently with provider registration.
+
+### Added
+
+- Generate images, edit the selected image layer and fill selected areas in Image Editor through fal, with GPT Image 2.5 Flare as the default. Review results before applying them and undo any application.
+- Save image requests and provider receipts across restarts, recover uploads without generating again, and record each user's fal costs in the existing AI usage ledger. No image-specific credit limits are enforced.
+- Turn text posts into customizable Instagram and Pixelfed image cards, with account identity, Feed and Story layouts, and optional cards before carousel attachments.
+- Reuse styles through Social Set defaults, preview cards in the composer or MCP, and retain exact publishing images separately from authored attachments.
+
+### Self-hosting
+
+- Configure `FAL_KEY` on the server and worker to enable AI images for signed-in users with Workspace edit access. Migration 155 adds durable image requests and provider attribution to AI usage.
+
+## [7.16.5] - 2026-10-11
+
+### Fixed
+
+- Upload stored images and videos to X through the publisher's lazy media reader instead of failing before contacting X.
+
 ## [7.16.4] - 2026-10-10
 
 ### Added

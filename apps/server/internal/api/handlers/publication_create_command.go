@@ -14,6 +14,7 @@ import (
 	"github.com/openpost/backend/internal/services/publicationbuilder"
 	publicationservice "github.com/openpost/backend/internal/services/publications"
 	repostservice "github.com/openpost/backend/internal/services/reposts"
+	"github.com/openpost/backend/internal/textcards"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
 )
@@ -58,6 +59,12 @@ func (command publicationApplication) prepareCreate(
 	accountMap, err := command.handler.loadAccounts(ctx, input.WorkspaceID, renditionAccountIDs(input.Renditions))
 	if err != nil {
 		return preparedPublicationCreate{}, err
+	}
+	if command.handler.textCards != nil {
+		for i := range input.Renditions {
+			rendition := &input.Renditions[i]
+			rendition.Settings = textcards.NewPostDefaults(accountMap[rendition.SocialAccountID].Platform, rendition.Settings)
+		}
 	}
 	if err := command.handler.validateMediaBelongsToWorkspace(
 		ctx,
@@ -163,6 +170,9 @@ func (command publicationApplication) persistCreateTx(
 		prepared.accounts,
 		nil,
 	); err != nil {
+		return PublicationResponse{}, err
+	}
+	if err := command.handler.refreshPublicationTextCards(ctx, tx, publication.ID, false); err != nil {
 		return PublicationResponse{}, err
 	}
 	if _, err := lifecycle.NewService(tx).Record(ctx, lifecycle.EventInput{

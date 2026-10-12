@@ -58,6 +58,7 @@ import (
 	growthservice "github.com/openpost/backend/internal/services/growth"
 	"github.com/openpost/backend/internal/services/identity"
 	"github.com/openpost/backend/internal/services/imagecaption"
+	"github.com/openpost/backend/internal/services/imagegeneration"
 	"github.com/openpost/backend/internal/services/instancesettings"
 	"github.com/openpost/backend/internal/services/mastodonapps"
 	"github.com/openpost/backend/internal/services/mcpoauth"
@@ -659,6 +660,11 @@ func main() {
 	}
 
 	repurposeSuggestions := repurpose.New(db, contentGenerator, cfg.TextGenerationModel)
+	var imageProvider ai.ImageProvider
+	if cfg.FalAPIKey != "" {
+		imageProvider = ai.NewFalImages(cfg.FalAPIKey)
+	}
+	imageGeneration := imagegeneration.New(db, imageProvider, storage, mediaHandler)
 	var publicSourceLoader sourcecontext.Loader
 	var publicationBuilderApplication *publicationbuilder.Application
 	var publicationBuilderService *publicationbuilder.Service
@@ -764,6 +770,7 @@ func main() {
 		worker.SetPostImportService(postImportService)
 		worker.SetPublicationBuilderService(publicationBuilderApplication)
 		worker.SetRepurposeSuggestionsService(repurposeSuggestions)
+		worker.SetImageGenerationService(imageGeneration)
 		worker.SetAccountPreflightService(accountPreflightService)
 		worker.SetExternalWebhookService(externalWebhookService)
 		worker.SetTelemetry(telemetryRecorder)
@@ -885,6 +892,7 @@ func main() {
 		ContentDiscoveryEnabled:   publicationDiscoveryService != nil,
 		PublicationBuilder:        publicationBuilderApplication,
 		RepurposeSuggestions:      repurposeSuggestions,
+		ImageGeneration:           imageGeneration,
 		PublicationPlanner:        publicationBuilderService,
 		PublicationDiscovery:      publicationDiscoveryService,
 		Entitlement:               entitlementService,

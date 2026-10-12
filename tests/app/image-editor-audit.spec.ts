@@ -142,49 +142,67 @@ test("ordinary start page opens workspace templates with their pages and editabl
   expect(errors).toEqual([]);
 });
 
-test("failed cloud and recovery saves stay visible and protect unsaved work", async ({
-  page,
-  request,
-}, testInfo) => {
-  const auth = await registerUser(request, `image-recovery-audit-${randomUUID()}@example.com`);
-  const workspace = await createWorkspace(request, auth.token, "Recovery audit");
-  await authenticatePage(page, auth.token);
-  await page.goto(`/image-editor/new?workspace=${workspace.id}`);
-  await page.getByRole("button", { name: "New project", exact: true }).click();
-  await expect(page.getByRole("application", { name: "Design canvas" })).toBeVisible();
-  await page.route("**/api/v1/image-editor/designs/*", async (route) => {
-    if (route.request().method() !== "PATCH") return route.continue();
-    await route.fulfill({
-      status: 503,
-      contentType: "application/problem+json",
-      body: JSON.stringify({ detail: "Save unavailable for this test" }),
+for (const scheme of ["light", "dark"] as const) {
+  test(`failed cloud and recovery saves stay visible and protect unsaved work in ${scheme}`, async ({
+    page,
+    request,
+  }, testInfo) => {
+    const auth = await registerUser(request, `image-recovery-audit-${randomUUID()}@example.com`);
+    const workspace = await createWorkspace(request, auth.token, "Recovery audit");
+    await authenticatePage(page, auth.token);
+    await page.addInitScript((value) => localStorage.setItem("mode-watcher-mode", value), scheme);
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+    await page.goto(`/image-editor/new?workspace=${workspace.id}`);
+    await page.getByRole("button", { name: "New project", exact: true }).click();
+    await expect(page.getByRole("application", { name: "Design canvas" })).toBeVisible();
+    await page.route("**/api/v1/image-editor/designs/*", async (route) => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      await route.fulfill({
+        status: 503,
+        contentType: "application/problem+json",
+        body: JSON.stringify({ detail: "Save unavailable for this test" }),
+      });
     });
-  });
-  await page.evaluate(() => {
-    IDBFactory.prototype.open = () => {
-      throw new DOMException("Storage full", "QuotaExceededError");
-    };
-  });
-  await page.getByRole("textbox", { name: "Design title" }).fill("Unsaved changes");
-  await expect(page.getByRole("banner").getByText("Save unavailable for this test")).toBeVisible();
-  expect(
     await page.evaluate(() => {
-      const event = new Event("beforeunload", { cancelable: true });
-      window.dispatchEvent(event);
-      return event.defaultPrevented;
-    }),
-  ).toBe(true);
-  await page.setViewportSize({ width: 320, height: 800 });
-  await expect(
-    page.getByRole("status").filter({ hasText: "Save unavailable for this test" }).last(),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "OpenPost Image Editor", exact: true }),
-  ).toBeInViewport();
-  await expect(page.getByRole("button", { name: "Export", exact: true })).toBeInViewport();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
-  await page.screenshot({ path: testInfo.outputPath("save-error-320.png") });
-});
+      IDBFactory.prototype.open = () => {
+        throw new DOMException("Storage full", "QuotaExceededError");
+      };
+    });
+    await page.getByRole("textbox", { name: "Design title" }).fill("Unsaved changes");
+    await expect(
+      page.getByRole("banner").getByText("Save unavailable for this test"),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(() => {
+        const event = new Event("beforeunload", { cancelable: true });
+        window.dispatchEvent(event);
+        return event.defaultPrevented;
+      }),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath(`save-error-1280-${scheme}.png`),
+    });
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 800 });
+      await expect(
+        page.getByRole("status").filter({ hasText: "Save unavailable for this test" }).last(),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", {
+          name: "OpenPost Image Editor",
+          exact: true,
+        }),
+      ).toBeInViewport();
+      await expect(page.getByRole("button", { name: "Export", exact: true })).toBeInViewport();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width,
+      );
+      await page.screenshot({
+        path: testInfo.outputPath(`save-error-${width}-${scheme}.png`),
+      });
+    }
+  });
+}
 
 test("desktop page background Image opens a visible chooser", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });

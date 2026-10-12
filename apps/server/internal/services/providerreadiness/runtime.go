@@ -103,14 +103,13 @@ func (c *ConfigurationCatalog) Register(app RuntimeApp) error {
 func (c *ConfigurationCatalog) Resolve(provider, instanceURL string, environment ProviderEnvironment) RuntimeConfiguration {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	instanceURL = strings.TrimRight(strings.TrimSpace(instanceURL), "/")
-	key := provider
+	app := platform.AppConfig{Provider: provider, InstanceURL: instanceURL}
 	fingerprintInstanceURL := instanceURL
-	if provider == capabilities.ProviderMastodon {
-		key += ":" + instanceURL
-	} else if provider == capabilities.ProviderDiscord && instanceURL == platform.ConnectionModeBot {
-		key += ":" + platform.ConnectionModeBot
+	if provider == capabilities.ProviderDiscord && instanceURL == platform.ConnectionModeBot {
+		app.ConnectionMode = platform.ConnectionModeBot
 		fingerprintInstanceURL = ""
 	}
+	key := platform.AppConfigMergeKey(app)
 	if c != nil {
 		c.mu.RLock()
 		configured, ok := c.apps[key]

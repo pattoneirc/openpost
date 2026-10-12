@@ -3106,6 +3106,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/image-generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the current user's image generation history */
+        get: operations["list-image-generations"];
+        put?: never;
+        /** Generate, edit or fill an image for review */
+        post: operations["create-image-generation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/image-generations/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read signed-in image generation capabilities */
+        get: operations["image-generation-config"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/image-generations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a saved image generation request */
+        get: operations["get-image-generation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs": {
         parameters: {
             query?: never;
@@ -4460,6 +4512,23 @@ export interface paths {
         put?: never;
         /** Create a publication */
         post: operations["create-publication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publications/preview-text-card": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview text as publishing images */
+        post: operations["preview-text-card"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8188,7 +8257,7 @@ export interface components {
              * @description Media provenance
              * @enum {string}
              */
-            source?: "upload" | "media_copy" | "camera" | "image_editor_export" | "image_editor_edit" | "background_removal" | "video_editor_source" | "video_editor_export" | "stock_import" | "meme_generator" | "screenshot_template";
+            source?: "upload" | "media_copy" | "camera" | "image_editor_export" | "image_editor_edit" | "background_removal" | "video_editor_source" | "video_editor_export" | "stock_import" | "meme_generator" | "screenshot_template" | "image_generation";
             /** @description License and creator provenance for a selected stock asset */
             stock_provenance?: components["schemas"]["StockMediaProvenance"];
             /** @description Optional tag to assign to this upload */
@@ -9129,10 +9198,12 @@ export interface components {
             /** Format: int64 */
             input_tokens: number | null;
             model: string;
+            operation: string;
             organization_id: string;
             /** Format: int64 */
             output_tokens: number | null;
             project_id: string;
+            provider: string;
             provider_request_id: string;
             requested_model: string;
             run_id: string;
@@ -10518,6 +10589,75 @@ export interface components {
             /** Format: double */
             y: number;
         };
+        ImageGenerationConfigOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/ImageGenerationConfigOutputBody.json
+             */
+            readonly $schema?: string;
+            available: boolean;
+            default_model: string;
+            models: components["schemas"]["ImageModel"][] | null;
+        };
+        ImageGenerationRequest: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/ImageGenerationRequest.json
+             */
+            readonly $schema?: string;
+            /** @enum {string} */
+            background: "auto" | "opaque" | "transparent";
+            /** @description Base64 PNG; transparent pixels are selected. Fill only. */
+            mask_png?: string;
+            /** @enum {string} */
+            model: "gpt-image-2.5-flare" | "gpt-image-2.5-sunburst";
+            /** @enum {string} */
+            operation: "generate" | "edit" | "fill";
+            page_id: string;
+            project_id: string;
+            prompt: string;
+            /** @enum {string} */
+            quality: "low" | "medium" | "high" | "xhigh" | "max" | "auto";
+            /** @enum {string} */
+            size: "square_hd" | "portrait_4_3" | "portrait_16_9" | "landscape_4_3" | "landscape_16_9" | "auto";
+            source_media_id?: string;
+            /** @description Browser snapshot fingerprint used to prevent stale application */
+            target_fingerprint?: string;
+            target_layer_id?: string;
+            workspace_id: string;
+        };
+        ImageGenerationRun: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/ImageGenerationRun.json
+             */
+            readonly $schema?: string;
+            billing_state: string;
+            /** Format: int64 */
+            cost_microusd: number | null;
+            /** Format: date-time */
+            created_at: string;
+            error_message: string;
+            id: string;
+            model: string;
+            operation: string;
+            page_id: string;
+            project_id: string;
+            prompt: string;
+            result_media_id: string;
+            source_media_id: string;
+            state: string;
+            target_fingerprint: string;
+            target_layer_id: string;
+            workspace_id: string;
+        };
+        ImageModel: {
+            id: string;
+            name: string;
+        };
         ImportedPostResponse: {
             external_url: string;
             id: string;
@@ -11003,6 +11143,15 @@ export interface components {
             readonly $schema?: string;
             can_edit: boolean;
             templates: components["schemas"]["ImageEditorTemplateResponse"][] | null;
+        };
+        ListImageGenerationsOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/ListImageGenerationsOutputBody.json
+             */
+            readonly $schema?: string;
+            runs: components["schemas"]["ImageGenerationRun"][] | null;
         };
         ListMediaOutputBody: {
             /**
@@ -12330,6 +12479,38 @@ export interface components {
             mime_type: string;
             template_id: string;
         };
+        PreviewTextCardInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/PreviewTextCardInputBody.json
+             */
+            readonly $schema?: string;
+            /**
+             * Format: int64
+             * @description Following attachments; adds a next-slide arrow
+             */
+            attachment_count?: number;
+            /** @description Provider format, including instagram.story for a vertical Story */
+            output_profile?: string;
+            /** @description Text card style settings, also accepted in rendition and Social Set defaults */
+            settings?: {
+                [key: string]: unknown;
+            };
+            /** @description Connected account whose name, handle and profile photo appear on the card */
+            social_account_id: string;
+            /** @description Effective destination text */
+            text: string;
+        };
+        PreviewTextCardOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/PreviewTextCardOutputBody.json
+             */
+            readonly $schema?: string;
+            images: components["schemas"]["TextCardPreviewImage"][] | null;
+        };
         Profile: {
             description: string;
             key: string;
@@ -13470,6 +13651,8 @@ export interface components {
             id: string;
             media: components["schemas"]["MediaSummary"][] | null;
             media_inherited: boolean;
+            /** @description Ordered delivery media, including generated text cards. Use media for editing source attachments. */
+            output_media?: components["schemas"]["MediaSummary"][] | null;
             /** Format: int64 */
             position: number;
             publication_segment_id: string;
@@ -15009,6 +15192,14 @@ export interface components {
             mechanism: string;
             tags: string[] | null;
             visual: string;
+        };
+        TextCardPreviewImage: {
+            /** @description Private JPEG preview generated by the publishing renderer */
+            data_url: string;
+            /** Format: int64 */
+            height: number;
+            /** Format: int64 */
+            width: number;
         };
         TextConstraint: {
             /** Format: int64 */
@@ -28362,6 +28553,340 @@ export interface operations {
             };
         };
     };
+    "list-image-generations": {
+        parameters: {
+            query: {
+                workspace_id: string;
+                project_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListImageGenerationsOutputBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "create-image-generation": {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageGenerationRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageGenerationRun"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "image-generation-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageGenerationConfigOutputBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-image-generation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageGenerationRun"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "list-jobs": {
         parameters: {
             query?: {
@@ -34107,6 +34632,85 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "preview-text-card": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewTextCardInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    "Cache-Control"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewTextCardOutputBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -25,6 +25,8 @@ type EditorCall struct {
 	Model             string     `json:"model"`
 	ProviderRequestID string     `json:"provider_request_id"`
 	State             string     `json:"state"`
+	Provider          string     `bun:",notnull,default:'openrouter'" json:"provider"`
+	Operation         string     `bun:",notnull,default:'assistant'" json:"operation"`
 	InputTokens       *int64     `json:"input_tokens"`
 	OutputTokens      *int64     `json:"output_tokens"`
 	TotalTokens       *int64     `json:"total_tokens"`

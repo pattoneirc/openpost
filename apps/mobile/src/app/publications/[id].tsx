@@ -47,6 +47,7 @@ import {
   type WorkspaceQueryScope,
 } from "@/lib/query-session";
 import { useNativeTheme } from "@/theme";
+import { textCardImages } from "@/lib/delivery-media";
 
 type PublicationMutationScope = WorkspaceQueryScope & {
   publicationId: string;
@@ -316,6 +317,18 @@ export default function PostScreen() {
                 {expanded ? (
                   <View style={{ gap: spacing.small, paddingBottom: spacing.small }}>
                     <BodyText selectable>{rendition.body || "No text"}</BodyText>
+                    {textCardImages(rendition).map((media) => (
+                      <MediaImage
+                        key={media.id}
+                        uri={media.url}
+                        accessibilityLabel={media.alt_text || "Post image"}
+                        contentFit="contain"
+                        style={{
+                          width: "100%",
+                          aspectRatio: media.width && media.height ? media.width / media.height : 1,
+                        }}
+                      />
+                    ))}
                     {rendition.target_key && rendition.target_key !== rendition.platform ? (
                       <BodyText>{rendition.target_key}</BodyText>
                     ) : null}

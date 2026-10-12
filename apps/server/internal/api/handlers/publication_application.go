@@ -178,6 +178,9 @@ func (commands publicationApplication) Create(
 	userID string,
 	input CreatePublicationBody,
 ) (publicationResult PublicationResponse, err error) {
+	ctx, cleanupTextCards := commands.handler.textCards.Mutation(ctx)
+	defer cleanupTextCards()
+
 	defer categorizePublicationError(&err)
 	prepared, err := commands.prepareCreate(ctx, userID, input)
 	if err != nil {
@@ -197,6 +200,9 @@ func (commands publicationApplication) CreateIdempotent(
 	input CreatePublicationBody,
 	request idempotency.Request,
 ) (publicationResult PublicationResponse, replayed bool, err error) {
+	ctx, cleanupTextCards := commands.handler.textCards.Mutation(ctx)
+	defer cleanupTextCards()
+
 	defer categorizePublicationError(&err)
 	prepared, err := commands.prepareCreate(ctx, userID, input)
 	if err != nil {
@@ -220,6 +226,9 @@ func (commands publicationApplication) CreateIdempotent(
 // CreateFromWorkflow replays the accepted draft before resolving mutable Social
 // Set defaults. A run's frozen input remains the identity across worker restarts.
 func (commands publicationApplication) CreateFromWorkflow(ctx context.Context, userID string, input CreatePublicationBody, request idempotency.Request) (PublicationResponse, error) {
+	ctx, cleanupTextCards := commands.handler.textCards.Mutation(ctx)
+	defer cleanupTextCards()
+
 	if err := commands.handler.checkWorkspaceEditAccess(ctx, input.WorkspaceID, userID); err != nil {
 		return PublicationResponse{}, err
 	}
@@ -254,6 +263,9 @@ func (commands publicationApplication) CreateFromBuild(
 	input CreatePublicationBody,
 	readyMediaIDs []string,
 ) (publicationResult PublicationResponse, err error) {
+	ctx, cleanupTextCards := commands.handler.textCards.Mutation(ctx)
+	defer cleanupTextCards()
+
 	defer categorizePublicationError(&err)
 	prepared, err := commands.prepareCreate(ctx, userID, input)
 	if err != nil {
@@ -301,6 +313,9 @@ func (commands publicationApplication) Update(
 	publicationID string,
 	input PublicationUpdateBody,
 ) (err error) {
+	ctx, cleanupTextCards := commands.handler.textCards.Mutation(ctx)
+	defer cleanupTextCards()
+
 	defer categorizePublicationError(&err)
 	prepared, err := commands.prepareUpdate(ctx, userID, publicationID, input)
 	if err != nil {
@@ -319,6 +334,9 @@ func (commands publicationApplication) UpdateIdempotent(
 	input PublicationUpdateBody,
 	request idempotency.Request,
 ) (publicationResult PublicationResponse, replayed bool, err error) {
+	ctx, cleanupTextCards := commands.handler.textCards.Mutation(ctx)
+	defer cleanupTextCards()
+
 	defer categorizePublicationError(&err)
 	prepared, err := commands.prepareUpdate(ctx, userID, publicationID, input)
 	if err != nil {
@@ -482,6 +500,10 @@ func (commands publicationApplication) updateTx(
 		); err != nil {
 			return PublicationResponse{}, err
 		}
+	}
+	resolveFormats := prepared.input.Renditions == nil && (prepared.input.Segments != nil || prepared.input.SourceText != nil)
+	if err := commands.handler.refreshPublicationTextCards(ctx, tx, publication.ID, resolveFormats, publicationTextCardIDs(before.response)...); err != nil {
+		return PublicationResponse{}, err
 	}
 	if rescheduleQueuedJob {
 		runAt, effectiveDelay, err := commands.handler.resolveScheduledPublicationRunAtTx(

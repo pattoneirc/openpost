@@ -117,6 +117,7 @@ func delegatedOperationAllowed(scopeSet, operationID string) bool {
 		"get-publication":                      "publications:read",
 		"list-publication-events":              "publications:read",
 		"validate-publication":                 "publications:read",
+		"preview-text-card":                    "publications:read",
 		"create-publication":                   "drafts:write",
 		"update-publication":                   "drafts:write",
 		"upsert-publication-renditions":        "drafts:write",

@@ -422,6 +422,22 @@ export const docsPageCatalog = Object.freeze([
     }
   },
   {
+    "page": "image-editor/ai-images.mdx",
+    "title": "Generate and edit images with AI",
+    "description": "Generate an image, edit an image layer, or fill a selected area through fal.",
+    "route": "/image-editor/ai-images",
+    "agentRepresentation": {
+      "membership": "ordinary"
+    },
+    "agentDiscovery": {
+      "membership": "unlisted"
+    },
+    "agentCorpus": {
+      "membership": "included",
+      "section": "image-editor"
+    }
+  },
+  {
     "page": "image-editor/color-and-effects.mdx",
     "title": "Color and effects",
     "description": "Crop images, adjust a layer or page, add effects, and remove backgrounds.",
@@ -955,7 +971,7 @@ export const docsPageCatalog = Object.freeze([
   {
     "page": "self-hosting/ai.mdx",
     "title": "AI providers",
-    "description": "Configure OpenRouter for post generation and media captions.",
+    "description": "Configure OpenRouter for text and captions, and fal for image generation and editing.",
     "route": "/self-hosting/ai",
     "agentRepresentation": {
       "membership": "ordinary"

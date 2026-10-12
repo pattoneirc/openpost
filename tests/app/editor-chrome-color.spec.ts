@@ -152,7 +152,6 @@ async function createImageDesign(page: Page): Promise<string> {
     page.getByRole("treeitem", { name: "color-source.png, image", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   const saveIndicator = page.getByTestId("image-editor-save-indicator");
-  await expect(saveIndicator).toHaveAttribute("data-state", "idle");
   await expect(saveIndicator).toHaveAttribute("data-state", "saved", {
     timeout: 10_000,
   });

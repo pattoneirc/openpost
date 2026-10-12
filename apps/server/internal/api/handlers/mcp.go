@@ -380,6 +380,7 @@ func (h *MCPHandler) SetFeatureGate(g engagementservice.FeatureGate) {
 
 func (h *MCPHandler) publicationHandler() *PublicationHandler {
 	handler := NewPublicationHandler(h.db, nil, h.entitlement)
+	handler.SetTextCardStorage(h.mediaStorage)
 	if h.usage != nil {
 		handler.SetUsage(h.usage)
 	}
@@ -1372,6 +1373,7 @@ func mcpOperationCatalog() []mcpOperationDefinition {
 		mcpCreatePublicationTool(),
 		mcpListPublicationsTool(),
 		mcpGetPublicationTool(),
+		mcpPreviewTextCardTool(),
 		mcpUpdatePublicationTool(),
 		mcpSetPublicationRenditionsTool(),
 		mcpReplyToRenditionTool(),
@@ -2707,6 +2709,8 @@ func mcpToolOutputSchema(toolName string) map[string]any {
 			"valid":  map[string]any{"type": "boolean"},
 			"issues": mcpArraySchema(mcpOpenObjectSchema()),
 		}, "valid", "issues")
+	case mcpToolPreviewTextCard:
+		return mcpStructuredOutputSchema(map[string]any{"image_count": map[string]any{"type": "integer"}}, "image_count")
 	case mcpToolSuggestSlot:
 		return mcpStructuredOutputSchema(map[string]any{
 			"suggestion": mcpOpenObjectSchema(),
@@ -3319,7 +3323,7 @@ func (h *MCPHandler) callMCPOperation(ctx context.Context, userID, operation str
 		return h.createLocalMediaUploadTicket(ctx, userID, args)
 	case "editor_sessions", "editor_reference", "editor_context", "editor_reveal", "timeline_inspect", "image_inspect", "media_library", "media_analyze", "media_analysis_status", "media_analysis_cancel", "media_search", "media_inspect", "media_frame", "media_storyboard", "scene_analyze", "scene_analysis_status", "scene_analysis_cancel", "scene_search", "scene_inspect", "preview_render", "preview_audio", "video_edit", "image_edit", "export_start", "export_status", "export_cancel", "editor_work_status", "editor_work_cancel", "editor_history_inspect", "editor_history_undo", "editor_history_redo", "library_search", "library_inspect", "library_apply", "library_save", "style_capture", "style_preview", "style_list", "style_inspect", "style_save", "preferences_get", "preferences_set", "preferences_remove", "style_archive":
 		return h.callEditorAgentTool(ctx, userID, operation, args)
-	case mcpToolCreatePub, mcpToolListPubs, mcpToolGetPub, mcpToolUpdatePub, mcpToolPubRenditions, mcpToolReplyRendition,
+	case mcpToolPreviewTextCard, mcpToolCreatePub, mcpToolListPubs, mcpToolGetPub, mcpToolUpdatePub, mcpToolPubRenditions, mcpToolReplyRendition,
 		mcpToolValidatePub, mcpToolSchedulePub, mcpToolCancelPub, mcpToolPublishPubNow, mcpToolDeletePub,
 		mcpToolRetryFailed, mcpToolRetryOne, mcpToolPubEvents, mcpToolComments,
 		mcpToolReplyComment, mcpToolHideComment, mcpToolDeleteComment, mcpToolSuggestSlot, mcpToolUploadURL, mcpToolUploadBase64,
@@ -3333,7 +3337,7 @@ func (h *MCPHandler) callMCPOperation(ctx context.Context, userID, operation str
 func (h *MCPHandler) callWorkspaceActionTool(ctx context.Context, userID, toolName string, args map[string]any) (any, *mcpError) {
 	toolName = normalizeMCPOperationName(toolName)
 	switch toolName {
-	case mcpToolCreatePub, mcpToolListPubs, mcpToolGetPub, mcpToolUpdatePub, mcpToolPubRenditions, mcpToolReplyRendition,
+	case mcpToolPreviewTextCard, mcpToolCreatePub, mcpToolListPubs, mcpToolGetPub, mcpToolUpdatePub, mcpToolPubRenditions, mcpToolReplyRendition,
 		mcpToolValidatePub, mcpToolSchedulePub, mcpToolCancelPub, mcpToolPublishPubNow, mcpToolDeletePub,
 		mcpToolRetryFailed, mcpToolRetryOne, mcpToolPubEvents, mcpToolComments,
 		mcpToolReplyComment, mcpToolHideComment, mcpToolDeleteComment:
@@ -3361,6 +3365,8 @@ func (h *MCPHandler) callPublicationTool(ctx context.Context, userID, toolName s
 		return h.listPublications(ctx, userID, args)
 	case mcpToolGetPub:
 		return h.getPublication(ctx, userID, args)
+	case mcpToolPreviewTextCard:
+		return h.previewTextCard(ctx, userID, args)
 	case mcpToolUpdatePub:
 		return h.updatePublication(ctx, userID, args)
 	case mcpToolPubRenditions:
@@ -4097,6 +4103,9 @@ func isDraftRevisionConflict(err error) bool {
 }
 
 func (h *MCPHandler) setPublicationRenditions(ctx context.Context, userID string, args map[string]any) (any, *mcpError) {
+	handler := h.publicationHandler()
+	ctx, cleanupTextCards := handler.textCards.Mutation(ctx)
+	defer cleanupTextCards()
 	var input struct {
 		PublicationID    string           `json:"post_id"`
 		ExpectedRevision int              `json:"expected_revision"`
@@ -4110,7 +4119,6 @@ func (h *MCPHandler) setPublicationRenditions(ctx context.Context, userID string
 		len(input.Renditions) == 0 {
 		return nil, &mcpError{Code: -32602, Message: "invalid set_post_variants arguments"}
 	}
-	handler := h.publicationHandler()
 	if strings.TrimSpace(input.IdempotencyKey) != "" {
 		publication, err := handler.publicationApplication().Get(ctx, userID, strings.TrimSpace(input.PublicationID))
 		if err != nil {

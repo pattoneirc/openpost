@@ -14,6 +14,7 @@ import (
 
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/providerlimits"
+	"github.com/openpost/backend/internal/textcards"
 )
 
 const (
@@ -379,6 +380,9 @@ func All() []Capability {
 		}
 		c.Intents = intentsFor(c.Profile)
 		c.MediaShapes = mediaShapesFor(c.Profile, c.Media)
+		if textcards.Supported(c.Provider, "") {
+			c.Settings = append(c.Settings, TextCardSettings()...)
+		}
 		c.Settings = normalizeSettingDefinitions(c)
 		c.ValidationCategories = validationCategories(c)
 		c.CapabilityRevision = capabilityRevision
@@ -709,6 +713,9 @@ func Resolve(provider string, input ResolveInput) ResolvedCapability {
 func ResolveCatalog(provider string, catalog []Capability, input ResolveInput) ResolvedCapability {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	preset := normalizeIntent(firstNonEmptyCapability(input.CreationPreset, input.Intent))
+	var textCardApplied bool
+	var textCardIssues []ValidationIssue
+	input.Segments, textCardApplied, textCardIssues = resolveInputTextCards(provider, preset, input)
 	inputShape := resolveMediaShape(input.Segments, input.SourceURL)
 	shape := intendedMediaShape(preset, inputShape)
 	if input.Context == ResolveContextSocialSetDefaults && input.RequestedOutputProfile != "" {
@@ -722,10 +729,13 @@ func ResolveCatalog(provider string, catalog []Capability, input ResolveInput) R
 			inputShape = shape
 		}
 	}
-	issues := []ValidationIssue{}
+	issues := append([]ValidationIssue{}, textCardIssues...)
 	selected := selectDestinationCapability(catalog, provider, input, shape, preset)
 	availableFormats := destinationFormats(catalog, provider, input, shape, preset)
 	formatSelectionRequired := destinationFormatSelectionRequired(catalog, provider, input, shape)
+	if textCardApplied {
+		formatSelectionRequired = false
+	}
 	if selected == nil {
 		message := fmt.Sprintf("%s does not expose a publishing format", provider)
 		issues = append(issues, validationIssue("unsupported_destination", message, provider, "", "output_profile"))
@@ -754,6 +764,9 @@ func ResolveCatalog(provider string, catalog []Capability, input ResolveInput) R
 		issues = append(issues, validationIssue("format_selection_required", message, provider, selected.Profile, "output_profile"))
 	}
 	segmentStrategy := destinationSegmentStrategy(*selected, len(input.Segments))
+	if textCardApplied {
+		segmentStrategy = "join"
+	}
 	effectiveSegments := destinationSegments(input.Segments, segmentStrategy)
 	activeSettings := make([]SettingDefinition, 0, len(selected.Settings))
 	for _, setting := range selected.Settings {
@@ -1164,6 +1177,9 @@ func ApplyAccountConstraints(resolved *ResolvedCapability, input AccountConstrai
 		return
 	}
 	applyResolvedConstraintValues(resolved, input.Constraints)
+	if projected, applied, _ := projectTextCards(resolved.Provider, resolved.OutputProfile, input.Segments, input.Settings); applied {
+		input.Segments = projected
+	}
 
 	issues := make([]ValidationIssue, 0, len(resolved.Issues))
 	for _, issue := range resolved.Issues {
@@ -1512,6 +1528,15 @@ func NormalizeResolvedSettings(provider, profile string, settings map[string]any
 }
 
 func ValidateOutput(provider, outputProfile, fallbackProfile, body, title, description string, media []MediaItem, settings map[string]any) []ValidationIssue {
+	if textcards.Supported(provider, outputProfile) {
+		style, err := textcards.Parse(settings)
+		if err == nil && style.Applies(provider, outputProfile, body, len(media)) {
+			err = textcards.ValidateText(body)
+		}
+		if err != nil {
+			return []ValidationIssue{validationIssue("text_card_invalid", err.Error(), provider, fallbackProfile, "text_card")}
+		}
+	}
 	shape := resolveMediaShape([]ResolveSegment{{Media: media}}, "")
 	settings = NormalizeMediaTextLinkSettings(provider, len(media), settings)
 	if capability, ok := findOutputForValidation(provider, outputProfile, fallbackProfile, shape); ok {

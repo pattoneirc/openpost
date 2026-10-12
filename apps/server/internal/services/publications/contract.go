@@ -213,6 +213,7 @@ type RenditionActionOutcome struct {
 }
 
 type RenditionSegmentResponse struct {
+	OutputMedia          []MediaSummary            `json:"output_media,omitempty" doc:"Ordered delivery media, including generated text cards. Use media for editing source attachments."`
 	SourceOverrides      []RenditionSourceOverride `json:"source_overrides,omitempty"`
 	ID                   string                    `json:"id"`
 	PublicationSegmentID string                    `json:"publication_segment_id"`
