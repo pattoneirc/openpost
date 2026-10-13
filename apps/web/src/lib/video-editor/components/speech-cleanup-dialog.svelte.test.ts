@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
+import { tick } from 'svelte';
 import { WebThemeRuntime } from '$lib/themes/runtime';
 import { resolveBuiltInTheme } from '@openpost/ui/themes/builtins';
 import { updateItemProperties } from '../timeline/actions/items';
@@ -69,6 +70,18 @@ it('reports reviewed source sections once when cleanup cuts linked tracks', asyn
 		{ ...source, id: 'speech', type: 'audio', trackId: 'track-audio-main' },
 		{ ...source, id: 'video', type: 'video', trackId: 'track-video-main' },
 		{
+			id: 'warm-neighbor',
+			type: 'video',
+			trackId: 'warm-video',
+			from: 90,
+			durationInFrames: 15,
+			mediaId: 'recording',
+			sourceStart: 90,
+			sourceEnd: 105,
+			sourceFps: 30,
+			label: 'Nearby clip'
+		},
+		{
 			id: 'caption',
 			type: 'subtitle',
 			trackId: 'captions',
@@ -108,6 +121,7 @@ it('reports reviewed source sections once when cleanup cuts linked tracks', asyn
 	commandHistory.clearHistory();
 	timelineStore._setTracks([
 		...createDefaultTracks(),
+		{ ...createDefaultTracks()[0], id: 'warm-video', order: 3 },
 		{ ...createDefaultTracks()[0], id: 'captions', order: 2 }
 	]);
 	timelineStore._setItems(original);
@@ -137,32 +151,36 @@ it('reports reviewed source sections once when cleanup cuts linked tracks', asyn
 	editorSession.clock.seek(195);
 	const preview = await render(PreviewPlayer, { onedit: () => {} });
 	preview.container.style.cssText = 'display:flex;width:900px;height:500px';
-	const picture = () => {
+	const picture = async () => {
+		await tick();
 		const layer = preview.container;
-		const video = layer?.querySelector('video');
-		const fallback = layer?.querySelector<HTMLCanvasElement>('[data-seek-fallback]');
 		const canvas = document.createElement('canvas');
 		canvas.width = 64;
 		canvas.height = 36;
 		const context = canvas.getContext('2d')!;
+		// Nearby clips stay mounted but hidden for prewarming. Their DOM order
+		// does not determine which video or fallback is currently visible.
 		// A pending seek can retain visible pixels while readyState drops to HAVE_METADATA.
-		if (
-			video &&
-			video.videoWidth > 0 &&
-			video.checkVisibility({ visibilityProperty: true, opacityProperty: true })
-		)
+		for (const video of layer.querySelectorAll('video')) {
+			if (
+				video.videoWidth === 0 ||
+				!video.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+			)
+				continue;
 			try {
 				context.drawImage(video, 0, 0, 64, 36);
 			} catch (error) {
 				if (!(error instanceof DOMException) || error.name !== 'InvalidStateError') throw error;
 			}
-		if (
-			fallback &&
-			!fallback.hidden &&
-			fallback.width &&
-			fallback.checkVisibility({ visibilityProperty: true, opacityProperty: true })
-		)
-			context.drawImage(fallback, 0, 0, 64, 36);
+		}
+		for (const fallback of layer.querySelectorAll<HTMLCanvasElement>('[data-seek-fallback]')) {
+			if (
+				!fallback.hidden &&
+				fallback.width &&
+				fallback.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+			)
+				context.drawImage(fallback, 0, 0, 64, 36);
+		}
 		return context
 			.getImageData(0, 0, 64, 36)
 			.data.some((value, index) => index % 4 !== 3 && value > 32);

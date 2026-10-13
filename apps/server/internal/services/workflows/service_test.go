@@ -15,6 +15,7 @@ import (
 	"github.com/openpost/backend/internal/models"
 	servicecrypto "github.com/openpost/backend/internal/services/crypto"
 	"github.com/openpost/backend/internal/services/workspaceaccess"
+	"github.com/openpost/backend/internal/telemetry"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,6 +68,8 @@ func TestRunKeepsSavedDefinitionBranchesAndTypedBindingsAcrossRestart(t *testing
 		return EffectResult{Output: map[string]any{"id": "post-42", "revision": 7}}, nil
 	})
 	s, actor := workflowTestService(t, effect)
+	recorder := &telemetry.MemoryRecorder{}
+	s.SetTelemetry(recorder)
 	workflow := saveTestWorkflow(t, s, actor, []Step{{ID: "filter", Kind: KindCondition, Inputs: map[string]Value{"left": reference("source.title"), "operator": literal("contains"), "right": literal("release")}, Then: []Step{{ID: "draft", Kind: KindDraft, Inputs: map[string]Value{"text": literal("Shipped: {{source.title}}"), "account_ids": reference("source.accounts")}}}, Else: []Step{{ID: "ignored", Kind: KindDraft, Inputs: map[string]Value{"text": literal("wrong branch")}}}}})
 	run, err := s.Start(t.Context(), actor, "ws", workflow.ID, ModeLive, map[string]any{"title": "Release 2.0", "accounts": []string{"a", "b"}}, workflow.Revision)
 	require.NoError(t, err)
@@ -74,6 +77,7 @@ func TestRunKeepsSavedDefinitionBranchesAndTypedBindingsAcrossRestart(t *testing
 	require.NoError(t, err)
 	runJob(t, s, run.ID)
 	restarted := NewService(s.db, effect, s.encryptor)
+	restarted.SetTelemetry(recorder)
 	runJob(t, restarted, run.ID)
 	runJob(t, restarted, run.ID)
 	final, err := s.GetRun(t.Context(), actor, "ws", run.ID)
@@ -84,6 +88,13 @@ func TestRunKeepsSavedDefinitionBranchesAndTypedBindingsAcrossRestart(t *testing
 	require.Equal(t, []any{"a", "b"}, calls[0].Inputs["account_ids"])
 	require.Equal(t, "post-42", final.Steps[1].Output["id"])
 	require.Equal(t, workflow.Revision, final.WorkflowRevision)
+	require.Len(t, recorder.Events, 1)
+	require.Equal(t, "workflow run finished", recorder.Events[0].Name)
+	require.Equal(t, "succeeded", recorder.Events[0].Properties["outcome"])
+	encoded, err := json.Marshal(recorder.Events)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "Release 2.0")
+	require.NotContains(t, string(encoded), "Shipped:")
 }
 
 func TestPreviewNeverDispatchesNativeEffectsAndMissingFieldsFail(t *testing.T) {
@@ -634,4 +645,23 @@ func TestFilterDistinguishesNullFromMissingThroughSavedExecution(t *testing.T) {
 		require.Equal(t, StateSucceeded, result.State, result.Error)
 		require.Equal(t, true, result.Steps[0].Output["matched"])
 	})
+}
+
+func TestExpiredApprovalHasOneCommittedFailureOutcome(t *testing.T) {
+	s, actor := workflowTestService(t, nil)
+	recorder := &telemetry.MemoryRecorder{}
+	s.SetTelemetry(recorder)
+	workflow := saveTestWorkflow(t, s, actor, []Step{{ID: "review", Kind: KindApproval, Inputs: map[string]Value{"publication_id": literal("post-1")}}})
+	run, err := s.Start(t.Context(), actor, "ws", workflow.ID, ModeLive, map[string]any{}, workflow.Revision)
+	require.NoError(t, err)
+	_, err = s.db.NewUpdate().Model((*runRecord)(nil)).Set("state = ?, created_at = ?", StateApproval, time.Now().Add(-MaxRunAge-time.Hour)).Where("id = ?", run.ID).Exec(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, s.HandleJob(t.Context(), jobregistry.TypeWorkflowSweep, "{}"))
+	require.NoError(t, s.HandleJob(t.Context(), jobregistry.TypeWorkflowSweep, "{}"))
+	final, err := s.GetRun(t.Context(), actor, "ws", run.ID)
+	require.NoError(t, err)
+	require.Equal(t, StateFailed, final.State)
+	require.Len(t, recorder.Events, 1)
+	require.Equal(t, telemetry.EventWorkflowRunFinished, recorder.Events[0].Name)
+	require.Equal(t, StateFailed, recorder.Events[0].Properties["outcome"])
 }

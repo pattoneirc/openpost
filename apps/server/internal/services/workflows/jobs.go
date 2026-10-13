@@ -85,8 +85,32 @@ func (s *Service) sweep(ctx context.Context) error {
 		}
 	}
 	// Approval waits also expire. They have no running worker or recurring job.
-	_, err := s.db.NewUpdate().Model((*runRecord)(nil)).Set("state = ?, error = ?, revision = revision + 1, updated_at = ?", StateFailed, "The approval expired after 30 days.", now).Where("state = ? AND created_at < ?", StateApproval, now.Add(-MaxRunAge)).Exec(ctx)
-	return err
+	return s.expireApprovals(ctx, now)
+}
+
+func (s *Service) expireApprovals(ctx context.Context, now time.Time) error {
+	var expired []runRecord
+	if err := s.db.NewSelect().Model(&expired).Where("state = ? AND created_at < ?", StateApproval, now.Add(-MaxRunAge)).Limit(100).Scan(ctx); err != nil {
+		return err
+	}
+	for _, run := range expired {
+		result, err := s.db.NewUpdate().Model((*runRecord)(nil)).
+			Set("state = ?, error = ?, revision = revision + 1, updated_at = ?", StateFailed, "The approval expired after 30 days.", now).
+			Where("id = ? AND state = ? AND revision = ?", run.ID, StateApproval, run.Revision).Exec(ctx)
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows == 1 {
+			var steps []StepResult
+			_ = json.Unmarshal([]byte(run.ResultsJSON), &steps)
+			s.captureFinishedRun(ctx, run, StateFailed, len(steps))
+		}
+	}
+	return nil
 }
 func (s *Service) poll(ctx context.Context, id string) error {
 	now := time.Now().UTC()

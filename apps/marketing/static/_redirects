@@ -1,4 +1,7 @@
 /features /#features 301
+/tools/x-timeline-blocker /tools/feed-limiter 301
+/tools/x-timeline-blocker/ /tools/feed-limiter 301
+/tools/x-timeline-blocker.md /tools/feed-limiter.md 301
 /logo.svg /assets/brand/logo.svg 301
 /og /og/home.png 302
 /assets/brand/og-image.png /og/home.png 302

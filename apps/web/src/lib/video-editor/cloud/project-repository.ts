@@ -1,3 +1,4 @@
+import { captureTelemetryEvent } from '@openpost/telemetry';
 import { isAudioCodecSupported } from '../media/audio-codec-support';
 import { isProResCodec } from '../media/prores-decoder';
 import { editorAssetMetadataSchema, type EditorAssetMetadata } from './asset-metadata';
@@ -289,6 +290,10 @@ export class CloudVideoProjectRepository<TDocument extends object> {
 		if (error || !data) throw new Error('Could not create Cloud Video Project');
 		queryClient.setQueryData(videoProjectQueryKeys.detail(this.workspaceId, data.id), data);
 		await this.invalidateLists();
+		captureTelemetryEvent('video project created', {
+			source: 'unknown',
+			storage: 'cloud'
+		});
 		return cloudProject<TDocument>(data);
 	}
 
@@ -596,7 +601,12 @@ export class CloudVideoProjectRepository<TDocument extends object> {
 				size: input.size,
 				sha256: input.sha256,
 				preparation: input.mediaMetadata
-					? { editorMedia: editorAssetMetadataSchema.parse({ version: 1, ...input.mediaMetadata }) }
+					? {
+							editorMedia: editorAssetMetadataSchema.parse({
+								version: 1,
+								...input.mediaMetadata
+							})
+						}
 					: {},
 				device_id: deviceId()
 			}

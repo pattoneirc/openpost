@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "reviewed_on": "2026-09-06",
+  "reviewed_on": "2026-10-12",
   "next_review_on": "2026-12-01",
   "summary_notice": "This plain-language summary is a guide, not a replacement for the Privacy Policy. If it differs from the full policy, the full policy controls.",
   "summary_points": [
@@ -348,14 +348,15 @@
       "category": "Product, marketing, documentation, and service telemetry",
       "owner": "Managed OpenPost service and PostHog",
       "purpose": "Measure public-site use, understand product workflows, diagnose failures, and improve the managed service without advertising profiles, cross-site tracking, or session replay.",
-      "includes": "For visitors who allow analytics cookies: first-party identifiers and sessions shared across OpenPost sibling subdomains, country derived before raw IP discard, referrer and approved campaign facts, page views, Web Vitals, selected interactions, and sanitized browser failures. For visitors who continue without analytics cookies: limited personless events with daily server-hashed identity and no geography. Managed product and service telemetry can include opaque user, workspace, publication, rendition, and job identifiers plus release, route-template, status, error type, and sanitized exception context. OpenPost does not send email addresses, names, usernames, post text, media, request bodies, credentials, query strings, raw URLs, or raw IP addresses as telemetry properties.",
+      "includes": "For visitors who allow analytics cookies: first-party identifiers and sessions shared across OpenPost sibling subdomains, country derived before raw IP discard, referrer and approved campaign facts, page views, Web Vitals, selected interactions, and sanitized browser failures. For visitors who continue without analytics cookies: limited personless events with daily server-hashed identity and no geography. Managed product and service telemetry can include opaque user, workspace, publication, rendition, and job identifiers plus release, route-template, status, error type, and sanitized exception context. OpenPost does not send email addresses, names, usernames, post text, media, request bodies, credentials, query strings, raw URLs, or raw IP addresses as telemetry properties. Native app analytics after separate per-server permission includes opaque signed-in identity, known screen templates, selected actions, device and app versions, and sanitized JavaScript stack locations.",
       "duration": "Managed PostHog event data is configured for a maximum 12-month retention window. OpenPost does not keep a separate telemetry copy after PostHog deletes or expires the event data.",
       "deletion_trigger": "Expiry under the managed PostHog retention window, operator deletion of an event or person, a supported account-deletion request for linked identified data, or retirement of the analytics project.",
-      "exceptions": "No optional browser telemetry is sent before a choice or after full opt-out. Do Not Track or Global Privacy Control forces full browser opt-out. Persistent analytics is limited to visitors who allow first-party analytics cookies; cookieless mode remains personless and cannot provide reliable multi-day identity, country, or server-side IP bot enrichment. Backend service telemetry is separately disclosed and is not controlled by the browser choice. Autocapture, session replay, heatmaps, surveys, console capture, network timing and bodies, advertising profiles, and cross-site tracking are disabled.",
+      "exceptions": "No optional browser telemetry is sent before a choice or after full opt-out. Do Not Track or Global Privacy Control forces full browser opt-out. Persistent analytics is limited to visitors who allow first-party analytics cookies; cookieless mode remains personless and cannot provide reliable multi-day identity, country, or server-side IP bot enrichment. Backend service telemetry is separately disclosed and is not controlled by the browser choice. Autocapture, session replay, heatmaps, surveys, console capture, network timing and bodies, advertising profiles, and cross-site tracking are disabled. Native analytics stays off until allowed on that device and server. It uses a bounded memory queue and clears identity and pending events when consent, server, or actor changes. It excludes location, touch histories, recordings, authored content, and native crash dumps.",
       "evidence": [
         "packages/telemetry/src/index.ts",
         "apps/server/internal/telemetry/telemetry.go",
-        "docs/reference/configuration/telemetry.md"
+        "docs/reference/configuration/telemetry.md",
+        "apps/mobile/src/lib/telemetry/index.ts"
       ]
     },
     {
@@ -515,7 +516,7 @@
       "owner": "OpenPost telemetry preference control",
       "identifier_kind": "exact",
       "identifier": "openpost_analytics",
-      "purpose": "Keeps the visitor’s persistent, cookieless, or fully off browser-analytics choice and prevents repeated prompts.",
+      "purpose": "Keeps the visitor\u2019s persistent, cookieless, or fully off browser-analytics choice and prevents repeated prompts.",
       "scope": "Hosted OpenPost sibling subdomains through Domain=.openpo.st; host-only on self-hosted domains; Path=/; SameSite=Lax; Secure on HTTPS.",
       "duration": "One year after the latest choice, or until the visitor changes the choice or clears site data.",
       "necessity": "functional",

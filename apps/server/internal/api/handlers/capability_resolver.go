@@ -133,6 +133,7 @@ type ResolveCapabilitySegmentInput struct {
 	Description string                        `json:"description,omitempty" doc:"Canonical segment description"`
 	URL         string                        `json:"url,omitempty" doc:"Canonical segment URL"`
 	Media       []ResolveCapabilityMediaInput `json:"media,omitempty" doc:"Ordered segment media"`
+	Settings    map[string]any                `json:"settings,omitempty" doc:"Authored segment settings, including attachment requirements"`
 }
 
 type ResolveCapabilitiesInput struct {
@@ -447,10 +448,12 @@ func (h *CapabilityResolverHandler) resolveSegments(
 	segments := make([]capabilities.ResolveSegment, 0, len(inputs))
 	for index, input := range inputs {
 		segment := capabilities.ResolveSegment{
-			ID:    publicationFirstNonEmpty(input.ID, fmt.Sprintf("segment-%d", index+1)),
-			Body:  input.Content,
-			Title: input.Title,
-			URL:   input.URL,
+			ID:          publicationFirstNonEmpty(input.ID, fmt.Sprintf("segment-%d", index+1)),
+			Body:        input.Content,
+			Title:       input.Title,
+			Description: input.Description,
+			Settings:    input.Settings,
+			URL:         input.URL,
 		}
 		for _, mediaInput := range input.Media {
 			media := mediaByID[mediaInput.MediaID]

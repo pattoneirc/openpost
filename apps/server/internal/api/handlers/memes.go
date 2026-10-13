@@ -36,6 +36,7 @@ import (
 	"github.com/openpost/backend/internal/services/memegeneration"
 	"github.com/openpost/backend/internal/services/publicurl"
 	"github.com/openpost/backend/internal/services/ratelimit"
+	"github.com/openpost/backend/internal/services/voiceprofiles"
 	"github.com/uptrace/bun"
 )
 
@@ -631,16 +632,24 @@ func (h *MemeHandler) generateSuggestions(ctx context.Context, input *GenerateMe
 	for _, template := range shortlist {
 		generationTemplates = append(generationTemplates, memeGenerationTemplate(template))
 	}
+	voiceGuidance := ""
+	if h.db != nil {
+		profile, voiceErr := voiceprofiles.New(h.db).Default(ctx, input.Body.WorkspaceID)
+		if voiceErr == nil {
+			voice, _ := json.Marshal(profile.Definition)
+			voiceGuidance = string(voice)
+		}
+	}
 	generated, err := h.suggester.Suggest(ctx, memegeneration.Input{
 		Idea: input.Body.Idea, Tone: input.Body.Tone, Language: input.Body.Language,
-		CandidateCount: count, Templates: generationTemplates,
+		CandidateCount: count, Templates: generationTemplates, VoiceGuidance: voiceGuidance,
 	})
 	if err != nil {
 		return nil, memeSuggestionError(err)
 	}
 
 	byID := make(map[string]memes.Template, len(shortlist))
-	for _, template := range shortlist {
+	for _, template := range append(catalog.Templates, shortlist...) {
 		byID[template.ID] = template
 	}
 	output := &GenerateMemeSuggestionsOutput{}

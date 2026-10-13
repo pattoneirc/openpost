@@ -34,66 +34,19 @@ export interface BrowserTelemetryConfig {
   surface: TelemetrySurface;
 }
 
-export interface TelemetryEventMap {
-  "growth opened": { platform_count: number };
-  "growth recommendation shown": {
-    platform: string;
-    rank_bucket: string;
-    mutual_count_bucket: string;
-    follows_viewer: boolean;
-  };
-  "growth profile opened": {
-    platform: string;
-    rank_bucket: string;
-    mutual_count_bucket: string;
-    follows_viewer: boolean;
-  };
-  "signup started": Record<string, never>;
-  "publication publish requested": {
-    account_count: number;
-    is_thread: boolean;
-  };
-  "publication schedule requested": {
-    account_count: number;
-    is_thread: boolean;
-  };
-  "media uploaded": {
-    count: number;
-    source: "upload" | "camera" | "stock_import";
-  };
-  "image design created": {
-    source: "custom" | "preset" | "template" | "media";
-  };
-  "image design exported": { mode: string; pages: number };
-  "billing checkout opened": { billing_period: string; plan_id: string };
-  "video project created": {
-    source: "openpost_media" | "files" | "blank" | "recording" | "stock";
-    editing_mode?: string;
-    file_count?: number;
-  };
-  "video export completed": { format: string; variant_count: number };
-  "public editor opened": {
-    editor: "image" | "video";
-    source: "marketing_tool";
-  };
-  "public image editor viewed": Record<string, string | number | boolean>;
-  "public image design started": Record<string, string | number | boolean>;
-  "public image editor meaningful edit": Record<string, string | number | boolean>;
-  "public image export completed": Record<string, string | number | boolean>;
-  "public image editor signup clicked": Record<string, string | number | boolean>;
-  "public image editor signup completed": Record<string, string | number | boolean>;
-  "public image workspace import completed": Record<string, string | number | boolean>;
-  "docs search used": { result_count?: number };
-  "docs code copied": { language?: string };
-}
-
-export type TelemetryEventName = keyof TelemetryEventMap;
+export { type TelemetryEventMap, type TelemetryEventName } from "./events";
+import {
+  allowlistedEventProperties,
+  containsSensitiveValue,
+  type TelemetryEventMap,
+  type TelemetryEventName,
+} from "./events";
 
 interface BrowserSDK {
   init(token: string, options: Record<string, unknown>): unknown;
   capture(event: string, properties?: Record<string, unknown>): unknown;
   captureException(error: Error, properties?: Record<string, unknown>): unknown;
-  identify(distinctID: string): unknown;
+  identify(distinctID: string, properties?: Record<string, unknown>): unknown;
   register(properties: Record<string, unknown>): unknown;
   reset(): unknown;
   opt_out_capturing(): unknown;
@@ -165,37 +118,6 @@ function isBenignBrowserWarning(value: unknown): boolean {
   if (isResizeObserverWarning(value)) return true;
   return isContentlessScriptError(value);
 }
-const eventPropertyAllowlists: Record<TelemetryEventName, readonly string[]> = {
-  "growth opened": ["platform_count"],
-  "growth recommendation shown": [
-    "platform",
-    "rank_bucket",
-    "mutual_count_bucket",
-    "follows_viewer",
-  ],
-  "growth profile opened": ["platform", "rank_bucket", "mutual_count_bucket", "follows_viewer"],
-  "signup started": [],
-  "publication publish requested": ["account_count", "is_thread"],
-  "publication schedule requested": ["account_count", "is_thread"],
-  "media uploaded": ["count", "source"],
-  "image design created": ["source"],
-  "image design exported": ["mode", "pages"],
-  "billing checkout opened": ["billing_period", "plan_id"],
-  "video project created": ["source", "editing_mode", "file_count"],
-  "video export completed": ["format", "variant_count"],
-  "public editor opened": ["editor", "source"],
-  "public image editor viewed": ["returning_guest"],
-  "public image design started": ["entry", "preset", "template"],
-  "public image editor meaningful edit": ["source"],
-  "public image export completed": ["format", "pages"],
-  "public image editor signup clicked": ["source"],
-  "public image editor signup completed": ["source"],
-  "public image workspace import completed": ["source"],
-  "docs search used": ["result_count"],
-  "docs code copied": ["language"],
-};
-const planIDs = new Set(["founder", "team", "agency"]);
-const billingPeriods = new Set(["monthly", "annual"]);
 const telemetryPreferenceVersion = "v1";
 const telemetryPreferenceMaxAgeSeconds = 365 * 24 * 60 * 60;
 
@@ -210,6 +132,8 @@ const browserPreferenceStore: TelemetryPreferenceStore = {
 export class BrowserTelemetry {
   private loadedSDK: BrowserSDK | null;
   private loadingSDK: Promise<void> | null = null;
+  private sdkLoadAttempts = 0;
+  private sdkRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private configured = false;
   private configResolved = false;
   private disabled = false;
@@ -218,6 +142,7 @@ export class BrowserTelemetry {
   private preferenceListeners = new Set<(preference: TelemetryPreferenceStatus) => void>();
   private activeUserID: string | null = null;
   private pendingUserID: string | null = null;
+  private pendingInstanceAdmin = false;
   private pendingEvents: PendingEvent[] = [];
   private pendingPageViews: PendingPageView[] = [];
   private pendingExceptions: PendingException[] = [];
@@ -241,30 +166,55 @@ export class BrowserTelemetry {
   }
 
   private loadSDK(): void {
-    if (this.loadingSDK || typeof this.sdkSource !== "function") return;
+    if (this.loadingSDK || typeof this.sdkSource !== "function" || this.sdkLoadAttempts >= 4)
+      return;
+    this.sdkLoadAttempts++;
     this.loadingSDK = this.sdkSource()
       .then((sdk) => {
         this.loadedSDK = sdk;
-        // Configuration and consent may change while the download is in flight.
         if (this.config) this.configure(this.config);
       })
-      .catch(() => this.clearPendingCapture())
+      .catch(() => {
+        // Only consented activity remains buffered. A temporary failed download
+        // must not discard the intent events that make conversion measurable.
+        if (
+          this.sdkLoadAttempts < 4 &&
+          !this.disabled &&
+          (this.preference === "persistent" || this.preference === "cookieless")
+        ) {
+          this.sdkRetryTimer = setTimeout(
+            () => {
+              this.sdkRetryTimer = null;
+              this.loadSDK();
+            },
+            1000 * this.sdkLoadAttempts ** 2,
+          );
+        }
+      })
       .finally(() => {
         this.loadingSDK = null;
       });
+  }
+
+  private cancelSDKRetry(): void {
+    if (this.sdkRetryTimer !== null) clearTimeout(this.sdkRetryTimer);
+    this.sdkRetryTimer = null;
   }
 
   private canQueueCapture(): boolean {
     return (
       !this.configResolved ||
       Boolean(
-        this.loadingSDK && (this.preference === "persistent" || this.preference === "cookieless"),
+        (this.loadingSDK || this.sdkRetryTimer !== null) &&
+        (this.preference === "persistent" || this.preference === "cookieless"),
       )
     );
   }
 
   configure(config: BrowserTelemetryConfig): void {
     if (!this.runtimeAvailable()) return;
+    this.cancelSDKRetry();
+    if (!this.loadingSDK) this.sdkLoadAttempts = 0;
     this.configResolved = true;
     this.config = config;
     if (!config.enabled || !config.projectToken?.trim() || !config.apiHost?.trim()) {
@@ -273,7 +223,7 @@ export class BrowserTelemetry {
       this.pendingEvents = [];
       this.pendingPageViews = [];
       this.pendingExceptions = [];
-      if (this.configured) this.sdk.opt_out_capturing();
+      if (this.configured) this.stopSDKCapture();
       return;
     }
 
@@ -283,11 +233,15 @@ export class BrowserTelemetry {
       : (this.preferenceStore.read() ?? "undecided");
     this.setPreferenceStatus(preference);
     if (preference === "off") {
+      this.disabled = true;
+      if (this.configured) this.stopSDKCapture();
       this.preferenceStore.clearSDKState(config.projectToken.trim());
       this.clearPendingCapture();
       return;
     }
     if (preference === "undecided") {
+      this.disabled = true;
+      if (this.configured) this.stopSDKCapture();
       this.clearPendingCapture();
       return;
     }
@@ -356,20 +310,30 @@ export class BrowserTelemetry {
     this.disabled = false;
 
     if (preference === "persistent" && this.pendingUserID) {
-      this.identify(this.pendingUserID);
+      this.identify(this.pendingUserID, {
+        isInstanceAdmin: this.pendingInstanceAdmin,
+      });
     }
     for (const event of this.pendingEvents.splice(0)) {
-      this.sdk.capture(event.name, event.properties);
+      try {
+        this.sdk.capture(event.name, event.properties);
+      } catch {
+        /* Optional telemetry cannot change product outcomes. */
+      }
     }
     const pendingPageViews = this.pendingPageViews.splice(0);
     for (const pageView of pendingPageViews) {
       this.capturePageView(pageView.pathname);
     }
     for (const exception of this.pendingExceptions.splice(0)) {
-      this.sdk.captureException(exception.error, {
-        ...this.deploymentProperties(),
-        ...exception.properties,
-      });
+      try {
+        this.sdk.captureException(exception.error, {
+          ...this.deploymentProperties(),
+          ...exception.properties,
+        });
+      } catch {
+        /* Optional telemetry. */
+      }
     }
     if (this.requestedPagePath && pendingPageViews.length === 0) {
       this.capturePageView(this.requestedPagePath);
@@ -390,14 +354,19 @@ export class BrowserTelemetry {
         this.pendingEvents.push({ name, properties });
       return;
     }
-    this.sdk.capture(name, properties);
+    try {
+      this.sdk.capture(name, properties);
+    } catch {
+      /* Optional telemetry cannot change product outcomes. */
+    }
   }
 
   capturePageView(pathname: string, _title?: string): void {
-    if (this.disabled || typeof window === "undefined") return;
+    if (typeof window === "undefined") return;
     const path = cleanPath(pathname);
     this.requestedPagePath = pathname;
     this.rememberRouteTemplate(cleanPath(window.location.pathname), path);
+    if (this.disabled) return;
     if (!this.configured) {
       if (this.canQueueCapture() && this.pendingPageViews.length < maxPendingEvents) {
         this.pendingPageViews.push({ pathname });
@@ -406,25 +375,31 @@ export class BrowserTelemetry {
     }
     this.previousPagePath = this.currentPagePath;
     this.currentPagePath = path;
-    this.sdk.capture("$pageview", {
-      $current_url: `${window.location.origin}${path}`,
-      path,
-    });
+    try {
+      this.sdk.capture("$pageview", {
+        $current_url: `${window.location.origin}${path}`,
+        path,
+      });
+    } catch {
+      /* Optional page tracking. */
+    }
   }
 
   private sanitizeBrowserEvent(event: BrowserCaptureEvent | null): BrowserCaptureEvent | null {
+    if (this.disabled || (this.preference !== "persistent" && this.preference !== "cookieless"))
+      return null;
     if (!event?.properties) return event;
-    const fallbackPath = this.currentPagePath ?? cleanPath(window.location.pathname);
+    const fallbackPath = this.currentPagePath ?? "/unknown";
     const currentPath = routeTemplateForEvent(event.properties, this.routeTemplates, fallbackPath);
     const previousPath = event.event === "$pageview" ? this.previousPagePath : this.currentPagePath;
     return {
       ...event,
-      properties: sanitizeSDKProperties(
-        event.properties,
-        currentPath,
-        previousPath,
-        this.routeTemplates,
-      ),
+      properties: {
+        ...sanitizeSDKProperties(event.properties, currentPath, previousPath, this.routeTemplates),
+        client: "web",
+        audience: this.pendingUserID ? "authenticated" : "anonymous",
+        $internal_or_test_user: this.config?.edition === "cloud" && this.pendingInstanceAdmin,
+      },
     };
   }
 
@@ -439,32 +414,54 @@ export class BrowserTelemetry {
     }
   }
 
-  identify(userID: string): void {
+  identify(userID: string, options: { isInstanceAdmin?: boolean } = {}): void {
     const normalized = userID.trim();
     if (!normalized || containsSensitiveValue(normalized)) {
       this.resetIdentity();
       return;
     }
+    if (this.pendingUserID !== null && this.pendingUserID !== normalized)
+      this.clearPendingCapture();
+    const adminChanged = this.pendingInstanceAdmin !== Boolean(options.isInstanceAdmin);
+    this.pendingInstanceAdmin = Boolean(options.isInstanceAdmin);
     this.pendingUserID = normalized;
     if (
       !this.configured ||
       this.disabled ||
       this.preference !== "persistent" ||
-      this.activeUserID === normalized
+      (this.activeUserID === normalized && !adminChanged)
     )
       return;
-    if (this.activeUserID !== null) this.sdk.reset();
-    this.sdk.identify(normalized);
-    this.activeUserID = normalized;
+    try {
+      if (this.activeUserID !== null) this.sdk.reset();
+      this.sdk.identify(normalized, {
+        $internal_or_test_user: this.config?.edition === "cloud" && this.pendingInstanceAdmin,
+      });
+      this.activeUserID = normalized;
+    } catch {
+      this.disabled = true;
+      this.clearPendingCapture();
+      this.stopSDKCapture();
+      return;
+    }
     // sdk.reset() clears super-properties; the deployment context below is
     // safe to re-register because it never contains user identity.
     this.restoreDeploymentProperties();
   }
 
   resetIdentity(): void {
+    this.clearPendingCapture();
     this.pendingUserID = null;
+    this.pendingInstanceAdmin = false;
     this.activeUserID = null;
-    if (this.configured) this.sdk.reset();
+    if (this.configured) {
+      try {
+        this.sdk.reset();
+      } catch {
+        this.disabled = true;
+        this.stopSDKCapture();
+      }
+    }
     this.restoreDeploymentProperties();
   }
 
@@ -498,7 +495,10 @@ export class BrowserTelemetry {
       this.capturedErrors.add(error);
     }
     const sanitized = sanitizeError(error);
-    const compacted = { ...this.deploymentProperties(), ...compactProperties(properties) };
+    const compacted = {
+      ...this.deploymentProperties(),
+      ...compactProperties(properties),
+    };
     if (!this.configured) {
       if (this.canQueueCapture() && this.pendingExceptions.length < maxPendingEvents) {
         this.pendingExceptions.push({
@@ -508,17 +508,33 @@ export class BrowserTelemetry {
       }
       return;
     }
-    this.sdk.captureException(sanitized, compacted);
+    try {
+      this.sdk.captureException(sanitized, compacted);
+    } catch {
+      /* Never capture a telemetry failure through itself. */
+    }
   }
 
   requestHeaders(): Record<string, string> {
     if (!this.configured || this.disabled || this.preference !== "persistent") return {};
-    const distinctID = this.sdk.get_distinct_id?.();
-    const sessionID = this.sdk.get_session_id?.();
-    return compactProperties({
-      "X-PostHog-Distinct-ID": distinctID,
-      "X-PostHog-Session-ID": sessionID,
-    }) as Record<string, string>;
+    try {
+      const distinctID = this.sdk.get_distinct_id?.();
+      const sessionID = this.sdk.get_session_id?.();
+      return compactProperties({
+        "X-PostHog-Distinct-ID": distinctID,
+        "X-PostHog-Session-ID": sessionID,
+      }) as Record<string, string>;
+    } catch {
+      return {};
+    }
+  }
+
+  private stopSDKCapture(): void {
+    try {
+      this.sdk.opt_out_capturing();
+    } catch {
+      // The before_send guard also prevents capture after local disablement.
+    }
   }
 
   preferenceStatus(): TelemetryPreferenceStatus {
@@ -535,8 +551,13 @@ export class BrowserTelemetry {
       this.disabled = true;
       // opt_out_capturing() discards already-buffered SDK requests; reset()
       // alone only clears identity and would leave queued batches to flush.
-      this.sdk.opt_out_capturing();
-      this.sdk.reset();
+      this.clearPendingCapture();
+      this.stopSDKCapture();
+      try {
+        this.sdk.reset();
+      } catch {
+        /* Consent revocation must complete even if SDK storage fails. */
+      }
       if (this.config?.projectToken) {
         this.preferenceStore.clearSDKState(this.config.projectToken.trim());
       }
@@ -547,13 +568,17 @@ export class BrowserTelemetry {
 
     this.setPreferenceStatus(nextPreference);
     if (nextPreference === "off") {
+      this.cancelSDKRetry();
       this.clearPendingCapture();
       if (this.config?.projectToken) {
         this.preferenceStore.clearSDKState(this.config.projectToken.trim());
       }
       return;
     }
-    if (this.config) this.initialize(this.config, nextPreference);
+    if (this.config) {
+      this.disabled = false;
+      this.initialize(this.config, nextPreference);
+    }
   }
 
   subscribePreference(listener: (preference: TelemetryPreferenceStatus) => void): () => void {
@@ -596,8 +621,11 @@ export function captureTelemetryPageView(pathname: string, title?: string): void
   telemetry.capturePageView(pathname, title);
 }
 
-export function identifyTelemetryUser(userID: string): void {
-  telemetry.identify(userID);
+export function identifyTelemetryUser(
+  userID: string,
+  options: { isInstanceAdmin?: boolean } = {},
+): void {
+  telemetry.identify(userID, options);
 }
 
 export function resetTelemetryIdentity(): void {
@@ -828,42 +856,6 @@ function compactProperties(properties: Record<string, unknown>): Record<string, 
       .filter(([, value]) => value !== undefined)
       .map(([key, value]) => [key, sanitizePropertyValue(value)]),
   );
-}
-
-function allowlistedEventProperties(
-  name: TelemetryEventName,
-  properties: Record<string, unknown>,
-): Record<string, unknown> | null {
-  const allowlist = eventPropertyAllowlists[name];
-  if (!allowlist) return null;
-  if (Object.keys(properties).some((key) => !allowlist.includes(key))) {
-    return null;
-  }
-  if (Object.values(properties).some(containsSensitiveValue)) return null;
-  if (
-    name === "billing checkout opened" &&
-    (!planIDs.has(String(properties.plan_id)) ||
-      !billingPeriods.has(String(properties.billing_period)))
-  ) {
-    return null;
-  }
-  const result = compactProperties(
-    Object.fromEntries(allowlist.map((key) => [key, properties[key]])),
-  );
-  return result;
-}
-
-function containsSensitiveValue(value: unknown): boolean {
-  if (typeof value === "string") {
-    return /(?:https?:\/\/|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|(?:token|secret|password|authorization)=|^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$)/iu.test(
-      value,
-    );
-  }
-  if (Array.isArray(value)) return value.some(containsSensitiveValue);
-  if (value && typeof value === "object") {
-    return Object.values(value).some(containsSensitiveValue);
-  }
-  return false;
 }
 
 function cleanPath(pathname: string): string {

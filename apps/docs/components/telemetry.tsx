@@ -2,6 +2,7 @@
 import { ChevronDown, ChevronRight, Cookie } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
+import { documentationTelemetryPath } from "@openpost/social-images";
 import {
   captureTelemetryPageView,
   configureTelemetry,
@@ -33,7 +34,7 @@ export function Telemetry() {
     return installGlobalErrorCapture();
   }, []);
   useEffect(() => {
-    captureTelemetryPageView(pathname);
+    captureTelemetryPageView(documentationTelemetryPath(pathname));
   }, [pathname]);
   return <CookieBanner />;
 }

@@ -59,7 +59,7 @@ func (h *diagnosticsHTTPHarness) all() []diagnostics.Report {
 func TestDiagnosticsObserverCoversHumaStyle500s(t *testing.T) {
 	harness, reporter := newDiagnosticsHTTPHarness(t)
 	e := echo.New()
-	e.Use(observeDiagnosticFailures(reporter))
+	e.Use(observeHTTPFailures(nil, reporter))
 	e.GET("/api/v1/publications", func(c echo.Context) error {
 		// Huma-style: response written, nil returned.
 		return c.JSON(http.StatusInternalServerError, map[string]string{"detail": "boom"})
@@ -87,7 +87,7 @@ func TestDiagnosticsObserverCoversHumaStyle500s(t *testing.T) {
 func TestDiagnosticsObserverDedupesAgainstErrorHandler(t *testing.T) {
 	harness, reporter := newDiagnosticsHTTPHarness(t)
 	e := echo.New()
-	e.Use(observeDiagnosticFailures(reporter))
+	e.Use(observeHTTPFailures(nil, reporter))
 	installTelemetryErrorHandler(e, &telemetry.MemoryRecorder{}, reporter)
 	e.GET("/things/:id", func(echo.Context) error {
 		return errors.Join(errors.New("private content and token=secret"), context.DeadlineExceeded)
@@ -114,7 +114,7 @@ func TestDiagnosticsObserverDedupesAgainstErrorHandler(t *testing.T) {
 func TestDiagnosticsObserverIgnoresClientErrors(t *testing.T) {
 	harness, reporter := newDiagnosticsHTTPHarness(t)
 	e := echo.New()
-	e.Use(observeDiagnosticFailures(reporter))
+	e.Use(observeHTTPFailures(nil, reporter))
 	e.GET("/ok", func(c echo.Context) error {
 		return c.String(http.StatusOK, "fine")
 	})

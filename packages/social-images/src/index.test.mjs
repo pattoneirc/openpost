@@ -11,6 +11,8 @@ import {
   marketingPrerenderEntries,
   marketingSocialEntries,
   resolveMarketingSocial,
+  marketingTelemetryPath,
+  documentationTelemetryPath,
 } from "./index.js";
 
 function assertStaticImageUrl(entry, owner, expected) {
@@ -82,6 +84,17 @@ test("every social entry is unique and uses its published static image", () => {
     /Unknown marketing prerender section/u,
   );
   assert.equal(resolveMarketingSocial("/unknown").imageUrl, "https://openpo.st/og/home.png");
+  assert.equal(
+    marketingTelemetryPath("/platforms/bluesky/?token=private#fragment"),
+    "/platforms/bluesky",
+  );
+  assert.equal(marketingTelemetryPath("/private/customer@example.com"), "/unknown");
+  assert.equal(documentationTelemetryPath("/docs/?token=private"), "/docs");
+  assert.equal(
+    documentationTelemetryPath("/docs/guides/quickstart?token=private"),
+    "/docs/guides/quickstart",
+  );
+  assert.equal(documentationTelemetryPath("/private/customer@example.com"), "/docs/unknown");
 });
 
 test("documentation corpus policy is complete canonical metadata", () => {

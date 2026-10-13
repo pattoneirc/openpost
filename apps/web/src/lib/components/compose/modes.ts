@@ -1,3 +1,4 @@
+import type { components } from '@openpost/api-contract';
 import { linkDraftSchema, type LinkDraft } from './links';
 import { sharedPollSchema, type SharedPoll } from './polls';
 import { getPlatformKey } from '$lib/utils';
@@ -164,7 +165,7 @@ export interface ComposerPublicationPayload {
 			description_override?: string;
 			url_override?: string;
 			media_inherited: boolean;
-			settings: ComposerSettings;
+			settings: NonNullable<components['schemas']['RenditionSegmentInput']['settings']>;
 			media: Array<{
 				media_id: string;
 				role: string;

@@ -63,7 +63,10 @@ export interface DocumentationPageEntry extends SocialEntry {
     | { membership: "special"; reason: string };
   agentDiscovery:
     | { membership: "primary"; section?: DocumentationDiscoverySection }
-    | { membership: "optional" | "unlisted"; section?: DocumentationDiscoverySection };
+    | {
+        membership: "optional" | "unlisted";
+        section?: DocumentationDiscoverySection;
+      };
   agentCorpus:
     | { membership: "included"; section: DocumentationDiscoverySection }
     | { membership: "excluded"; reason: string };
@@ -80,6 +83,8 @@ export const marketingSocialEntries: readonly MarketingRouteEntry[];
 export const docsSocialEntries: readonly DocumentationPageEntry[];
 
 export function normalizeMarketingPath(pathname: string): string;
+export function marketingTelemetryPath(pathname: string): string;
+export function documentationTelemetryPath(pathname: string): string;
 export function canonicalMarketingUrl(pathname: string): string;
 export function marketingAgentMarkdownUrl(entry: MarketingRouteEntry): string | undefined;
 export function resolveMarketingSocial(pathname: string): MarketingRouteEntry;
@@ -221,7 +226,7 @@ export const videoFormats: readonly { id: VideoToolFormat; name: string }[];
 export const audioFormats: readonly { id: AudioToolFormat; name: string }[];
 
 export interface BrowserExtension {
-  slug: "youtube-localizer" | "x-timeline-blocker";
+  slug: "youtube-localizer" | "feed-limiter";
   name: string;
   title: string;
   description: string;
@@ -232,11 +237,20 @@ export interface BrowserExtension {
   screenshotWidth: number;
   screenshotHeight: number;
   screenshotCaption: string;
+  screenshots: {
+    src: string;
+    alt: string;
+    caption: string;
+    width: number;
+    height: number;
+  }[];
   tone: "lilac" | "blue";
   benefits: { title: string; text: string }[];
   setup: string[];
   cost: string;
   privacy: string;
+  privacyUpdated: string;
+  privacySections: { title: string; text: string }[];
   chromeStoreUrl?: string;
   firefoxStoreUrl?: string;
 }

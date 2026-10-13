@@ -32,6 +32,7 @@
 			>
 		</div>
 		<p class="browser-support">Chrome, Brave, Edge and Firefox.</p>
+		<a class="focus-ring text-link" href="#privacy">Privacy policy</a>
 	</header>
 	<figure class:blue={extension.tone === 'blue'} class:lilac={extension.tone === 'lilac'}>
 		<img
@@ -43,6 +44,26 @@
 		/>
 	</figure>
 	<p class="screenshot-caption">{extension.screenshotCaption}</p>
+	<section class="settings-gallery" aria-label="Extension settings screenshots">
+		{#each extension.screenshots as screenshot (screenshot.src)}
+			<figure>
+				<a
+					class="focus-ring"
+					href={screenshot.src}
+					aria-label={`View full size: ${screenshot.alt}`}
+				>
+					<img
+						src={screenshot.src}
+						alt={screenshot.alt}
+						width={screenshot.width}
+						height={screenshot.height}
+						loading="lazy"
+					/>
+				</a>
+				<figcaption>{screenshot.caption}</figcaption>
+			</figure>
+		{/each}
+	</section>
 	<div class="extension-details" data-agent-include="tool-explanation">
 		<section class="benefits" aria-label="What the extension does">
 			{#each extension.benefits as benefit (benefit.title)}
@@ -63,8 +84,19 @@
 			>
 		</section>
 		<section class="privacy" id="privacy">
-			<h2>Privacy</h2>
+			<h2>Privacy policy</h2>
+			<p>
+				Updated {extension.privacyUpdated}. This policy covers {extension.name}, not the OpenPost
+				hosted service.
+			</p>
 			<p>{extension.privacy}</p>
+			{#each extension.privacySections as section (section.title)}
+				<h3>{section.title}</h3>
+				<p>{section.text}</p>
+			{/each}
+			<a class="focus-ring text-link" href={`${extension.repository}/issues`}
+				>Contact the project <ArrowRight size={16} /></a
+			>
 		</section>
 		{#if other}
 			<a class="other-extension focus-ring" href={`/tools/${other.slug}`}
@@ -156,6 +188,27 @@
 	.extension-details {
 		max-width: 900px;
 	}
+	.settings-gallery {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+		gap: 24px;
+		margin-top: 32px;
+	}
+	.settings-gallery figure {
+		display: block;
+		padding: 0;
+		border-radius: 0;
+		overflow: visible;
+	}
+	.settings-gallery a {
+		display: block;
+		border-radius: 10px;
+	}
+	.settings-gallery figcaption {
+		margin-top: 12px;
+		font-size: 13px;
+		color: var(--muted-foreground);
+	}
 	.benefits {
 		padding-block: 52px;
 		display: grid;
@@ -194,6 +247,14 @@
 	}
 	.privacy p {
 		margin-top: 16px;
+	}
+	.privacy {
+		scroll-margin-top: 100px;
+	}
+	.privacy h3 {
+		font-size: 18px;
+		font-weight: 550;
+		margin-top: 24px;
 	}
 	.text-link {
 		display: inline-flex;

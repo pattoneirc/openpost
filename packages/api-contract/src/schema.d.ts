@@ -4463,6 +4463,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/publication-builds/{id}/options/{option_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save author edits to one alternative */
+        put: operations["save-publication-option"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publication-builds/{id}/options/{option_id}/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Choose one creative alternative and create a draft */
+        post: operations["commit-publication-option"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/publication-builds/{id}/retry": {
         parameters: {
             query?: never;
@@ -7417,13 +7451,22 @@ export interface components {
             destinations: components["schemas"]["Destination"][] | null;
             direction: components["schemas"]["DirectionInput"];
             idea: string;
+            /**
+             * Format: int64
+             * @description Generate four complete alternatives; zero keeps the single-package workflow
+             * @enum {integer}
+             */
+            option_count?: 0 | 4;
             sources?: components["schemas"]["SourceMaterial"][] | null;
         };
         BuildResult: {
             canonical_text: string;
             destinations: components["schemas"]["DestinationPlan"][] | null;
             direction: components["schemas"]["DirectorPlan"];
+            /** @description Four complete alternatives. Choosing one is an explicit author action */
+            options?: components["schemas"]["PostOption"][] | null;
             review_flags: components["schemas"]["ReviewFlag"][] | null;
+            selected_option_id?: string;
             skipped: components["schemas"]["SkippedDestination"][] | null;
             sources?: components["schemas"]["ResolvedSource"][] | null;
         };
@@ -7667,6 +7710,23 @@ export interface components {
             href: string;
             /** @description Draft Publication created from the approved build */
             publication_id: string;
+        };
+        CommitPublicationOptionInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/CommitPublicationOptionInputBody.json
+             */
+            readonly $schema?: string;
+            /** @description Author-edited text and visual recipes for the chosen alternative */
+            edits?: components["schemas"]["OptionEdit"][] | null;
+            /**
+             * Format: int64
+             * @description Revision read with the selected option snapshot
+             */
+            expected_revision: number;
+            /** @description Rendered Workspace image IDs for the selected alternative */
+            media?: components["schemas"]["OptionMedia"][] | null;
         };
         CompleteAccountSelectionInputBody: {
             /**
@@ -8443,6 +8503,12 @@ export interface components {
             direction?: components["schemas"]["DirectionInput"];
             /** @description Idea, note, update, or Markdown source text */
             idea?: string;
+            /**
+             * Format: int64
+             * @description Four complete creative alternatives, or the existing single package
+             * @enum {integer}
+             */
+            option_count?: 0 | 4;
             /** @description Optional Social Set candidate snapshot */
             social_set_id?: string;
             /** @description Optional build-level Voice Profile override */
@@ -8879,6 +8945,8 @@ export interface components {
         DestinationDecision: {
             account_id: string;
             include: boolean;
+            /** @description Optional destination-specific visual choice for a creative alternative */
+            media?: components["schemas"]["MediaPlan"];
             reason: string;
         };
         DestinationFormat: {
@@ -11455,10 +11523,14 @@ export interface components {
             workspace_id: string;
         };
         MediaPlan: {
+            alt_text?: string;
             brief: string;
+            /** @description Validated editable visual recipe, awaiting rendering and upload */
+            document?: components["schemas"]["ScreenshotTemplateDocument"];
             role: string;
             /** @description Exact source ID for source-bound media treatments */
             source_ref?: string;
+            template_id?: string;
             treatment: string;
         };
         MediaSummary: {
@@ -11991,6 +12063,15 @@ export interface components {
             label: string;
             value: string;
         };
+        OptionEdit: {
+            account_id: string;
+            document?: components["schemas"]["ScreenshotTemplateDocument"];
+            segments: components["schemas"]["SegmentPlan"][] | null;
+        };
+        OptionMedia: {
+            account_id: string;
+            media_id: string;
+        };
         OrganizationAuditEvent: {
             action: string;
             actor_user_id?: string;
@@ -12133,6 +12214,8 @@ export interface components {
             max_segments: number;
             /** Format: int64 */
             media_max_count: number;
+            /** Format: int64 */
+            media_min_count?: number;
             /** Format: int64 */
             text_limit: number;
         };
@@ -12342,6 +12425,15 @@ export interface components {
             status: string;
             supported: boolean;
             unavailable_reason?: string;
+        };
+        PostOption: {
+            canonical_text: string;
+            destinations: components["schemas"]["DestinationPlan"][] | null;
+            direction: components["schemas"]["DirectorPlan"];
+            id: string;
+            label: string;
+            review_flags: components["schemas"]["ReviewFlag"][] | null;
+            skipped: components["schemas"]["SkippedDestination"][] | null;
         };
         PostingScheduleResponse: {
             /**
@@ -13971,6 +14063,10 @@ export interface components {
             id: string;
             /** @description Ordered segment media */
             media?: components["schemas"]["ResolveCapabilityMediaInput"][] | null;
+            /** @description Authored segment settings, including attachment requirements */
+            settings?: {
+                [key: string]: unknown;
+            };
             /** @description Canonical segment title */
             title?: string;
             /** @description Canonical segment URL */
@@ -14113,6 +14209,7 @@ export interface components {
             id: string;
             kind: string;
             label: string;
+            mime_type?: string;
             publishable: boolean;
         };
         ResolvedTheme: {
@@ -14417,6 +14514,17 @@ export interface components {
             /** @description Whether the server must restart before adapter changes apply */
             requires_restart: boolean;
         };
+        SavePublicationOptionInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/SavePublicationOptionInputBody.json
+             */
+            readonly $schema?: string;
+            edits: components["schemas"]["OptionEdit"][] | null;
+            /** Format: int64 */
+            expected_revision: number;
+        };
         SaveRepostSettingsInputBody: {
             /**
              * Format: uri
@@ -14713,6 +14821,8 @@ export interface components {
         };
         SettingConstraint: {
             accept?: string[] | null;
+            /** @description Value must be an RFC 3339 timestamp with a timezone */
+            date_time?: boolean;
             local_date_time?: boolean;
             /** Format: int64 */
             max_items?: number;
@@ -14748,6 +14858,8 @@ export interface components {
             options?: string[] | null;
             options_source?: string;
             output_profiles?: string[] | null;
+            /** @description Choose this setting on each post, never in reusable Social Set defaults */
+            post_only?: boolean;
             required: boolean;
             /** @enum {string} */
             required_policy?: "never" | "always" | "when_available";
@@ -34267,6 +34379,186 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommitPublicationBuildOutputBody"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "save-publication-option": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                option_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavePublicationOptionInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Build"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "commit-publication-option": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                option_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommitPublicationOptionInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitPublicationBuildOutputBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
                 };
             };
             /** @description Forbidden */

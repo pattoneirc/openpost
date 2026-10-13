@@ -57,7 +57,7 @@
 	);
 	const sidebarNavigationItems = $derived(workspaceNavigationItems);
 	const moreNavigationItems = $derived(
-		navigationItems.filter((item) => ['growth', 'editors', 'workflows'].includes(item.id))
+		navigationItems.filter((item) => ['ideate', 'growth', 'editors', 'workflows'].includes(item.id))
 	);
 	const showDesktopPlanner = $derived(!sidebar.isMobile && sidebar.state === 'expanded');
 
@@ -71,6 +71,8 @@
 				return 'publications';
 			case 'analytics':
 				return 'analytics';
+			case 'ideate':
+				return 'sparkles';
 			case 'growth':
 				return 'growth';
 			case 'communications':
@@ -96,6 +98,8 @@
 				return m.sidebar_activity();
 			case 'analytics':
 				return m.sidebar_analytics();
+			case 'ideate':
+				return m.compose_ai_ideate();
 			case 'growth':
 				return m.sidebar_grow();
 			case 'communications':

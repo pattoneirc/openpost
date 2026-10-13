@@ -1,4 +1,6 @@
 import { NativeText as Text } from "@/components/native-text";
+import { recordNativeFirstComposition } from "@/lib/telemetry/composition";
+import { nativeTelemetry } from "@/lib/telemetry";
 import * as ImagePicker from "expo-image-picker";
 import { MediaImage } from "@/components/media-image";
 import { PlatformIcon } from "@/components/platform-icon";
@@ -45,6 +47,13 @@ import {
 } from "@/lib/media";
 import { takePendingAttachments } from "@/lib/share";
 import { publicationContentUpdate } from "@/lib/publication-content";
+import {
+  attachmentRequirement,
+  mobileRenditionInput,
+  mobileRenditionTextFields,
+  renditionImages,
+  type RenditionTextEdits,
+} from "@/lib/publication-renditions";
 import { invalidatePublicationData, type Publication } from "@/lib/query-cache";
 import { currentWorkspaceId, useAccounts, usePublication, useSocialSets } from "@/lib/queries";
 import type { PublicationActivity } from "@/lib/query-policy";
@@ -105,18 +114,13 @@ function selectedAccountsFromPublication(pub: PublicationDetail): Set<string> {
   );
 }
 
-function renditionBodiesFromPublication(pub: PublicationDetail): Record<string, string> {
-  const bodies: Record<string, string> = {};
-  for (const rendition of pub.renditions ?? []) {
-    if (
-      rendition.social_account_id &&
-      rendition.body &&
-      rendition.body !== (pub.source_text ?? "")
-    ) {
-      bodies[rendition.social_account_id] = rendition.body;
-    }
-  }
-  return bodies;
+function renditionFieldsFromPublication(pub: PublicationDetail) {
+  return Object.fromEntries(
+    (pub.renditions ?? []).map((rendition) => [
+      rendition.social_account_id,
+      mobileRenditionTextFields(pub, rendition.social_account_id),
+    ]),
+  );
 }
 
 function captureEditorMutationScope(
@@ -214,7 +218,7 @@ function Composer({
   celebrateOnOpen: boolean;
 }) {
   const theme = useNativeTheme();
-  const { colors, editor, typography } = theme.manifest;
+  const { colors, editor, typography, spacing } = theme.manifest;
   const queryClient = useQueryClient();
   const bodyInputRef = useRef<TextInput | null>(null);
   const [initialPendingAttachments] = useState(() => takePendingAttachments());
@@ -234,9 +238,10 @@ function Composer({
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(() =>
     selectedAccountsFromPublication(pub),
   );
-  const [renditionBodies, setRenditionBodies] = useState<Record<string, string>>(() =>
-    renditionBodiesFromPublication(pub),
+  const [renditionTextEdits, setRenditionTextEdits] = useState<Record<string, RenditionTextEdits>>(
+    {},
   );
+  const [renditionFields, setRenditionFields] = useState(() => renditionFieldsFromPublication(pub));
   const [expandedAccount, setExpandedAccount] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -264,7 +269,8 @@ function Composer({
     setSelectedSocialSetId(pub.social_set_id ?? "");
     setSelectionTouched((pub.renditions?.length ?? 0) > 0);
     setSelectedAccounts(selectedAccountsFromPublication(pub));
-    setRenditionBodies(renditionBodiesFromPublication(pub));
+    setRenditionTextEdits({});
+    setRenditionFields(renditionFieldsFromPublication(pub));
     setAttachments((current) => [
       ...attachmentsFromPublication(pub),
       ...current.filter((attachment) => !attachment.mediaId),
@@ -323,11 +329,14 @@ function Composer({
   async function resolveAttachments(
     scope: WorkspaceQueryScope,
     requestApi: Api,
-  ): Promise<string[]> {
-    const mediaIds: string[] = [];
+  ): Promise<{ mediaId: string; mimeType: string }[]> {
+    const mediaIds: { mediaId: string; mimeType: string }[] = [];
     for (const attachment of attachments) {
       if (attachment.mediaId) {
-        mediaIds.push(attachment.mediaId);
+        mediaIds.push({
+          mediaId: attachment.mediaId,
+          mimeType: attachment.mimeType,
+        });
         continue;
       }
       if (!attachment.uri) continue;
@@ -351,7 +360,7 @@ function Composer({
           workspaceId: scope.workspaceId,
         });
         requireCurrentQueryActor(scope);
-        mediaIds.push(mediaId);
+        mediaIds.push({ mediaId, mimeType: attachment.mimeType });
         if (workspaceScopeIsCurrent(scope)) {
           setAttachments((current) =>
             current.map((item) =>
@@ -401,7 +410,11 @@ function Composer({
       params: { path: { id: scope.publicationId } },
       body: {
         expected_revision: revision,
-        ...publicationContentUpdate(contentSnapshot.current, body, media),
+        ...publicationContentUpdate(
+          contentSnapshot.current,
+          body,
+          media.map((item) => item.mediaId),
+        ),
         ...(activeSocialSetId ? { social_set_id: activeSocialSetId } : {}),
         ...(scheduledChanged
           ? effectiveScheduledAt
@@ -423,10 +436,14 @@ function Composer({
         params: { path: { id: scope.publicationId } },
         body: {
           expected_revision: nextRevision,
-          renditions: desired.map((accountId) => ({
-            social_account_id: accountId,
-            body: renditionBodies[accountId]?.trim() ? renditionBodies[accountId] : undefined,
-          })),
+          renditions: desired.map((accountId) =>
+            mobileRenditionInput(
+              contentSnapshot.current,
+              accountId,
+              renditionTextEdits[accountId],
+              media,
+            ),
+          ),
         },
       });
       if (upsert.error)
@@ -500,6 +517,10 @@ function Composer({
       if (!scheduledAt) throw new Error("Pick a time first");
       const requestApi = api();
       const nextRevision = await persist(scope, requestApi);
+      nativeTelemetry.capture("publication schedule requested", {
+        account_count: pub.renditions?.length ?? 0,
+        is_thread: (pub.segments?.length ?? 0) > 1,
+      });
       const { error, response } = await requestApi.POST("/publications/{id}/schedule", {
         params: { path: { id: scope.publicationId } },
         body: { expected_revision: nextRevision },
@@ -532,6 +553,10 @@ function Composer({
       requireCurrentQuerySession(scope);
       const requestApi = api();
       const nextRevision = await persist(scope, requestApi);
+      nativeTelemetry.capture("publication publish requested", {
+        account_count: pub.renditions?.length ?? 0,
+        is_thread: (pub.segments?.length ?? 0) > 1,
+      });
       const { error, response } = await requestApi.POST("/publications/{id}/publish-now", {
         params: { path: { id: scope.publicationId } },
         body: { expected_revision: nextRevision },
@@ -665,11 +690,13 @@ function Composer({
       if (!workspaceScopeIsCurrent(scope)) return;
       markEditorDirty();
       setBody(generated.source_text);
-      setRenditionBodies(
+      setRenditionTextEdits(
         Object.fromEntries(
           (generated.renditions ?? []).map((rendition) => [
             rendition.social_account_id,
-            rendition.body,
+            {
+              [renditionFields[rendition.social_account_id]?.[0]?.key ?? "body"]: rendition.body,
+            },
           ]),
         ),
       );
@@ -750,6 +777,7 @@ function Composer({
 
     markEditorDirty();
     void selectionHaptic();
+    void recordNativeFirstComposition("media");
     setAttachments((current) => [
       ...current,
       ...accepted.map((item, index) => ({
@@ -800,7 +828,9 @@ function Composer({
       void errorHaptic();
       return;
     }
-    const result = await ImagePicker.launchCameraAsync({ quality: ORIGINAL_IMAGE_QUALITY });
+    const result = await ImagePicker.launchCameraAsync({
+      quality: ORIGINAL_IMAGE_QUALITY,
+    });
     if (!result.canceled && result.assets[0]) {
       addAttachment(result.assets[0]);
     }
@@ -844,6 +874,25 @@ function Composer({
       </View>
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {(pub.renditions ?? []).flatMap((rendition) =>
+          (rendition.segments ?? []).flatMap((segment) => {
+            const requirement = attachmentRequirement(segment.settings);
+            return requirement &&
+              !(segment.media ?? []).some((media) =>
+                media.mime_type.startsWith(`${requirement.kind}/`),
+              )
+              ? [
+                  <ContentSection key={segment.id}>
+                    <BodyText style={{ color: colors.onSurface }}>
+                      {requirement.kind === "video" ? "Demo video needed" : "Image needed"}
+                    </BodyText>
+                    <BodyText>{requirement.brief}</BodyText>
+                    <BodyText>Add it using Photos before publishing.</BodyText>
+                  </ContentSection>,
+                ]
+              : [];
+          }),
+        )}
         {statusMessage ? (
           <ContentSection accessibilityRole="alert">
             <BodyText
@@ -878,6 +927,7 @@ function Composer({
             onChangeText={(text) => {
               markEditorDirty();
               setBody(text);
+              if (text.trim()) void recordNativeFirstComposition("text");
             }}
             accessibilityLabel="Post text"
             placeholder="What do you want to say?"
@@ -1254,21 +1304,49 @@ function Composer({
                       ) : null}
                     </Pressable>
                     {selected && expandedAccount === account.id ? (
-                      <TextField
-                        value={renditionBodies[account.id] ?? ""}
-                        accessibilityLabel={`Custom text for ${platformLabel(account.platform)}`}
-                        onChangeText={(text) => {
-                          markEditorDirty();
-                          setRenditionBodies((current) => ({
-                            ...current,
-                            [account.id]: text,
-                          }));
-                        }}
-                        placeholder="Leave empty to use the main post"
-                        multiline
-                        textAlignVertical="top"
-                        style={styles.overrideField}
-                      />
+                      <View style={{ gap: spacing.small }}>
+                        {(pub.renditions ?? [])
+                          .filter((rendition) => rendition.social_account_id === account.id)
+                          .flatMap(renditionImages)
+                          .map((media) => (
+                            <MediaImage
+                              key={media.id}
+                              uri={media.url}
+                              contentFit="contain"
+                              accessibilityLabel={media.alt_text || "Post image"}
+                              style={{
+                                width: "100%",
+                                aspectRatio:
+                                  media.width && media.height ? media.width / media.height : 1,
+                              }}
+                            />
+                          ))}
+                        {(renditionFields[account.id] ?? [{ key: "body", value: body }]).map(
+                          (field, index, fields) => (
+                            <View key={field.key} style={{ gap: spacing.extraSmall }}>
+                              {fields.length > 1 ? <BodyText>Text {index + 1}</BodyText> : null}
+                              <TextField
+                                value={renditionTextEdits[account.id]?.[field.key] ?? field.value}
+                                accessibilityLabel={`Custom text ${index + 1} for ${platformLabel(account.platform)}`}
+                                onChangeText={(text) => {
+                                  markEditorDirty();
+                                  setRenditionTextEdits((current) => ({
+                                    ...current,
+                                    [account.id]: {
+                                      ...current[account.id],
+                                      [field.key]: text,
+                                    },
+                                  }));
+                                }}
+                                placeholder="Account version"
+                                multiline
+                                textAlignVertical="top"
+                                style={styles.overrideField}
+                              />
+                            </View>
+                          ),
+                        )}
+                      </View>
                     ) : null}
                   </View>
                 );

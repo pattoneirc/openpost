@@ -446,3 +446,33 @@ func TestWorkerPendingPublicationDoesNotExhaustRetries(t *testing.T) {
 	require.Zero(t, job.Attempts)
 	require.True(t, job.RunAt.After(now.Add(14*time.Minute)))
 }
+
+type terminalBuildStub struct{}
+
+func (terminalBuildStub) Build(context.Context, publicationbuilder.BuildInput) (publicationbuilder.BuildResult, error) {
+	return publicationbuilder.BuildResult{}, errors.New("unused builder")
+}
+func TestExhaustedBuildJobReportsCommittedDomainFailure(t *testing.T) {
+	db := createTestDB(t)
+	defer db.Close()
+	now := time.Now().UTC()
+	_, err := db.NewInsert().Model(&publicationbuilder.BuildRecord{
+		ID: "build-exhausted", WorkspaceID: "workspace-1", CreatedByID: "user-1", State: publicationbuilder.BuildStateQueued, Phase: publicationbuilder.BuildPhaseQueued,
+		Revision: 1, IdempotencyKey: "exhausted", RequestFingerprint: "fingerprint", AuthorityJSON: "{}", RequestJSON: "{}", VoiceSnapshotJSON: "{}", ResultJSON: "{}", UsageJSON: "{}", CreatedAt: now, UpdatedAt: now,
+	}).Exec(t.Context())
+	require.NoError(t, err)
+	recorder := &telemetry.MemoryRecorder{}
+	builder, err := publicationbuilder.NewApplication(db, terminalBuildStub{}, publicationbuilder.ApplicationConfig{Telemetry: recorder})
+	require.NoError(t, err)
+	worker := NewWorker(db, "worker", time.Second, nil, nil, stubStorage{})
+	worker.SetPublicationBuilderService(builder)
+	job := &models.Job{ID: "exhausted", Type: jobregistry.TypePublicationBuild, Payload: `{"build_id":"build-exhausted"}`, RunAt: now}
+	finishTerminalJob(t, db, worker, job, errors.New("infrastructure failure"))
+	worker.finishFailedJob(t.Context(), job, errors.New("stale worker retry"))
+	var stored publicationbuilder.BuildRecord
+	require.NoError(t, db.NewSelect().Model(&stored).Where("id = ?", "build-exhausted").Scan(t.Context()))
+	require.Equal(t, publicationbuilder.BuildStateFailed, stored.State)
+	require.Len(t, recorder.Events, 1)
+	require.Equal(t, telemetry.EventPublicationBuildFailed, recorder.Events[0].Name)
+	require.Equal(t, "job_failed", recorder.Events[0].Properties["error_code"])
+}

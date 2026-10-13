@@ -1,9 +1,10 @@
 "use client";
 import { useDocsSearch } from "fumadocs-core/search/client";
 import { staticClient } from "fumadocs-core/search/client/orama-static";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { documentationSections } from "@/lib/sections";
 import { docsPath } from "@openpost/social-images";
+import { captureTelemetryEvent } from "@openpost/telemetry";
 import {
   SearchDialog,
   SearchDialogContent,
@@ -22,6 +23,16 @@ export default function Search(props: SharedProps) {
   const { search, setSearch, query } = useDocsSearch({
     client: staticClient({ tag, from: docsPath("/api/search") }),
   });
+  const lastMeasured = useRef<string | null>(null);
+  useEffect(() => {
+    if (!search.trim() || query.isLoading || !Array.isArray(query.data)) return;
+    const key = `${tag ?? ""}\u0000${search}`;
+    if (lastMeasured.current === key) return;
+    lastMeasured.current = key;
+    captureTelemetryEvent("docs search used", {
+      result_count: query.data.length,
+    });
+  }, [search, tag, query.isLoading, query.data]);
   return (
     <SearchDialog {...props} search={search} onSearchChange={setSearch} isLoading={query.isLoading}>
       <SearchDialogOverlay />

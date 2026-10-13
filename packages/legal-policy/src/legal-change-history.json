@@ -1,8 +1,19 @@
 {
   "schema_version": 1,
-  "reviewed_on": "2026-09-06",
+  "reviewed_on": "2026-10-12",
   "scope": "This register records material changes to the official hosted-service legal documents. Spelling, formatting, and link corrections that do not change meaning are not separate entries.",
   "entries": [
+    {
+      "document": "privacy",
+      "version": "2026-10-12",
+      "effective_date": "2026-10-12",
+      "url": "https://openpo.st/privacy",
+      "changes": [
+        "Disclosed separately optional native app analytics for screen visits, selected actions, device and app version facts, and sanitized JavaScript errors.",
+        "Documented per-server device consent, memory-only analytics state, and clearing pending events when consent, server, or account changes.",
+        "Clarified that Decline disables optional browser analytics and that cookie-free analytics requires a separate choice."
+      ]
+    },
     {
       "document": "privacy",
       "version": "2026-09-01",

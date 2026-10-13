@@ -191,9 +191,15 @@ export function createAuthStore(dependencyOverrides: Partial<AuthStoreDependenci
 						selected_workspace_settings: null
 					};
 			// A user projection does not refetch the workspace inventory or its settings.
-			queryClient.setQueryData(queryKey, updated, { updatedAt: state?.dataUpdatedAt });
+			queryClient.setQueryData(queryKey, updated, {
+				updatedAt: state?.dataUpdatedAt
+			});
 			if (state?.isInvalidated) {
-				void queryClient.invalidateQueries({ queryKey, exact: true, refetchType: 'none' });
+				void queryClient.invalidateQueries({
+					queryKey,
+					exact: true,
+					refetchType: 'none'
+				});
 			}
 		}
 	};
@@ -256,7 +262,7 @@ export function createAuthStore(dependencyOverrides: Partial<AuthStoreDependenci
 			isAuthenticated: true,
 			initializationError: ''
 		});
-		identifyTelemetryUser(user.id);
+		identifyTelemetryUser(user.id, { isInstanceAdmin: user.is_admin });
 	};
 
 	return {

@@ -114,6 +114,118 @@ const configuredApp: BrowserTelemetryConfig = {
 };
 
 describe("BrowserTelemetry", () => {
+  it("SDK failures cannot interrupt identity changes, requests, or declining consent", () => {
+    for (const method of [
+      "identify",
+      "reset",
+      "get_distinct_id",
+      "get_session_id",
+      "opt_out_capturing",
+    ] as const) {
+      const sdk = new FakeSDK();
+      const store = new FakePreferenceStore();
+      const subject = new BrowserTelemetry(sdk, () => true, store);
+      subject.configure(configuredApp);
+      subject.identify("actor-a");
+      vi.spyOn(sdk, method).mockImplementation(() => {
+        throw new Error("SDK unavailable");
+      });
+      expect(() => subject.identify("actor-b")).not.toThrow();
+      expect(() => subject.resetIdentity()).not.toThrow();
+      expect(() => subject.requestHeaders()).not.toThrow();
+      expect(() => subject.setPreference("off")).not.toThrow();
+      expect(subject.requestHeaders()).toEqual({});
+      expect(store.preference).toBe("off");
+      const beforeSend = sdk.initialized[0]!.options.before_send as (event: {
+        event: string;
+        properties: Record<string, unknown>;
+      }) => unknown;
+      expect(beforeSend({ event: "signup started", properties: {} })).toBeNull();
+    }
+  });
+
+  it("delayed browser SDK loading cannot attribute an earlier actor's events to a new actor", async () => {
+    const sdk = new FakeSDK();
+    let finish!: (sdk: FakeSDK) => void;
+    const subject = new BrowserTelemetry(
+      () =>
+        new Promise<FakeSDK>((resolve) => {
+          finish = resolve;
+        }),
+      () => true,
+      new FakePreferenceStore(),
+    );
+    subject.configure(configuredApp);
+    subject.identify("actor-a");
+    subject.capture("publication publish requested", {
+      account_count: 1,
+      is_thread: false,
+    });
+    subject.captureException(new Error("actor-a failure"));
+    subject.resetIdentity();
+    subject.identify("actor-b");
+    finish(sdk);
+    await vi.waitFor(() => expect(sdk.identified).toEqual(["actor-b"]));
+    expect(sdk.events).toEqual([]);
+    expect(sdk.exceptions).toEqual([]);
+  });
+
+  it("reconfiguration respects a later stored decline or privacy signal", () => {
+    for (const privacy of [false, true]) {
+      const sdk = new FakeSDK();
+      const store = new FakePreferenceStore();
+      const subject = new BrowserTelemetry(sdk, () => true, store);
+      subject.configure(configuredApp);
+      if (privacy) store.privacySignal = true;
+      else store.preference = "off";
+      subject.configure(configuredApp);
+      subject.capture("signup started");
+      expect(subject.preferenceStatus()).toBe("off");
+      expect(sdk.events).toEqual([]);
+      expect(subject.requestHeaders()).toEqual({});
+      expect(sdk.optOutCount).toBe(1);
+    }
+  });
+
+  it("acceptance records the current safe route after navigation without consent", () => {
+    vi.stubGlobal("window", {
+      location: { origin: "https://example.test", pathname: "/pricing" },
+    });
+    try {
+      const sdk = new FakeSDK();
+      const subject = configuredTelemetry(sdk, null);
+      subject.configure(configuredApp);
+      subject.capturePageView("/");
+      subject.capturePageView("/pricing");
+      expect(sdk.events).toEqual([]);
+      subject.setPreference("persistent");
+      expect(sdk.events.map((event) => event.properties?.path)).toEqual(["/pricing"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("new consent queues actions and retries the first SDK download failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const sdk = new FakeSDK();
+      let loads = 0;
+      const subject = new BrowserTelemetry(
+        () => (++loads === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(sdk)),
+        () => true,
+        new FakePreferenceStore(null),
+      );
+      subject.configure(configuredApp);
+      subject.setPreference("persistent");
+      subject.capture("signup started");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(loads).toBe(2);
+      expect(sdk.events.map((event) => event.event)).toEqual(["signup started"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("downloads only after consent and preserves capture while loading", async () => {
     const sdk = new FakeSDK();
     const preference = new FakePreferenceStore(null);
@@ -172,20 +284,50 @@ describe("BrowserTelemetry", () => {
     },
   );
 
-  it("recovers from a failed download without replaying its queued events", async () => {
-    const sdk = new FakeSDK();
-    let loads = 0;
-    const subject = new BrowserTelemetry(
-      () => (++loads === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(sdk)),
-      () => true,
-      new FakePreferenceStore(),
-    );
-    subject.configure(configuredApp);
-    subject.capture("signup started");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    subject.configure(configuredApp);
-    await vi.waitFor(() => expect(sdk.initialized).toHaveLength(1));
-    expect(sdk.events).toEqual([]);
+  it("retries a temporary SDK download failure and delivers consented events once", async () => {
+    vi.useFakeTimers();
+    try {
+      const sdk = new FakeSDK();
+      let loads = 0;
+      const subject = new BrowserTelemetry(
+        () => (++loads === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(sdk)),
+        () => true,
+        new FakePreferenceStore(),
+      );
+      subject.configure(configuredApp);
+      subject.capture("signup started");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(sdk.initialized).toHaveLength(1);
+      expect(sdk.events.map((event) => event.event)).toEqual(["signup started"]);
+      expect(loads).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds SDK download retries and stops them when consent is declined", async () => {
+    vi.useFakeTimers();
+    try {
+      let loads = 0;
+      const subject = new BrowserTelemetry(
+        () => {
+          loads++;
+          return Promise.reject(new Error("offline"));
+        },
+        () => true,
+        new FakePreferenceStore(),
+      );
+      subject.configure(configuredApp);
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(loads).toBeGreaterThan(1);
+      expect(loads).toBeLessThanOrEqual(4);
+      const stoppedAt = loads;
+      subject.setPreference("off");
+      await vi.advanceTimersByTimeAsync(60000);
+      expect(loads).toBe(stoppedAt);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses private browser defaults and flushes queued identity and events", () => {
@@ -500,7 +642,9 @@ describe("BrowserTelemetry", () => {
   });
 
   it("retains source-map asset locations through the SDK before_send boundary", () => {
-    vi.stubGlobal("window", { location: { origin: "https://app.openpo.st", pathname: "/" } });
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.openpo.st", pathname: "/" },
+    });
     try {
       const sdk = new FakeSDK();
       const subject = configuredTelemetry(sdk);
@@ -554,7 +698,9 @@ describe("BrowserTelemetry", () => {
   });
 
   it("redacts foreign stack URLs while retaining source-map asset URLs", () => {
-    vi.stubGlobal("window", { location: { origin: "https://app.openpo.st", pathname: "/" } });
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.openpo.st", pathname: "/" },
+    });
     const sdk = new FakeSDK();
     const subject = configuredTelemetry(sdk);
     subject.configure(configuredApp);
@@ -576,7 +722,9 @@ describe("BrowserTelemetry", () => {
   });
 
   it("retains same-origin public Next chunks while redacting other same-origin paths", () => {
-    vi.stubGlobal("window", { location: { origin: "https://openpo.st", pathname: "/docs" } });
+    vi.stubGlobal("window", {
+      location: { origin: "https://openpo.st", pathname: "/docs" },
+    });
     const sdk = new FakeSDK();
     const subject = configuredTelemetry(sdk);
     subject.configure(configuredApp);
@@ -702,7 +850,10 @@ describe("BrowserTelemetry", () => {
 describe("installGlobalErrorCapture", () => {
   it("ignores a ResizeObserver delivery warning but captures a real window error", async () => {
     const runtime = Object.assign(new EventTarget(), {
-      location: { origin: "https://app.openpo.st", pathname: "/image-editor/[id]" },
+      location: {
+        origin: "https://app.openpo.st",
+        pathname: "/image-editor/[id]",
+      },
     });
     vi.stubGlobal("window", runtime);
     vi.stubGlobal("document", { cookie: "openpost_analytics=v1:persistent" });
@@ -730,7 +881,10 @@ describe("installGlobalErrorCapture", () => {
       // fuses unrelated routes into one noisy issue, so it is dropped. A
       // real error object with the same text is still captured.
       runtime.dispatchEvent(
-        Object.assign(new Event("error"), { error: null, message: "Script error." }),
+        Object.assign(new Event("error"), {
+          error: null,
+          message: "Script error.",
+        }),
       );
       expect(globalSDK.captureException).not.toHaveBeenCalled();
 
@@ -747,7 +901,10 @@ describe("installGlobalErrorCapture", () => {
 
       const failure = new Error("Canvas failed");
       runtime.dispatchEvent(
-        Object.assign(new Event("error"), { error: failure, message: failure.message }),
+        Object.assign(new Event("error"), {
+          error: failure,
+          message: failure.message,
+        }),
       );
       expect(globalSDK.captureException).toHaveBeenCalledTimes(2);
       expect(globalSDK.captureException.mock.calls[1]?.[0].message).toBe("Canvas failed");
@@ -809,7 +966,9 @@ describe("deployment context", () => {
     const immediateSDK = new FakeSDK();
     const immediate = configuredTelemetry(immediateSDK);
     immediate.configure(configuredApp);
-    immediate.captureException(new Error("immediate failure"), { error_boundary: "window_error" });
+    immediate.captureException(new Error("immediate failure"), {
+      error_boundary: "window_error",
+    });
     expect(immediateSDK.exceptions[0]?.properties).toMatchObject({
       error_boundary: "window_error",
       surface: "app",
@@ -854,11 +1013,15 @@ describe("installConsoleErrorBridge", () => {
     expect(original).toHaveBeenCalledTimes(2);
     expect(original).toHaveBeenNthCalledWith(1, failure);
     expect(capture).toHaveBeenCalledTimes(2);
-    expect(capture).toHaveBeenNthCalledWith(1, failure, { error_boundary: "console_error" });
+    expect(capture).toHaveBeenNthCalledWith(1, failure, {
+      error_boundary: "console_error",
+    });
     const synthetic = capture.mock.calls[1]?.[0] as Error;
     expect(synthetic).toBeInstanceOf(Error);
     expect(synthetic.message).toBe('Failed to save draft: {"draft":1}');
-    expect(capture.mock.calls[1]?.[1]).toEqual({ error_boundary: "console_error" });
+    expect(capture.mock.calls[1]?.[1]).toEqual({
+      error_boundary: "console_error",
+    });
 
     uninstall();
     expect(target.error).toBe(original);
@@ -891,7 +1054,9 @@ describe("installConsoleErrorBridge", () => {
     const failure = new Error("Canvas failed");
     target.error(failure);
     expect(capture).toHaveBeenCalledOnce();
-    expect(capture).toHaveBeenCalledWith(failure, { error_boundary: "console_error" });
+    expect(capture).toHaveBeenCalledWith(failure, {
+      error_boundary: "console_error",
+    });
   });
 
   it("never loops when telemetry logging itself fails", () => {

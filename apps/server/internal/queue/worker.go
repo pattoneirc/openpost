@@ -782,6 +782,12 @@ func (w *BackgroundWorker) finishFailedJob(ctx context.Context, job *models.Job,
 	}
 	job.LastError = failure.message
 
+	// Observe the processing failure before attempting its state write. A lost
+	// row or unavailable database cannot suppress the original terminal failure.
+	if job.Status == jobStatusFailed {
+		w.recordTerminalFailure(ctx, job, processErr, failure)
+	}
+
 	persistFailure := func(db bun.IDB) (int64, error) {
 		result, err := db.NewUpdate().Model((*models.Job)(nil)).
 			Set("status = ?", job.Status).
@@ -828,10 +834,13 @@ func (w *BackgroundWorker) finishFailedJob(ctx context.Context, job *models.Job,
 	if rows == 0 {
 		return
 	}
-	if job.Status != jobStatusFailed {
-		return
+	w.observeCommittedJobFailure(ctx, job)
+}
+
+func (w *BackgroundWorker) observeCommittedJobFailure(ctx context.Context, job *models.Job) {
+	if job.Status == jobStatusFailed && job.Type == jobregistry.TypePublicationBuild && w.publicationBuilder != nil {
+		w.publicationBuilder.ObserveTerminalJobFailure(ctx, job.Payload)
 	}
-	w.recordTerminalFailure(ctx, job, processErr, failure)
 }
 
 func (w *BackgroundWorker) recordTerminalFailure(ctx context.Context, job *models.Job, processErr error, failure classifiedJobFailure) {
@@ -863,7 +872,7 @@ func (w *BackgroundWorker) recordTerminalFailure(ctx context.Context, job *model
 		DistinctID:  "job:" + job.ID,
 		WorkspaceID: w.jobErrorWorkspaceID(ctx, job),
 		Title:       "OpenPost " + job.Type + " job failed",
-		Description: "A durable background job reached a terminal failure",
+		Description: "Durable background processing reached a terminal failure",
 		Properties:  properties,
 	})
 	if captureErr != nil {

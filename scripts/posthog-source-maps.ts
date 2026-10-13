@@ -15,10 +15,11 @@ export function postHogSourceMaps(surface: "app" | "marketing" | "docs") {
   const releaseVersion =
     process.env.OPENPOST_RELEASE_VERSION?.trim() ||
     process.env.GITHUB_SHA?.trim() ||
+    process.env.CF_PAGES_COMMIT_SHA?.trim() ||
     process.env.VITE_OPENPOST_REVISION?.trim();
   if (!releaseVersion) {
     throw new Error(
-      "OPENPOST_RELEASE_VERSION, GITHUB_SHA, or VITE_OPENPOST_REVISION is required when PostHog source-map upload is enabled",
+      "OPENPOST_RELEASE_VERSION, GITHUB_SHA, CF_PAGES_COMMIT_SHA, or VITE_OPENPOST_REVISION is required when PostHog source-map upload is enabled",
     );
   }
 

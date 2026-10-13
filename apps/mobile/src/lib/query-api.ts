@@ -4,6 +4,8 @@ import {
   type QueryPageResult,
   type VideoProjectQueryAPI,
   type AnalyticsQueryAPI,
+  type PublicationBuild,
+  type VoiceProfileQueryAPI,
 } from "@openpost/query-catalog";
 
 import { api, captureApiRequestIdentity, settleApiUnauthorized, type Api } from "./api/client";
@@ -19,7 +21,14 @@ type MobileQueryAPI = Pick<
   | "listWorkspaces"
 > &
   Pick<VideoProjectQueryAPI, "listVideoProjects"> &
-  AnalyticsQueryAPI;
+  AnalyticsQueryAPI &
+  VoiceProfileQueryAPI & {
+    getPublicationBuild(
+      workspaceId: string,
+      id: string,
+      signal: AbortSignal,
+    ): Promise<PublicationBuild>;
+  };
 
 type QueryTransportResponse<T> = {
   data?: T | null;
@@ -39,6 +48,32 @@ export async function mobileQueryTransportRequest<T>(
 
 export function createMobileQueryAPI(getTransport: () => QueryTransport): MobileQueryAPI {
   return {
+    async getPublicationBuild(workspaceId, id, signal) {
+      const { data } = await queryGET({
+        signal,
+        fallback: "Could not load these posts",
+        request: (requestSignal) =>
+          getTransport().GET("/publication-builds/{id}", {
+            signal: requestSignal,
+            params: { path: { id } },
+          }),
+      });
+      if (data.workspace_id !== workspaceId)
+        throw new Error("These posts belong to another Workspace.");
+      return data;
+    },
+    async listVoiceProfiles(workspaceId, signal) {
+      const { data } = await queryGET({
+        signal,
+        fallback: "Could not load voices",
+        request: (requestSignal) =>
+          getTransport().GET("/voice-profiles", {
+            signal: requestSignal,
+            params: { query: { workspace_id: workspaceId } },
+          }),
+      });
+      return data;
+    },
     async getAnalyticsOverview(workspaceId, filters, cursor, signal) {
       const { data } = await queryGET({
         signal,

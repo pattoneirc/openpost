@@ -70,6 +70,24 @@ func (stub *publicationBuildPublicationStub) CreateFromBuild(
 
 type publicationBuildTestAuthenticator struct{}
 
+func TestPublicationBuildProfilesIncludeImagePostVariants(t *testing.T) {
+	handler := &PublicationBuildHandler{}
+	for _, provider := range []string{"x", "linkedin"} {
+		t.Run(provider, func(t *testing.T) {
+			profiles := handler.publicationBuildOutputProfiles(t.Context(), models.SocialAccount{Platform: provider}, "")
+			for _, profile := range profiles {
+				if profile.Key == provider+".post" {
+					require.Zero(t, profile.MediaMinCount, "plain text remains supported")
+					require.GreaterOrEqual(t, profile.MediaMaxCount, 1, "a post must also support one image")
+					require.Contains(t, profile.AllowedMIMEs, "image/png")
+					return
+				}
+			}
+			t.Fatal("post output profile missing")
+		})
+	}
+}
+
 func (publicationBuildTestAuthenticator) AuthenticateBearer(
 	_ context.Context,
 	token string,

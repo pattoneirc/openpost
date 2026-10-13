@@ -152,7 +152,7 @@ test("analytics disclosures match the rendered privacy page and stay consent-gat
     policy,
     /do not contain\s+raw platform replies,\s+remote media, access tokens, bot tokens,\s+webhook secrets/u,
   );
-  assert.match(policy, /We do not send post content[\s\S]*telemetry properties/u);
+  assert.match(policy, /We\s+do\s+not\s+send\s+post\s+content[\s\S]*telemetry properties/u);
 
   const storage = new Map(privacyInventory.browser_storage.map((entry) => [entry.id, entry]));
   assert.equal(storage.get("cookie-telemetry-preference")?.necessity, "functional");

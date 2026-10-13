@@ -11,7 +11,7 @@
 	import AccountPreferencesMenu from './account-preferences-menu.svelte';
 	const destinations = $derived(
 		primaryNavigation.filter((item) =>
-			['analytics', 'growth', 'editors', 'workflows'].includes(item.id)
+			['ideate', 'analytics', 'growth', 'editors', 'workflows'].includes(item.id)
 		)
 	);
 	let { onNavigate }: { onNavigate: () => void } = $props();
@@ -57,21 +57,25 @@
 				goto(resolveAppPath(item.href));
 			}}
 			><ThemeIcon
-				role={item.id === 'workflows'
-					? 'repeat'
-					: item.id === 'analytics'
-						? 'analytics'
-						: item.id === 'growth'
-							? 'growth'
-							: 'editors'}
+				role={item.id === 'ideate'
+					? 'sparkles'
+					: item.id === 'workflows'
+						? 'repeat'
+						: item.id === 'analytics'
+							? 'analytics'
+							: item.id === 'growth'
+								? 'growth'
+								: 'editors'}
 				class="size-4"
-			/>{item.id === 'workflows'
-				? m.workflows_title()
-				: item.id === 'analytics'
-					? m.sidebar_analytics()
-					: item.id === 'growth'
-						? m.sidebar_grow()
-						: m.editors_title()}</DropdownMenu.Item
+			/>{item.id === 'ideate'
+				? m.compose_ai_ideate()
+				: item.id === 'workflows'
+					? m.workflows_title()
+					: item.id === 'analytics'
+						? m.sidebar_analytics()
+						: item.id === 'growth'
+							? m.sidebar_grow()
+							: m.editors_title()}</DropdownMenu.Item
 		>
 	{/each}
 	<DropdownMenu.Separator />

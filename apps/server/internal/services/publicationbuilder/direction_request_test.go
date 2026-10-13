@@ -27,13 +27,21 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 		{"native grapheme count", nil},
 		{"native URL count", nil},
 		{"repair oversized draft", nil},
+		{"changed account limit", nil},
+		{"repair invalid direction", nil},
 		{"reject repeated oversized draft", nil},
 		{"repair truncated review", nil},
 		{"repair oversized review replacement", nil},
+		{"reject unrepaired review", nil},
+		{"reject repaired review", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := BuildInput{Idea: "Export now keeps source audio.", Destinations: []Destination{{AccountID: "blue", Platform: "bluesky", AllowedOutputProfiles: []OutputProfile{{Key: "post", TextLimit: 300, MaxSegments: 1}}}}}
 			nativeBody := ""
+			input.Destinations[0].Voice = VoiceSnapshot{ID: "voice-1", Revision: 2, Definition: VoiceDefinition{Language: "English", Guidance: "Use short sentences."}}
+			if tc.name == "changed account limit" {
+				input.Destinations[0].AllowedOutputProfiles[0].TextLimit = 60
+			}
 			if tc.name == "native grapheme count" {
 				nativeBody = strings.Repeat("e\u0301", 200)
 			}
@@ -72,11 +80,16 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 				}
 			}
 			calls := 0
+			directorCalls := 0
 			adapterCalls := 0
 			reviewCalls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				var request struct {
+					Messages []struct {
+						Role    string          `json:"role"`
+						Content json.RawMessage `json:"content"`
+					} `json:"messages"`
 					ResponseFormat struct {
 						JSONSchema struct {
 							Name   string `json:"name"`
@@ -87,6 +100,55 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 					} `json:"response_format"`
 				}
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				{
+					var userPrompt string
+					for _, message := range request.Messages {
+						if message.Role == "system" {
+							var systemPrompt string
+							require.NoError(t, json.Unmarshal(message.Content, &systemPrompt))
+							assert.Contains(t, systemPrompt, "Honor the author's locked_direction before platform style preferences", "platform guidance must not override an explicit authored format")
+						}
+						if message.Role == "user" {
+							var parts []struct {
+								Text string `json:"text"`
+							}
+							require.NoError(t, json.Unmarshal(message.Content, &parts))
+							require.NotEmpty(t, parts)
+							userPrompt = parts[0].Text
+						}
+					}
+					start := strings.Index(userPrompt, "\n{")
+					end := strings.Index(userPrompt, "\n</")
+					require.GreaterOrEqual(t, start, 0)
+					require.Greater(t, end, start)
+					var payload struct {
+						Sources      []SourceMaterial `json:"source_ledger"`
+						Direction    DirectionInput   `json:"locked_direction"`
+						Destinations []Destination    `json:"candidate_destinations"`
+					}
+					require.NoError(t, json.Unmarshal([]byte(userPrompt[start+1:end]), &payload))
+					expectedSources := append([]SourceMaterial(nil), input.Sources...)
+					if input.Idea != "" {
+						expectedSources = append([]SourceMaterial{{ID: "idea", Kind: "text", Text: input.Idea}}, expectedSources...)
+					}
+					assert.Equal(t, expectedSources, payload.Sources, "every generation stage needs the same original evidence")
+					assert.Equal(t, input.Direction, payload.Direction, "authored instructions must stay distinct from generated planning data")
+					assert.Equal(t, input.Destinations, payload.Destinations, "every stage needs account limits and voice snapshots from the authored input")
+					if tc.name == "changed account limit" && request.ResponseFormat.JSONSchema.Name == "openpost_publication_review" {
+						var reviewInput struct {
+							Limits map[string]OutputProfile `json:"output_limits"`
+						}
+						require.NoError(t, json.Unmarshal([]byte(userPrompt[start+1:end]), &reviewInput))
+						assert.Equal(t, 60, reviewInput.Limits["blue"].TextLimit, "review must use the account snapshot, not a platform default")
+					}
+					if tc.name == "repair oversized review replacement" && reviewCalls == 1 {
+						feedbackStart := strings.LastIndex(userPrompt, "\n{")
+						var feedback map[string]string
+						assert.NoError(t, json.Unmarshal([]byte(userPrompt[feedbackStart+1:]), &feedback))
+						assert.Contains(t, feedback["validation_error"], "exceeds bluesky text limit of 300")
+						assert.Contains(t, feedback["previous_output"], strings.Repeat("a", 301))
+					}
+				}
 				if claims, ok := request.ResponseFormat.JSONSchema.Schema.Properties["claims"]; ok {
 					items := claims["items"].(map[string]any)
 					refs := items["properties"].(map[string]any)["source_refs"].(map[string]any)
@@ -103,6 +165,7 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 				var output string
 				switch request.ResponseFormat.JSONSchema.Name {
 				case "openpost_publication_direction":
+					directorCalls++
 					items := request.ResponseFormat.JSONSchema.Schema.Properties["destinations"]["items"].(map[string]any)
 					account := items["properties"].(map[string]any)["account_id"].(map[string]any)
 					assert.Equal(t, []any{"blue"}, account["enum"], "the provider can select only candidate accounts")
@@ -126,6 +189,9 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 						require.NoError(t, err)
 						output = string(encoded)
 					}
+					if tc.name == "repair invalid direction" && directorCalls == 1 {
+						output = strings.Replace(output, `"factual_kernel":["Export now keeps source audio."]`, `"factual_kernel":[]`, 1)
+					}
 				case "openpost_destination_rendition":
 					adapterCalls++
 					if nativeBody != "" {
@@ -143,6 +209,9 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 					if tc.name == "reject repeated oversized draft" || (tc.name == "repair oversized draft" && adapterCalls == 1) {
 						output = strings.Replace(output, `"body":"Export now keeps source audio."`, `"body":"`+strings.Repeat("a", 301)+`"`, 1)
 					}
+					if tc.name == "changed account limit" && adapterCalls == 1 {
+						output = strings.Replace(output, `"body":"Export now keeps source audio."`, `"body":"`+strings.Repeat("a", 61)+`"`, 1)
+					}
 				case "openpost_publication_review":
 					reviewCalls++
 					output = `{"approved":true,"flags":[],"replacements":[]}`
@@ -151,6 +220,12 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 					}
 					if tc.name == "repair oversized review replacement" && reviewCalls == 1 {
 						output = `{"approved":false,"flags":[],"replacements":[{"account_id":"blue","preview":"An opening.","segments":[{"body":"` + strings.Repeat("a", 301) + `","title":"","description":""}]}]}`
+					}
+					if tc.name == "reject unrepaired review" || tc.name == "reject repaired review" {
+						output = `{"approved":false,"flags":[],"replacements":[]}`
+						if tc.name == "reject repaired review" && reviewCalls == 1 {
+							output = `{"approved":false,"flags":[],"replacements":[{"account_id":"blue","preview":"An opening.","segments":[{"body":"Export preserves source audio.","title":"","description":""}]}]}`
+						}
 					}
 				default:
 					t.Errorf("unexpected generation stage")
@@ -164,7 +239,7 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 					output = string(encoded)
 				}
 				w.Header().Set("Content-Type", "application/json")
-				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"id": "synthetic-request", "model": "synthetic-model", "choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": output}, "finish_reason": "stop"}}}))
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"id": "synthetic-request", "model": "synthetic-model", "choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": output}, "finish_reason": "stop"}}, "usage": map[string]int{"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}}))
 			}))
 			defer server.Close()
 			generator, err := ai.NewOpenRouter(ai.OpenRouterConfig{APIKey: "synthetic-key", BaseURL: server.URL, HTTPClient: server.Client()})
@@ -172,7 +247,19 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 			service, err := New(generator, Config{Model: "synthetic-model"})
 			require.NoError(t, err)
 			input.Direction = direction
-			result, err := service.Build(context.Background(), input)
+			ctx, trace := withGenerationTrace(t.Context())
+			result, err := service.Build(ctx, input)
+			_, _, usageJSON := trace.encoded()
+			var usage generationUsage
+			require.NoError(t, json.Unmarshal([]byte(usageJSON), &usage))
+			require.Len(t, usage.Calls, calls, "retain usage for invalid outputs and repairs, including failed builds")
+			require.Equal(t, int64(calls*5), usage.TotalTokens)
+			if tc.name == "reject unrepaired review" || tc.name == "reject repaired review" {
+				var failure *generationFailure
+				require.ErrorAs(t, err, &failure)
+				require.Equal(t, "review_rejected", failure.code)
+				return
+			}
 			if tc.name == "reject repeated oversized draft" {
 				require.ErrorContains(t, err, "exceeds bluesky text limit of 300")
 				require.Equal(t, 2, adapterCalls, "invalid output repair must stay bounded")
@@ -191,9 +278,13 @@ func TestBuildPreservesAuthorDirectionAtProviderBoundary(t *testing.T) {
 				require.Equal(t, nativeBody, result.Destinations[0].Segments[0].Body)
 			}
 			expectedCalls := 3
-			if tc.name == "repair oversized draft" {
+			if tc.name == "repair oversized draft" || tc.name == "changed account limit" {
 				expectedCalls++
 				require.Equal(t, "Export now keeps source audio.", result.Destinations[0].Segments[0].Body)
+			}
+			if tc.name == "repair invalid direction" {
+				expectedCalls++
+				require.Equal(t, 2, directorCalls)
 			}
 			if tc.name == "repair truncated review" || tc.name == "repair oversized review replacement" {
 				expectedCalls++

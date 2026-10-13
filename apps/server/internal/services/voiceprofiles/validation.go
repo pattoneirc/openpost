@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	maxNameCharacters          = 80
-	maxDefinitionBytes         = 64 * 1024
+	maxNameCharacters = 80
+	// MaxDefinitionBytes bounds normalized canonical voice JSON for storage and generation.
+	MaxDefinitionBytes         = 64 * 1024
 	maxIdentityCharacters      = 1200
 	maxLanguageCharacters      = 80
 	maxShortItems              = 40
@@ -86,8 +87,8 @@ func normalizeDefinition(input Definition) (Definition, string, error) {
 		return Definition{}, "", err
 	}
 	encoded, err := json.Marshal(out)
-	if err != nil || len(encoded) > maxDefinitionBytes {
-		return Definition{}, "", fmt.Errorf("%w: definition exceeds the %d byte limit", ErrInvalidInput, maxDefinitionBytes)
+	if err != nil || len(encoded) > MaxDefinitionBytes {
+		return Definition{}, "", fmt.Errorf("%w: definition exceeds the %d byte limit", ErrInvalidInput, MaxDefinitionBytes)
 	}
 	return out, string(encoded), nil
 }

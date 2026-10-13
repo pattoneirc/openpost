@@ -764,6 +764,15 @@ func (s *Service) publishRenditionSegments(
 		if err != nil {
 			return s.failRenditionSegment(ctx, segment, err)
 		}
+		requiredMedia := make([]capabilities.MediaItem, 0, len(mediaAttachments))
+		for _, media := range mediaAttachments {
+			if media.TrashedAt.IsZero() && media.ProcessingStatus == "ready" {
+				requiredMedia = append(requiredMedia, capabilities.MediaItem{ID: media.ID, MimeType: media.MimeType})
+			}
+		}
+		if issues := capabilities.ValidateAttachmentRequirement(account.Platform, rendition.OutputProfile, requiredMedia, settings); len(issues) > 0 {
+			return s.failRenditionSegment(ctx, segment, fmt.Errorf("attachment validation: %s", issues[0].Message))
+		}
 		settings = capabilities.NormalizeMediaTextLinkSettings(account.Platform, len(mediaAttachments), settings)
 		if err := s.hydratePublicSettingMediaURLs(ctx, publication.WorkspaceID, account.Platform, settings); err != nil {
 			return s.failRenditionSegment(ctx, segment, err)

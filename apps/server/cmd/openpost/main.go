@@ -228,14 +228,14 @@ func main() {
 		LogError:        true,
 		LogResponseSize: true,
 		HandleError:     true,
-		LogValuesFunc: func(_ echo.Context, values middleware.RequestLoggerValues) error {
+		LogValuesFunc: func(c echo.Context, values middleware.RequestLoggerValues) error {
 			route := normalizedRequestRoute(values.RoutePath)
 			runtimeLogger.Info(
 				"http_request",
 				"method", values.Method,
 				"path", values.URIPath,
 				"route", route,
-				"consumer", requestConsumerClass(route, values.UserAgent),
+				"consumer", requestConsumerClass(route, values.UserAgent, c.Request().Header.Get("X-OpenPost-Client")),
 				"status", values.Status,
 				"latency_ms", values.Latency.Milliseconds(),
 				"bytes_out", values.ResponseSize,
@@ -248,12 +248,12 @@ func main() {
 	}))
 	e.Use(middleware.Recover())
 	e.Use(capturePanics(telemetryRecorder, diagnosticsReporter))
-	e.Use(observeDiagnosticFailures(diagnosticsReporter))
+	e.Use(observeHTTPFailures(telemetryRecorder, diagnosticsReporter))
 	e.Use(middleware.Secure())
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins:     cfg.CORSOrigins,
 		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
-		AllowHeaders:     []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAuthorization, "MCP-Protocol-Version", "Mcp-Session-Id", "Last-Event-ID", "X-PostHog-Distinct-ID", "X-PostHog-Session-ID"},
+		AllowHeaders:     []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAuthorization, "MCP-Protocol-Version", "Mcp-Session-Id", "Last-Event-ID", "X-PostHog-Distinct-ID", "X-PostHog-Session-ID", "X-OpenPost-Client"},
 		AllowCredentials: true,
 	}))
 	installTelemetryErrorHandler(e, telemetryRecorder, diagnosticsReporter)
@@ -305,6 +305,7 @@ func main() {
 	apiTokenService := apitokens.NewService(db)
 	sessionService := sessions.NewService(db)
 	waitlistService := waitlist.NewService(db, cfg.BillingDiscordWebhookURL)
+	waitlistService.SetTelemetry(telemetryRecorder)
 	billingService := billing.NewService(db, cfg.PaddleWebhookSecret, billing.PaddleConfig{
 		APIKey:               cfg.PaddleAPIKey,
 		APIBaseURL:           cfg.PaddleAPIBaseURL,
@@ -674,7 +675,7 @@ func main() {
 		if err != nil {
 			fatalfWithDiagnostics(diagnosticsReporter, "failed to initialize public source loader: %v", err)
 		}
-		publicationBuilderService, err = publicationbuilder.New(contentGenerator, publicationbuilder.Config{Model: cfg.TextGenerationModel})
+		publicationBuilderService, err = publicationbuilder.New(contentGenerator, publicationbuilder.Config{Model: cfg.TextGenerationModel, Timeout: 180 * time.Second, Decider: decisionGenerator, DecisionModel: cfg.WorkflowDecisionModel})
 		if err != nil {
 			fatalfWithDiagnostics(diagnosticsReporter, "failed to initialize publication builder: %v", err)
 		}
@@ -682,6 +683,7 @@ func main() {
 			db,
 			publicationBuilderService,
 			publicationbuilder.ApplicationConfig{
+				Telemetry:    telemetryRecorder,
 				Model:        cfg.TextGenerationModel,
 				SourceLoader: publicSourceLoader,
 				AssetLoader:  publicationbuilder.NewMediaAssetLoader(db, storage),
@@ -711,9 +713,14 @@ func main() {
 			if err != nil {
 				fatalfWithDiagnostics(diagnosticsReporter, "failed to initialize AI meme suggestions: %v", err)
 			}
+			memeSuggester.(*memegeneration.Service).SetTemplateProvider(memeProvider)
 			log.Printf("AI meme suggestions enabled with model %s", cfg.MemeGenerationModel)
 		}
 		log.Printf("Meme generator enabled with renderer %s", memeProvider.Key())
+	}
+
+	if publicationBuilderService != nil {
+		publicationBuilderService.SetMemeProvider(memeProvider)
 	}
 
 	var feedbackDestination feedback.Destination
@@ -735,6 +742,7 @@ func main() {
 
 	organizationOwnershipService := organizationownership.NewService(db, notificationService, identityService)
 	workflowService := workflows.NewService(db, nil, tokenEncryptor)
+	workflowService.SetTelemetry(telemetryRecorder)
 	workflowService.SetAI(contentGenerator, cfg.TextGenerationModel)
 	workflowService.SetDecisionAI(decisionGenerator, cfg.WorkflowDecisionModel)
 	var worker *queue.BackgroundWorker
@@ -1157,31 +1165,46 @@ const telemetryHTTPErrorHandledKey = "openpost.telemetry.http-error-handled"
 // backstop; this flag keeps the common path to one observation.
 const diagnosticsCapturedKey = "openpost.diagnostics.captured"
 
-// observeDiagnosticFailures reports unexpected API failures based on the
-// final response status. The pinned Huma adapter writes its response and
-// returns nil, so the Echo error hook never sees those failures; observing
-// the committed status closes that gap. Already-captured requests are
-// skipped, and the reporter's deduplication folds repeats into counts.
-func observeDiagnosticFailures(reporter *diagnostics.Reporter) echo.MiddlewareFunc {
+// observeHTTPFailures covers adapters which write 5xx responses and return nil.
+// The returned-error and panic boundaries mark requests before this observer runs,
+// so both error channels receive one report regardless of the adapter's error path.
+func observeHTTPFailures(recorder telemetry.Recorder, reporter *diagnostics.Reporter) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			err := next(c)
-			if reporter == nil || !reporter.Enabled() {
+			captureAPIMutation(recorder, c)
+			status := c.Response().Status
+			if !c.Response().Committed || status < http.StatusInternalServerError {
 				return err
 			}
-			if c.Response().Committed && c.Response().Status >= http.StatusInternalServerError {
-				if captured, _ := c.Get(diagnosticsCapturedKey).(bool); !captured {
-					c.Set(diagnosticsCapturedKey, true)
-					reporter.Report(diagnostics.Report{
-						Surface:    diagnostics.SurfaceBackend,
-						Operation:  normalizedRequestRoute(c.Path()),
-						ErrorCode:  diagnostics.CodeAPI5xx,
-						HTTPStatus: c.Response().Status,
-						HTTPMethod: c.Request().Method,
-						FirstSeen:  time.Now().UTC(),
-						LastSeen:   time.Now().UTC(),
+			if recorder != nil && recorder.Enabled() {
+				handled, _ := c.Get(telemetryHTTPErrorHandledKey).(bool)
+				panicked, _ := c.Get(telemetryPanicCapturedKey).(bool)
+				if !handled && !panicked {
+					c.Set(telemetryHTTPErrorHandledKey, true)
+					captureErr := recorder.CaptureException(c.Request().Context(), telemetry.Exception{
+						Title:       "OpenPost HTTP " + strconv.Itoa(status),
+						Description: "An HTTP request failed",
+						Properties: map[string]any{
+							"method": c.Request().Method, "route": normalizedRequestRoute(c.Path()),
+							"status": status, "request_id": c.Response().Header().Get(echo.HeaderXRequestID),
+							"error_boundary": "http_response", "response_committed": true,
+						},
 					})
+					if captureErr != nil {
+						log.Printf("Failed to enqueue HTTP response telemetry: %v", captureErr)
+					}
 				}
+			}
+			captured, _ := c.Get(diagnosticsCapturedKey).(bool)
+			if reporter != nil && reporter.Enabled() && !captured {
+				c.Set(diagnosticsCapturedKey, true)
+				now := time.Now().UTC()
+				reporter.Report(diagnostics.Report{
+					Surface: diagnostics.SurfaceBackend, Operation: normalizedRequestRoute(c.Path()),
+					ErrorCode: diagnostics.CodeAPI5xx, HTTPStatus: status, HTTPMethod: c.Request().Method,
+					ErrorKind: diagnostics.ErrorKind(err), FirstSeen: now, LastSeen: now,
+				})
 			}
 			return err
 		}

@@ -1,4 +1,5 @@
 import createClient from "openapi-fetch";
+import { nativeTelemetry } from "../telemetry";
 import type { paths } from "@openpost/api-contract";
 
 import {
@@ -49,6 +50,24 @@ function rebuild() {
   client = createClient<paths>({
     baseUrl: server ? `${server.baseUrl}/api/v1` : "",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  client.use({
+    onRequest({ request }) {
+      if (server && getServer()?.baseUrl === server.baseUrl && getToken() === token) {
+        request.headers.set("X-OpenPost-Client", "native");
+        for (const [name, value] of Object.entries(nativeTelemetry.headers(server.baseUrl)))
+          request.headers.set(name, value);
+      }
+      return request;
+    },
+    onError({ error, schemaPath }) {
+      if (
+        getServer()?.baseUrl === server?.baseUrl &&
+        getToken() === token &&
+        !(error instanceof Error && error.name === "AbortError")
+      )
+        nativeTelemetry.exception(error, schemaPath);
+    },
   });
   return client;
 }

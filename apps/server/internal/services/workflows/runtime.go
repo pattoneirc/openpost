@@ -129,7 +129,8 @@ func (s *Service) finishRunStep(ctx context.Context, record runRecord, results [
 	if err != nil {
 		return err
 	}
-	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	committed := false
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if err := organizationguard.LockWorkspace(ctx, tx, record.WorkspaceID); err != nil {
 			return err
 		}
@@ -158,6 +159,7 @@ func (s *Service) finishRunStep(ctx context.Context, record runRecord, results [
 		if n, _ := updated.RowsAffected(); n != 1 {
 			return nil
 		}
+		committed = true
 		current.Revision++
 		current.State = state
 		if state == StateQueued || state == StateWaiting {
@@ -169,6 +171,10 @@ func (s *Service) finishRunStep(ctx context.Context, record runRecord, results [
 		}
 		return nil
 	})
+	if err == nil && committed {
+		s.captureFinishedRun(ctx, record, state, len(results))
+	}
+	return err
 }
 
 func number(value any) (float64, error) {

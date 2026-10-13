@@ -15,6 +15,7 @@ import (
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/services/auth"
 	"github.com/openpost/backend/internal/services/waitlist"
+	"github.com/openpost/backend/internal/telemetry"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,6 +42,8 @@ func TestHostedWaitlistPersistsOnceAndRetriesDiscordWithoutCreatingAnAccount(t *
 	}))
 	defer discord.Close()
 	service := waitlist.NewService(db, discord.URL)
+	recorder := &telemetry.MemoryRecorder{}
+	service.SetTelemetry(recorder)
 	handler := NewAuthHandler(db, auth.NewService("test-secret"), nil, nil, nil, false)
 	handler.SetWaitlist(service)
 	e := echo.New()
@@ -60,6 +63,10 @@ func TestHostedWaitlistPersistsOnceAndRetriesDiscordWithoutCreatingAnAccount(t *
 		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 		require.Empty(t, response.Header().Values("Set-Cookie"))
 	}
+	require.Len(t, recorder.Events, 1)
+	require.Equal(t, "hosted waitlist joined", recorder.Events[0].Name)
+	require.Empty(t, recorder.Events[0].Properties)
+	require.NotContains(t, recorder.Events[0].DistinctID, "example.com")
 	count, err := db.NewSelect().Table("hosted_waitlist_entries").Count(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 1, count)

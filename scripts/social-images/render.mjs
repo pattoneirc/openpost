@@ -49,6 +49,10 @@ const providerColors = {
   youtube: "#ff0033",
 };
 const imageCache = new Map();
+const extensionArtwork = new Map([
+  ["/tools/feed-limiter", "feed-limiter.png"],
+  ["/tools/youtube-localizer", "youtube-localizer.png"],
+]);
 let fontsLoaded = false;
 
 function loadFonts() {
@@ -242,6 +246,13 @@ export async function renderSocialCard(entry) {
   loadFonts();
   const canvas = createCanvas(SOCIAL_IMAGE_WIDTH, SOCIAL_IMAGE_HEIGHT);
   const context = canvas.getContext("2d");
+  const artwork = extensionArtwork.get(entry.path);
+  if (entry.kind === "tool" && artwork) {
+    const art = await cachedImage(join(root, "assets/brand/social", artwork));
+    context.drawImage(art, 0, 0, SOCIAL_IMAGE_WIDTH, SOCIAL_IMAGE_HEIGHT);
+    await drawBrand(context);
+    return canvas.toBuffer("image/png");
+  }
   if (entry.kind === "home") {
     const art = await cachedImage(join(root, "assets/brand/social/home.png"));
     context.drawImage(art, 0, 0, SOCIAL_IMAGE_WIDTH, SOCIAL_IMAGE_HEIGHT);

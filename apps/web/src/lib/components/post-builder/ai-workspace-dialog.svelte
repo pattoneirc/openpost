@@ -40,6 +40,7 @@
 		applyPending?: boolean;
 		error?: string;
 		context?: Snippet;
+		results?: Snippet;
 		onSelectOpportunity: (opportunity: AIOpportunity) => void;
 		onSelectAngle: (angle: AIAngle) => void;
 		onDiscover?: () => void;
@@ -77,6 +78,7 @@
 		applyPending = false,
 		error = '',
 		context,
+		results,
 		onSelectOpportunity,
 		onSelectAngle,
 		onDiscover,
@@ -148,7 +150,9 @@
 				</InlineNotice>
 			{/if}
 
-			{#if step === 'opportunities' && !error}
+			{#if step === 'options' && results}
+				{@render results()}
+			{:else if step === 'opportunities' && !error}
 				<AIOpportunityGrid
 					{opportunities}
 					selectedId={selectedOpportunityId}

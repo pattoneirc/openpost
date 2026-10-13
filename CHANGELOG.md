@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [7.18.4] - 2026-10-13
+
+### Added
+
+- Update the Privacy Policy to disclose separate native analytics consent.
+- Add optional native app analytics with per-server consent, screen and device context, selected product actions, and sanitized JavaScript errors.
+- Measure video project and export outcomes, documentation search and successful code copies, AI build outcomes, live Workflow successes and failures, hosted waitlist joins, and REST write responses.
+- Create four complete posts from one idea, with native account previews, editable memes and screenshot templates, durable edits, reusable voice profiles, and explicit missing screenshot or demo requirements.
+- Reuse configured Workflow decision models for bounded source and template checks, and route standalone meme suggestions through the complete semantic catalogue.
+- Add native mobile Ideate with four compact options, context attachments, voice defaults, rendered visuals, resumable generation, and explicit draft selection.
+- YouTube: per-post `publish_at` sets YouTube's public release time (`status.publishAt`) separately from OpenPost's upload schedule. It requires Private and an RFC 3339 timestamp with a timezone. Past times publish immediately.
+
+### Fixed
+
+- Preserve known public page paths on direct entry and reload, including mobile browsers, and keep unknown URLs and private route values out of analytics.
+- Observe Huma server errors and terminal worker failures even when their status write fails. Count expired approvals and exhausted build jobs after their state change commits.
+- Recover temporary analytics configuration and SDK download failures, prevent SDK faults from interrupting product actions, and discard queued events when consent or the signed-in user changes.
+- Repair production PostHog reports, production URLs, internal/test exclusions, conversion goals, and Workspace-based activation measurement.
+- Use the same author instructions, source evidence, voice profiles, and platform guidance throughout AI post planning, drafting, and review. Preserve explicitly requested post formats across destinations.
+- Repair invalid AI output with the specific validation failure, and distinguish rejected reviews from generation timeouts in build diagnostics.
+- Updated the browser extension pages for Feed Limiter and YouTube Localizer, added extension-specific privacy policies, and redirected the former X Timeline Blocker page to Feed Limiter.
+- Keep public appearance controls disabled until the page is interactive so the first theme switch is not lost on a slow connection.
+- YouTube: explicit No answers for "Made for kids" and "Synthetic media" are sent as `false`. Both controls distinguish Yes, No, and Not specified. Absent and null disclosures remain omitted, preserving YouTube's audience defaults.
+
 ## [7.17.5] - 2026-10-11
 
 ### Fixed

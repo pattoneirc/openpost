@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	maxGenerationCalls   = 1 + maxDestinationCount*maxAdapterGenerationAttempts + 2*maxReviewGenerationAttempts
+	maxGenerationCalls   = (1 + maxDestinationCount + 2) * maxGenerationAttempts
 	maxGenerationModel   = 200
 	maxGenerationRequest = 256
 	maxGenerationAccount = 200
@@ -116,7 +116,7 @@ func (trace *generationTrace) encoded() (model, requestID, usageJSON string) {
 
 func safeGenerationStage(stage string) string {
 	switch stage {
-	case "director", "adapter", "reviewer":
+	case "angles", "director", "adapter", "reviewer", "options_director", "options_writer", "options_decision", "options_review":
 		return stage
 	default:
 		return "unknown"
@@ -125,6 +125,8 @@ func safeGenerationStage(stage string) string {
 
 func generationStageRank(stage string) int {
 	switch stage {
+	case "angles":
+		return -1
 	case "director":
 		return 0
 	case "adapter":
@@ -168,9 +170,7 @@ func boundedSum(left, right, maximum int64) int64 {
 }
 
 const (
-	failureDirectorOutput = "director_output_invalid"
-	failureAdapterOutput  = "adapter_output_invalid"
-	failureReviewerOutput = "reviewer_output_invalid"
+	failureReviewRejected = "review_rejected"
 )
 
 type generationFailure struct {

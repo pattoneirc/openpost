@@ -10,25 +10,57 @@ test("extensions are discoverable and their install pages fit a phone @desktop",
   await page.getByRole("button", { name: "Extensions", exact: true }).click();
   const extensions = page.locator("#extensions");
   await expect(extensions.getByRole("link", { name: /YouTube Localizer/ })).toBeVisible();
-  await expect(extensions.getByRole("link", { name: /X Timeline Blocker/ })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Search free tools" }).fill("YouTube");
+  await expect(extensions.getByRole("link", { name: /Feed Limiter/ })).toBeVisible();
+  await page.getByRole("searchbox", { name: "Search free tools" }).fill("Localizer");
   await expect(extensions.getByRole("link")).toHaveCount(1);
   await extensions.getByRole("link", { name: /YouTube Localizer/ }).click();
   await expect(page.getByRole("heading", { name: "YouTube Localizer", exact: true })).toBeVisible();
-  for (const route of ["/tools/youtube-localizer", "/tools/x-timeline-blocker"]) {
+  for (const route of ["/tools/youtube-localizer", "/tools/feed-limiter"]) {
     await page.goto(route);
     await page.evaluate(() => document.fonts.ready);
-    await expect(page.locator("figure img")).toBeVisible();
-    expect(
-      await page
-        .locator("figure img")
-        .evaluate((image) => (image as HTMLImageElement).naturalWidth),
-    ).toBeGreaterThan(0);
+    await expect(page.locator("figure img").first()).toBeVisible();
+    const settings = page.getByRole("region", {
+      name: "Extension settings screenshots",
+    });
+    await expect(settings.getByRole("img")).toHaveCount(2);
+    for (const image of await page.locator("figure img").all()) {
+      await image.scrollIntoViewIfNeeded();
+      await expect(image).toBeVisible();
+      await expect
+        .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+        .toBeGreaterThan(0);
+    }
+    await page.getByRole("link", { name: "Privacy policy", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Privacy policy", exact: true }),
+    ).toBeInViewport();
+    await expect(
+      page.getByRole("heading", {
+        name: "Your data and deletion",
+        exact: true,
+      }),
+    ).toBeVisible();
     await expect(
       page.getByRole("link", { name: "Install extension", exact: true }),
     ).toHaveAttribute("href", /github\.com\/getopenpost\/.+#install$/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       390,
     );
+  }
+});
+
+test("old extension links redirect to Feed Limiter @desktop", async ({ request }) => {
+  for (const [oldPath, destination] of [
+    ["/tools/x-timeline-blocker", "/tools/feed-limiter"],
+    ["/tools/x-timeline-blocker/", "/tools/feed-limiter"],
+    ["/tools/x-timeline-blocker.md", "/tools/feed-limiter.md"],
+  ]) {
+    const response = await request.get(`${oldPath}?source=old-link`, {
+      maxRedirects: 0,
+    });
+    expect(response.status()).toBe(301);
+    const location = new URL(response.headers().location, response.url());
+    expect(location.pathname).toBe(destination);
+    expect(location.searchParams.get("source")).toBe("old-link");
   }
 });

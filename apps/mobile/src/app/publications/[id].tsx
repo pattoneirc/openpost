@@ -48,6 +48,7 @@ import {
 } from "@/lib/query-session";
 import { useNativeTheme } from "@/theme";
 import { textCardImages } from "@/lib/delivery-media";
+import { attachmentRequirement, renditionImages } from "@/lib/publication-renditions";
 
 type PublicationMutationScope = WorkspaceQueryScope & {
   publicationId: string;
@@ -329,6 +330,33 @@ export default function PostScreen() {
                         }}
                       />
                     ))}
+                    {renditionImages(rendition).map((media) => (
+                      <MediaImage
+                        key={media.id}
+                        uri={media.url}
+                        accessibilityLabel={media.alt_text || "Post image"}
+                        contentFit="contain"
+                        style={{
+                          width: "100%",
+                          aspectRatio: media.width && media.height ? media.width / media.height : 1,
+                        }}
+                      />
+                    ))}
+                    {(rendition.segments ?? []).flatMap((segment) => {
+                      const requirement = attachmentRequirement(segment.settings);
+                      return requirement &&
+                        !segment.media?.some((item) =>
+                          item.mime_type.startsWith(`${requirement.kind}/`),
+                        )
+                        ? [
+                            <BodyText key={segment.id}>
+                              {requirement.kind === "video" ? "Demo video needed" : "Image needed"}
+                              {"\n"}
+                              {requirement.brief}
+                            </BodyText>,
+                          ]
+                        : [];
+                    })}
                     {rendition.target_key && rendition.target_key !== rendition.platform ? (
                       <BodyText>{rendition.target_key}</BodyText>
                     ) : null}

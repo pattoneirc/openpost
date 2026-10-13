@@ -4,6 +4,7 @@ selected range without re-encoding (mediabunny stream copy). UX inspired by
 LosslessCut (GPL - behavioral reference only, no code ported).
 -->
 <script lang="ts">
+	import { captureTelemetryEvent } from '@openpost/telemetry';
 	import { createVideoScrubber } from '$lib/video-editor/preview/video-scrubber';
 	import EditorHeader from '$lib/components/editor-header.svelte';
 	import EditorTitleInput from '$lib/components/editor-title-input.svelte';
@@ -1241,11 +1242,21 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 				showToast(m.quick_cut_sent(), 'success');
 				soundPreferences.play('success');
 			}
+			captureTelemetryEvent('video export completed', {
+				format: 'source',
+				variant_count: artifacts.length,
+				editor: 'quick_cut'
+			});
 			return true;
 		} catch (err) {
 			if (err instanceof DOMException && err.name === 'AbortError')
 				showToast(m.quick_cut_cancelled(), 'error');
 			else {
+				captureTelemetryEvent('video export failed', {
+					editor: 'quick_cut',
+					format: 'source',
+					error_kind: 'export_failed'
+				});
 				showToast(err instanceof Error ? err.message : String(err), 'error');
 				soundPreferences.play('error');
 			}

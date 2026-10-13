@@ -1,5 +1,12 @@
 import { throwIfAborted } from "@openpost/query-catalog";
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
+import {
+  ErrorBoundary as ExpoErrorBoundary,
+  type ErrorBoundaryProps,
+  DarkTheme,
+  DefaultTheme,
+  Stack,
+  ThemeProvider,
+} from "expo-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { BottomSheetProvider } from "@swmansion/react-native-bottom-sheet";
 import * as SplashScreen from "expo-splash-screen";
@@ -11,6 +18,8 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { queryClient } from "@/lib/query-client";
+import { nativeTelemetry } from "@/lib/telemetry";
+import { NativeTelemetryRuntime } from "@/components/native-telemetry-runtime";
 import { configureNativeQueryLifecycle } from "@/lib/query-lifecycle";
 import { getQueryActorRevision, subscribeQueryActor } from "@/lib/query-session";
 import { getServer, loadServer, subscribeServer } from "@/lib/server";
@@ -47,6 +56,13 @@ import {
   useNativeTheme,
 } from "@/theme";
 
+export function ErrorBoundary(props: ErrorBoundaryProps) {
+  useEffect(() => {
+    nativeTelemetry.exception(props.error, "/");
+  }, [props.error]);
+  return <ExpoErrorBoundary {...props} />;
+}
+
 SplashScreen.preventAutoHideAsync();
 registerSignedOutDeviceDataPurge(purgeVideoProjectDeviceData);
 registerUnauthorizedDeviceDataPurge(purgeVideoProjectDeviceData);
@@ -56,7 +72,10 @@ function useSessionReady() {
   const server = useSyncExternalStore(subscribeServer, getServer);
   const token = useSyncExternalStore(subscribeToken, getToken);
   const identity = `${server?.baseUrl ?? ""}\u0000${token ?? ""}`;
-  const [result, setResult] = useState<{ identity: string; state: LaunchSessionState }>(() => ({
+  const [result, setResult] = useState<{
+    identity: string;
+    state: LaunchSessionState;
+  }>(() => ({
     identity,
     state: { status: "loading" },
   }));
@@ -166,6 +185,9 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <QueryClientProvider client={queryClient}>
+          <NativeTelemetryRuntime
+            ready={launch.hydrated && (!token || launch.state.status === "ready")}
+          />
           <NativeThemeRuntime
             contract={signedIn && activationMatchesSession ? activation.contract : null}
             preference={preference}
@@ -220,6 +242,7 @@ function ThemedApplication() {
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="appearance" options={{ headerShown: false }} />
+        <Stack.Screen name="ideate" options={{ title: "Ideate", headerBackTitle: "Back" }} />
         <Stack.Screen
           name="onboarding/server"
           options={{

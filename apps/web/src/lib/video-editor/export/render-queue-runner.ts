@@ -1,3 +1,4 @@
+import { captureTelemetryEvent } from '@openpost/telemetry';
 import { projectForRenderJob } from './render-queue-job';
 import type { RenderExportProgress } from '../media/render-export';
 import { renderQueueStore, type RenderQueueJob, type RenderQueueStore } from './render-queue-store';
@@ -179,6 +180,11 @@ export class RenderQueueRunner {
 				signal: controller.signal,
 				onProgress: (progress) => this.queue.updateProgress(job.id, progress)
 			});
+			captureTelemetryEvent('video export completed', {
+				format: job.settings.format,
+				variant_count: 1,
+				editor: 'video'
+			});
 			this.queue.markCompleted(job.id, {
 				savedPath: result.savedPath,
 				outputLabel: result.outputLabel,
@@ -188,6 +194,11 @@ export class RenderQueueRunner {
 			if (error instanceof DOMException && error.name === 'AbortError') {
 				this.queue.markCancelled(job.id);
 			} else {
+				captureTelemetryEvent('video export failed', {
+					editor: 'video',
+					format: job.settings.format,
+					error_kind: 'export_failed'
+				});
 				this.queue.markFailed(job.id, error instanceof Error ? error.message : String(error));
 			}
 		} finally {

@@ -79,6 +79,7 @@ type SettingConstraint struct {
 	Accept        []string `json:"accept,omitempty"`
 	UniqueItems   bool     `json:"unique_items,omitempty"`
 	LocalDateTime bool     `json:"local_date_time,omitempty"`
+	DateTime      bool     `json:"date_time,omitempty" doc:"Value must be an RFC 3339 timestamp with a timezone"`
 }
 
 type TextConstraint struct {
@@ -116,6 +117,7 @@ type SettingDefinition struct {
 	OutputProfiles     []string           `json:"output_profiles,omitempty"`
 	MediaShapes        []string           `json:"media_shapes,omitempty"`
 	Required           bool               `json:"required"`
+	PostOnly           bool               `json:"post_only,omitempty" doc:"Choose this setting on each post, never in reusable Social Set defaults"`
 	RequiredPolicy     string             `json:"required_policy,omitempty" enum:"never,always,when_available"`
 	Default            any                `json:"default,omitempty"`
 	Constraints        SettingConstraint  `json:"constraints,omitempty"`
@@ -232,11 +234,13 @@ type ResolveContext string
 const ResolveContextSocialSetDefaults ResolveContext = "social_set_defaults"
 
 type ResolveSegment struct {
-	ID    string
-	Body  string
-	Title string
-	URL   string
-	Media []MediaItem
+	ID          string
+	Body        string
+	Title       string
+	URL         string
+	Media       []MediaItem
+	Settings    map[string]any
+	Description string
 }
 
 type ResolvedCapability struct {
@@ -675,7 +679,7 @@ func settingGroup(key string) string {
 	case "thumbnail_media_id", "cover_media_id", "thumbnail_timestamp_ms", "cover_timestamp_ms",
 		"caption_media_id", "collaborators", "user_tags", "product_tags", "location_id":
 		return "media_accessibility"
-	case "privacy", "privacy_level", "playlist_id", "category_id", "notify_subscribers",
+	case "privacy", "privacy_level", "playlist_id", "category_id", "notify_subscribers", "publish_at",
 		"content_posting_method", "community_id", "topic_tag", "text_format_preset_id":
 		return "distribution"
 	default:
@@ -784,9 +788,9 @@ func ResolveCatalog(provider string, catalog []Capability, input ResolveInput) R
 			*selected,
 			segment.Body,
 			segment.Title,
-			"",
+			segment.Description,
 			segment.Media,
-			effectiveSettings,
+			mergeSegmentSettings(effectiveSettings, segment.Settings),
 		)
 		for index := range segmentIssues {
 			segmentIssues[index].SegmentID = segment.ID
@@ -832,7 +836,12 @@ func resolvedSettingApplies(setting SettingDefinition, intent, outputProfile, sh
 }
 
 func commonDefaultSettings(catalog []Capability, provider, outputProfile string, selected []SettingDefinition) []SettingDefinition {
-	common := append([]SettingDefinition(nil), selected...)
+	common := make([]SettingDefinition, 0, len(selected))
+	for _, field := range selected {
+		if !field.PostOnly {
+			common = append(common, field)
+		}
+	}
 	for _, candidate := range catalog {
 		if candidate.Provider != provider || candidate.OutputProfile != outputProfile {
 			continue
@@ -1145,7 +1154,7 @@ func destinationSegments(segments []ResolveSegment, strategy string) []ResolveSe
 	if strategy != "join" || len(segments) < 2 {
 		return segments
 	}
-	joined := ResolveSegment{ID: segments[0].ID, Title: segments[0].Title, URL: segments[0].URL}
+	joined := ResolveSegment{ID: segments[0].ID, Title: segments[0].Title, URL: segments[0].URL, Description: segments[0].Description, Settings: segments[0].Settings}
 	bodies := make([]string, 0, len(segments))
 	for _, segment := range segments {
 		if body := strings.TrimSpace(segment.Body); body != "" {
@@ -1235,9 +1244,9 @@ func validateAccountConstraintSegment(resolved ResolvedCapability, segment Resol
 		resolved.Capability,
 		segment.Body,
 		segment.Title,
-		"",
+		segment.Description,
 		segment.Media,
-		settings,
+		mergeSegmentSettings(settings, segment.Settings),
 	)
 	for index := range segmentIssues {
 		segmentIssues[index].SegmentID = segment.ID
@@ -1631,18 +1640,25 @@ func findOutputForValidation(provider, outputProfile, fallbackProfile, shape str
 	return Capability{}, false
 }
 
-//nolint:gocyclo
-func validateCapability(capability Capability, body, title, description string, media []MediaItem, settings map[string]any) []ValidationIssue {
+// ValidateTextContent applies native content limits without requiring media or
+// provider settings that the author will choose when completing the draft.
+func ValidateTextContent(capability Capability, body, title, description string, settings map[string]any) []ValidationIssue {
 	provider := capability.Provider
 	profile := capability.Profile
+	authoredDescription := description
+	title = firstNonEmptyCapability(settingsValue(settings, "title"), title)
+	description = firstNonEmptyCapability(description, settingsValue(settings, "description"))
 	issues := []ValidationIssue{}
 	if provider == ProviderYouTube {
+		if err := providerlimits.ValidateYouTubeTitleCharacters(title); err != nil {
+			issues = append(issues, ValidationIssue{Severity: "error", Code: "title_invalid", Message: err.Error(), Provider: provider, Profile: profile, Field: "title"})
+		}
 		value, field := body, "body"
 		if setting := settingsValue(settings, "description"); setting != "" {
 			value, field = setting, "settings.description"
 		}
-		if strings.TrimSpace(description) != "" {
-			value, field = description, "description"
+		if strings.TrimSpace(authoredDescription) != "" {
+			value, field = authoredDescription, "description"
 		}
 		if err := providerlimits.ValidateYouTubeDescription(value); err != nil {
 			issues = append(issues, ValidationIssue{Severity: "error", Code: "description_invalid", Message: err.Error(), Provider: provider, Profile: profile, Field: field})
@@ -1659,6 +1675,44 @@ func validateCapability(capability Capability, body, title, description string, 
 	issues = append(issues, validateTextConstraint(capability, "body", body, capability.Content.Body)...)
 	issues = append(issues, validateTextConstraint(capability, "title", title, capability.Content.Title)...)
 	issues = append(issues, validateTextConstraint(capability, "description", description, capability.Content.Description)...)
+	return append(issues, validateTitleDescriptionSettings(capability, title, description)...)
+}
+
+func validateTitleDescriptionSettings(capability Capability, title, description string) []ValidationIssue {
+	issues := []ValidationIssue{}
+	for _, field := range capability.Settings {
+		var value string
+		var requiredByContent bool
+		switch field.Key {
+		case "title":
+			value = title
+			requiredByContent = capability.TitleRequired
+		case "description":
+			value = description
+			requiredByContent = capability.DescriptionRequired
+		default:
+			continue
+		}
+		if value == "" {
+			if field.Required && !requiredByContent {
+				issues = append(issues, settingValidationIssue(capability, field, "setting_required", fmt.Sprintf("%s is required", field.Label)))
+			}
+			continue
+		}
+		// Validate the effective authored text, rather than rereading a missing
+		// setting when the value came from a canonical title or description.
+		field.Dependencies, field.Conflicts = nil, nil
+		issues = append(issues, validateSettingDefinition(capability, field, map[string]any{field.Key: value}, 0)...)
+	}
+	return issues
+}
+
+//nolint:gocyclo
+func validateCapability(capability Capability, body, title, description string, media []MediaItem, settings map[string]any) []ValidationIssue {
+	provider := capability.Provider
+	profile := capability.Profile
+	issues := ValidateAttachmentRequirement(provider, profile, media, settings)
+	issues = append(issues, ValidateTextContent(capability, body, title, description, settings)...)
 	if len(media) < capability.Media.MinCount {
 		issues = append(issues, ValidationIssue{
 			Severity: "error",
@@ -1691,13 +1745,10 @@ func validateCapability(capability Capability, body, title, description string, 
 	}
 	issues = append(issues, validateUnsupportedSettings(capability, settings)...)
 	for _, field := range capability.Settings {
-		value := settingsValue(settings, field.Key)
-		switch field.Key {
-		case "title":
-			value = firstNonEmptyCapability(value, title)
-		case "description":
-			value = firstNonEmptyCapability(value, description)
+		if field.Key == "title" || field.Key == "description" {
+			continue
 		}
+		value := settingsValue(settings, field.Key)
 		if field.Required && settingDependenciesMet(field, settings, len(media)) && (value == "" || (field.Type == "boolean" && !settingBooleanValue(settings, field.Key))) {
 			issues = append(issues, settingValidationIssue(capability, field, "setting_required", fmt.Sprintf("%s is required", field.Label)))
 			continue
@@ -1828,6 +1879,11 @@ func validateSettingDefinition(capability Capability, field SettingDefinition, s
 			issues = append(issues, settingValidationIssue(capability, field, "setting_local_datetime_invalid", fmt.Sprintf("%s must use YYYY-MM-DDTHH:MM", field.Label)))
 		}
 	}
+	if field.Constraints.DateTime {
+		if _, err := time.Parse(time.RFC3339, value); err != nil {
+			issues = append(issues, settingValidationIssue(capability, field, "setting_datetime_invalid", fmt.Sprintf("%s must be an RFC 3339 time with a timezone", field.Label)))
+		}
+	}
 	return issues
 }
 
@@ -1851,6 +1907,10 @@ func ValidateDefaultSettings(capability Capability, scope string, values, contex
 			issues = append(issues, ValidationIssue{Severity: "error", Code: "unsupported_setting", Field: key, Message: key + " is not supported by this account or scope"})
 			continue
 		}
+		if field.PostOnly {
+			issues = append(issues, settingValidationIssue(capability, field, "setting_requires_post", "Choose this setting on the post."))
+			continue
+		}
 		if attachmentDependentDefault(field) {
 			issues = append(issues, settingValidationIssue(capability, field, "setting_requires_post_media", "Choose media-specific settings on the post."))
 			continue
@@ -1866,21 +1926,21 @@ func ValidateDefaultSettings(capability Capability, scope string, values, contex
 			continue
 		}
 		validated := field
-		validated.Dependencies = nil
-		for _, condition := range field.Dependencies {
-			if _, known := fields[condition.Key]; known {
-				validated.Dependencies = append(validated.Dependencies, condition)
-			}
-		}
-		validated.Conflicts = nil
-		for _, condition := range field.Conflicts {
-			if _, known := fields[condition.Key]; known {
-				validated.Conflicts = append(validated.Conflicts, condition)
-			}
-		}
+		validated.Dependencies = knownSettingConditions(field.Dependencies, fields)
+		validated.Conflicts = knownSettingConditions(field.Conflicts, fields)
 		issues = append(issues, validateSettingDefinition(capability, validated, context, 0)...)
 	}
 	return issues
+}
+
+func knownSettingConditions(conditions []SettingCondition, fields map[string]SettingDefinition) []SettingCondition {
+	var known []SettingCondition
+	for _, condition := range conditions {
+		if _, exists := fields[condition.Key]; exists {
+			known = append(known, condition)
+		}
+	}
+	return known
 }
 
 func attachmentDependentDefault(field SettingDefinition) bool {
@@ -2092,7 +2152,7 @@ func validateUnsupportedSettings(capability Capability, settings map[string]any)
 	issues := []ValidationIssue{}
 	for key, value := range settings {
 		key = strings.TrimSpace(key)
-		if key == "" {
+		if key == "" || key == "attachment_requirement" {
 			continue
 		}
 		if _, ok := known[key]; ok {
@@ -2642,10 +2702,11 @@ func youtubeSettings() []SettingField {
 		{Key: "thumbnail_media_id", Label: "Thumbnail", Type: "media", Control: "media_picker"},
 		{Key: "caption_media_id", Label: "Caption file", Type: "media", Control: "captions_file"},
 		{Key: "caption_language", Label: "Caption language", Type: "text", Control: "language", Dependencies: []SettingCondition{{Key: "caption_media_id", Operator: "present"}}},
+		{Key: "publish_at", Label: "YouTube publish time", Type: "text", PostOnly: true, Constraints: SettingConstraint{DateTime: true}, Dependencies: []SettingCondition{{Key: "privacy", Operator: "equals", Value: "private"}}, Help: "RFC 3339 time with a timezone, for example 2030-10-12T12:00:00Z. YouTube makes the video public at this time. A past time publishes immediately. OpenPost's schedule controls when the upload starts."},
 		{Key: "license", Label: "License", Type: "select", Default: "youtube", Options: []string{"youtube", "creativeCommon"}},
 		{Key: "embeddable", Label: "Allow embedding", Type: "boolean", Default: true},
-		{Key: "self_declared_made_for_kids", Label: "Made for kids", Type: "boolean"},
-		{Key: "contains_synthetic_media", Label: "Synthetic media", Type: "boolean"},
+		{Key: "self_declared_made_for_kids", Label: "Made for kids", Type: "boolean", Control: "optional_boolean"},
+		{Key: "contains_synthetic_media", Label: "Synthetic media", Type: "boolean", Control: "optional_boolean"},
 		{Key: "paid_placement", Label: "Contains paid promotion", Type: "boolean"},
 		{Key: "notify_subscribers", Label: "Notify subscribers", Type: "boolean"},
 		{Key: "first_comment", Label: "First comment", Type: "textarea", Control: "follow_up", Scope: SettingScopeSegment},
@@ -2673,4 +2734,15 @@ func tiktokSettings() []SettingField {
 
 func float64Pointer(value float64) *float64 {
 	return &value
+}
+
+func mergeSegmentSettings(destination, segment map[string]any) map[string]any {
+	merged := make(map[string]any, len(destination)+len(segment))
+	for key, value := range destination {
+		merged[key] = value
+	}
+	for key, value := range segment {
+		merged[key] = value
+	}
+	return merged
 }

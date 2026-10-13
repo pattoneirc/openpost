@@ -1,6 +1,7 @@
 "use client";
 
 import { docsPath } from "@openpost/social-images";
+import { captureTelemetryEvent } from "@openpost/telemetry";
 import { CodeBlock, Pre } from "fumadocs-ui/components/codeblock";
 import { buttonVariants } from "fumadocs-ui/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "fumadocs-ui/components/ui/popover";
@@ -12,10 +13,18 @@ type CopyProps = {
   label: string;
   children?: ReactNode;
   className?: string;
+  onCopied?: () => void;
   icon?: ReactNode;
 };
 
-function DocumentationCopyButton({ getText, label, children, className, icon }: CopyProps) {
+function DocumentationCopyButton({
+  getText,
+  label,
+  children,
+  className,
+  icon,
+  onCopied,
+}: CopyProps) {
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -48,6 +57,7 @@ function DocumentationCopyButton({ getText, label, children, className, icon }: 
           ? navigator.clipboard.write([new ClipboardItem({ "text/plain": source })])
           : source.then((content) => navigator.clipboard.writeText(content));
       await Promise.all([source, write]);
+      onCopied?.();
       setCopied(true);
       timer.current = setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -123,6 +133,7 @@ export function DocumentationPre({
           {allowCopy !== false && allowCopy !== "false" && (
             <DocumentationCopyButton
               label="Copy Text"
+              onCopied={() => captureTelemetryEvent("docs code copied", {})}
               getText={() => {
                 const pre = ref.current?.querySelector("pre");
                 if (!pre) throw new Error("Code is unavailable");
@@ -140,7 +151,9 @@ export function DocumentationPre({
   );
 }
 
-type HeadingProps = ComponentProps<"h1"> & { as: "h1" | "h2" | "h3" | "h4" | "h5" | "h6" };
+type HeadingProps = ComponentProps<"h1"> & {
+  as: "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+};
 export function DocumentationHeading({ as: Heading, children, className, ...props }: HeadingProps) {
   if (!props.id)
     return (

@@ -1,13 +1,13 @@
 [
   {
     "id": "3hd",
-    "visual": "Three-headed dragon with each head snarling toward a horizontal caption band centered over its neck, three bands span left to right.",
-    "meaning": "Ranks three options by preference using dragon heads; fierce heads signal liked choices while the weakest head carries the disliked or joke option.",
-    "mechanism": "ranked_preference",
+    "visual": "Three dragon heads: the left and middle look serious, while the right has a goofy face. Caption fields run left to right.",
+    "meaning": "Two serious or competent members of a group contrast with one silly, naive, or chaotic member. The third head is the comic exception, not a middle-to-low preference ranking.",
+    "mechanism": "comic_outlier",
     "caption_roles": [
-      "favored option for the dominant left head",
-      "middle-tier option for the central head",
-      "least favored or rejected option for the right head"
+      "first serious or competent member",
+      "second serious or competent member",
+      "silly or chaotic exception to the group"
     ],
     "tags": [
       "dragon",

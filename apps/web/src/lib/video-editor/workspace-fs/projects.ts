@@ -1,3 +1,4 @@
+import { captureTelemetryEvent } from '@openpost/telemetry';
 /**
  * Projects store backed by the workspace folder.
  *
@@ -288,6 +289,10 @@ export async function createProject(project: Project): Promise<Project> {
 			id: project.id,
 			name: project.name,
 			updatedAt: project.updatedAt
+		});
+		captureTelemetryEvent('video project created', {
+			source: 'unknown',
+			storage: 'local'
 		});
 		return project;
 	} catch (error) {

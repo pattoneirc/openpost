@@ -114,6 +114,14 @@ export default function DraftsScreen() {
   async function quickCapture(buildWithAI = false) {
     const text = idea.trim();
     if (!text && !image) return;
+    if (buildWithAI) {
+      stashPendingAttachments(image ? [image] : []);
+      router.push({
+        pathname: "/ideate",
+        params: { idea: text, attachments: image ? "1" : undefined },
+      });
+      return;
+    }
     const scope = captureWorkspaceQueryScope(currentWorkspaceId());
     setCaptureError(null);
     try {
@@ -132,7 +140,6 @@ export default function DraftsScreen() {
         params: {
           id: draft.id,
           celebrate: "1",
-          ...(buildWithAI ? { build: "1" } : {}),
         },
       });
     } catch (err) {
@@ -252,7 +259,9 @@ export default function DraftsScreen() {
   return (
     <Screen>
       <Stack.Screen options={{ headerShown: false }} />
-      <WorkspaceHeader />
+      <WorkspaceHeader>
+        <IconButton role="sparkles" label="Ideate" onPress={() => router.push("/ideate")} />
+      </WorkspaceHeader>
 
       <ScrollView
         contentContainerStyle={{
@@ -370,7 +379,7 @@ export default function DraftsScreen() {
             ]}
           >
             <Button
-              title="Generate draft"
+              title="Ideate"
               icon="sparkles"
               intent="focal"
               onPress={() => void quickCapture(true)}

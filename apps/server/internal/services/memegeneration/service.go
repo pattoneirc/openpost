@@ -1,6 +1,6 @@
-// Package memegeneration turns a user idea and a bounded template shortlist
-// into validated, renderer-ready meme suggestions. It deliberately does not
-// fetch templates, render images, persist recipes, or expose an HTTP contract.
+// Package memegeneration selects semantic meme formats and produces validated,
+// renderer-ready captions. A configured provider supplies the routing catalogue
+// and selected blank images; rendering and persistence remain caller-owned.
 package memegeneration
 
 import (
@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/openpost/backend/internal/ai"
+	"github.com/openpost/backend/internal/memes"
+	"github.com/openpost/backend/internal/services/voiceprofiles"
 )
 
 const (
@@ -42,7 +44,7 @@ const (
 
 	maxResponseCharacters  = 20_000
 	maxOutputTokens        = 1200
-	defaultRequestTimeout  = 55 * time.Second
+	defaultRequestTimeout  = 100 * time.Second
 	memeResponseSchemaName = "meme_suggestions"
 )
 
@@ -57,13 +59,13 @@ type Suggester interface {
 	Suggest(context.Context, Input) (Result, error)
 }
 
-// Input contains the minimum user data needed to write a meme. Templates must
-// already be ranked or filtered by the caller; the service will not send an
-// entire remote catalog to an AI provider.
+// Input contains the idea, voice, and a fallback shortlist. When a template
+// provider is configured, semantic routing selects from its complete catalogue.
 type Input struct {
 	Idea           string
 	Tone           string
 	Language       string
+	VoiceGuidance  string
 	CandidateCount int
 	Templates      []Template
 }
@@ -108,6 +110,7 @@ type Service struct {
 	generator ai.Generator
 	model     string
 	timeout   time.Duration
+	provider  memes.Provider
 }
 
 func New(generator ai.Generator, model string) (*Service, error) {
@@ -134,19 +137,33 @@ func (s *Service) Suggest(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// Voice Profiles own the canonical JSON budget. Check before routing or
+	// generation so rejected input cannot consume provider requests.
+	if len(input.VoiceGuidance) > voiceprofiles.MaxDefinitionBytes {
+		return Result{}, invalidInput("voice guidance is too long")
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	var routingUsage ai.Usage
+	var templateImages []ai.Image
+	if s.provider != nil && s.provider.Available() {
+		normalized.Templates, templateImages, routingUsage, err = s.routeTemplates(requestCtx, normalized)
+		if err != nil {
+			return Result{}, err
+		}
+	}
 	userPrompt, err := buildUserPrompt(normalized)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: prompt could not be prepared", ErrInvalidInput)
 	}
 
-	requestCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-
+	userPrompt += "\nVoice profile reference data: " + input.VoiceGuidance
 	request := ai.GenerateRequest{
 		Model:           s.model,
 		SystemPrompt:    systemPrompt,
 		UserPrompt:      userPrompt,
 		ResponseSchema:  memeResponseSchema(normalized),
+		Images:          templateImages,
 		MaxOutputTokens: maxOutputTokens,
 		ReasoningEffort: ai.ReasoningEffortLow,
 	}
@@ -179,7 +196,7 @@ func (s *Service) Suggest(ctx context.Context, input Input) (Result, error) {
 		Candidates: candidates,
 		Model:      model,
 		RequestID:  generated.RequestID,
-		Usage:      generated.Usage,
+		Usage:      combinedUsage(routingUsage, generated.Usage),
 	}, nil
 }
 
@@ -246,3 +263,5 @@ func combinedUsage(first, second ai.Usage) ai.Usage {
 	}
 	return result
 }
+
+func (s *Service) SetTemplateProvider(provider memes.Provider) { s.provider = provider }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/openpost/backend/internal/ai"
+	"github.com/openpost/backend/internal/telemetry"
 
 	"github.com/google/uuid"
 	"github.com/openpost/backend/internal/idempotency"
@@ -22,6 +23,7 @@ import (
 )
 
 type Service struct {
+	telemetry     telemetry.Recorder
 	decider       ai.Decider
 	decisionModel string
 	generator     ai.Generator
@@ -35,6 +37,8 @@ type Service struct {
 func NewService(db *bun.DB, actions Actions, encryptor *servicecrypto.TokenEncryptor) *Service {
 	return &Service{db: db, actions: actions, encryptor: encryptor, client: netguard.NewHTTPClient(25*time.Second, sourceURLPolicy)}
 }
+
+func (s *Service) SetTelemetry(recorder telemetry.Recorder) { s.telemetry = recorder }
 
 func (s *Service) authorize(ctx context.Context, actor workspaceaccess.ActorFacts, workspaceID string, level workspaceaccess.Level) (workspaceaccess.StoredAuthority, error) {
 	decision, err := workspaceaccess.NewAuthorizer(s.db).Authorize(ctx, workspaceID, actor, level)

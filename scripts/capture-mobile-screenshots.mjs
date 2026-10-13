@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readdir, stat, copyFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,6 +127,7 @@ try {
   }
   for (const scheme of ["light", "dark"]) {
     command("xcrun", ["simctl", "ui", simulator, "appearance", scheme]);
+    const startedAt = Date.now();
     await run(
       maestro,
       [
@@ -136,15 +137,28 @@ try {
         "--test-output-dir",
         output,
         "-e",
-        `OUTPUT=${output}`,
-        "-e",
         `SCHEME=${scheme}`,
         "apps/mobile/tests/screenshots/gallery.yaml",
       ],
       { env },
     );
+    await collectScreenshots(output, scheme, startedAt);
   }
   await run("bun", ["scripts/render-mobile-gallery.mjs", output]);
 } finally {
   cleanup();
+}
+
+// Maestro keeps relative captures within each run's artifact directory. Copy
+// only fresh captures into the stable gallery input paths after a successful run.
+async function collectScreenshots(directory, scheme, startedAt) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const file = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      await collectScreenshots(file, scheme, startedAt);
+    } else if (entry.isFile() && entry.name.endsWith(`-${scheme}.png`)) {
+      const target = resolve(output, entry.name);
+      if (file !== target && (await stat(file)).mtimeMs >= startedAt) await copyFile(file, target);
+    }
+  }
 }

@@ -56,7 +56,7 @@ Each route owns one first-viewport loading boundary and starts independent reads
 
 ## Compatibility and exclusions
 
-Keep blobs, uploads, downloads, streams, OAuth redirects, pairing, one-time tokens, health probes, AI generation, and local editor operations in imperative adapters. Preserve legal acceptance, SSO, first-use destination selection, permissions, mobile server selection, and unsaved-work guards.
+Keep blobs, uploads, downloads, streams, OAuth redirects, pairing, one-time tokens, health probes, AI generation, and local editor operations in imperative adapters. Browser and native telemetry runtime configuration also stays in its bounded imperative privacy/bootstrap owner; it initializes an optional SDK rather than rendering server state. Preserve legal acceptance, SSO, first-use destination selection, permissions, mobile server selection, and unsaved-work guards.
 
 The migration proceeds by domain. A legacy store may temporarily delegate to Query, but Query and a manual TTL cache must not own the same resource independently. Each domain commit remains independently revertible. The bootstrap endpoint is additive and needs no database migration.
 

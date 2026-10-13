@@ -119,11 +119,12 @@
 			</li>
 			<li>
 				<strong>Product and website telemetry:</strong> persistent first-party browser analytics after
-				permission, or limited personless cookieless events after cookie rejection; opaque signed-in user
-				and workspace identifiers; product and service events; country for persistent browser events;
-				release, route-template, status, and sanitized error facts. We discard raw client IP after approved
-				enrichment. We do not send post content, media, request bodies, credentials, email addresses,
-				names, usernames, query strings, or raw URLs as telemetry properties.
+				permission, or limited personless events after choosing cookie-free analytics; optional native
+				app analytics after a separate per-server choice; opaque signed-in user and workspace identifiers;
+				product and service events; country for persistent browser events; release, route-template, status,
+				and sanitized error facts. We discard raw client IP after approved enrichment. We do not send
+				post content, media, request bodies, credentials, email addresses, names, usernames, query strings,
+				or raw URLs as telemetry properties.
 			</li>
 			<li>
 				<strong>Brand font records:</strong> custom WOFF2, TTF, or OTF files, family and style details,
@@ -351,6 +352,15 @@
 			YouTube player is loaded only when you open the product demo; YouTube may then process device
 			and playback data.
 		</p>
+		<p>
+			The native app sends screen visits, selected actions, device and app version facts, and
+			sanitized JavaScript errors only after you choose Allow analytics. Change this in Privacy. The
+			preference is stored securely for each server on the device. Analytics identity and pending
+			events stay in memory and are cleared when you decline, switch server, or change account.
+			Consented signed-in activity uses the opaque OpenPost user ID. Native analytics does not
+			include location, touch histories, recordings, post content, or native crash dumps.
+		</p>
+
 		<p>
 			OpenPost Video Editor live previews, optional screen, camera, and audio recording, editing,
 			transcription, voice detection, framing analysis, and export run in the browser. Model files

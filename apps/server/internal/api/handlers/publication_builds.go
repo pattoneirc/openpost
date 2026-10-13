@@ -92,6 +92,7 @@ func NewPublicationBuildHandler(
 }
 
 type CreatePublicationBuildBody struct {
+	OptionCount       int                                  `json:"option_count,omitempty" enum:"0,4" doc:"Four complete creative alternatives, or the existing single package"`
 	WorkspaceID       string                               `json:"workspace_id" doc:"Workspace that owns the source material and destinations"`
 	Idea              string                               `json:"idea,omitempty" maxLength:"20000" doc:"Idea, note, update, or Markdown source text"`
 	AccountIDs        []string                             `json:"account_ids,omitempty" maxItems:"20" uniqueItems:"true" doc:"Candidate connected account IDs"`
@@ -135,6 +136,25 @@ type CommitPublicationBuildOutput struct {
 	}
 }
 
+type CommitPublicationOptionInput struct {
+	PathID   string `path:"id"`
+	OptionID string `path:"option_id"`
+	Body     struct {
+		ExpectedRevision int                              `json:"expected_revision" minimum:"1" doc:"Revision read with the selected option snapshot"`
+		Media            []publicationbuilder.OptionMedia `json:"media,omitempty" maxItems:"20" doc:"Rendered Workspace image IDs for the selected alternative"`
+		Edits            []publicationbuilder.OptionEdit  `json:"edits,omitempty" maxItems:"20" doc:"Author-edited text and visual recipes for the chosen alternative"`
+	}
+}
+
+type SavePublicationOptionInput struct {
+	PathID   string `path:"id"`
+	OptionID string `path:"option_id"`
+	Body     struct {
+		ExpectedRevision int                             `json:"expected_revision" minimum:"1"`
+		Edits            []publicationbuilder.OptionEdit `json:"edits" minItems:"1" maxItems:"20"`
+	}
+}
+
 func (h *PublicationBuildHandler) RegisterRoutes(api huma.API) {
 	huma.Register(api, huma.Operation{
 		OperationID: "plan-publication-angles", Method: http.MethodPost, Path: publicationBuildsPath + "/angles",
@@ -168,6 +188,49 @@ func (h *PublicationBuildHandler) RegisterRoutes(api huma.API) {
 		Summary: "Send a ready build to the composer", Tags: []string{publicationBuildsTag}, Errors: []int{403, 404, 409, 503},
 		Middlewares: huma.Middlewares{middleware.AuthMiddleware(api, h.auth)},
 	}, h.commit)
+	huma.Register(api, huma.Operation{
+		OperationID: "commit-publication-option", Method: http.MethodPost, Path: publicationBuildsPath + "/{id}/options/{option_id}/commit",
+		Summary: "Choose one creative alternative and create a draft", Tags: []string{publicationBuildsTag}, Errors: []int{400, 403, 404, 409, 503},
+		Middlewares: huma.Middlewares{middleware.AuthMiddleware(api, h.auth)},
+	}, h.commitOption)
+	huma.Register(api, huma.Operation{OperationID: "save-publication-option", Method: http.MethodPut, Path: publicationBuildsPath + "/{id}/options/{option_id}", Summary: "Save author edits to one alternative", Tags: []string{publicationBuildsTag}, Errors: []int{400, 403, 404, 409, 503}, Middlewares: huma.Middlewares{middleware.AuthMiddleware(api, h.auth)}}, h.saveOption)
+}
+
+func (h *PublicationBuildHandler) saveOption(ctx context.Context, input *SavePublicationOptionInput) (*PublicationBuildOutput, error) {
+	saver, ok := h.application.(interface {
+		SaveOption(context.Context, string, string, string, int, []publicationbuilder.OptionEdit) (publicationbuilder.Build, error)
+	})
+	if !ok {
+		return nil, huma.Error503ServiceUnavailable("Publication Builder editing is unavailable")
+	}
+	if _, err := h.loadAuthorizedBuild(ctx, input.PathID, workspaceaccess.LevelEdit); err != nil {
+		return nil, err
+	}
+	build, err := saver.SaveOption(ctx, strings.TrimSpace(middleware.GetUserID(ctx)), input.PathID, input.OptionID, input.Body.ExpectedRevision, input.Body.Edits)
+	if err != nil {
+		return nil, publicationBuildError(err)
+	}
+	return &PublicationBuildOutput{Body: build}, nil
+}
+
+func (h *PublicationBuildHandler) commitOption(ctx context.Context, input *CommitPublicationOptionInput) (*CommitPublicationBuildOutput, error) {
+	committer, ok := h.application.(interface {
+		CommitOption(context.Context, string, string, string, int, []publicationbuilder.OptionMedia, []publicationbuilder.OptionEdit, publicationbuilder.PublicationApplication) (publicationbuilder.Build, error)
+	})
+	if !ok || h.publications == nil {
+		return nil, huma.Error503ServiceUnavailable("Publication Builder handoff is unavailable")
+	}
+	if _, err := h.loadAuthorizedBuild(ctx, input.PathID, workspaceaccess.LevelEdit); err != nil {
+		return nil, err
+	}
+	build, err := committer.CommitOption(ctx, strings.TrimSpace(middleware.GetUserID(ctx)), input.PathID, input.OptionID, input.Body.ExpectedRevision, input.Body.Media, input.Body.Edits, h.publications)
+	if err != nil {
+		return nil, publicationBuildError(err)
+	}
+	output := &CommitPublicationBuildOutput{}
+	output.Body.PublicationID = build.PublicationID
+	output.Body.Href = "/publications/" + build.PublicationID
+	return output, nil
 }
 
 func (h *PublicationBuildHandler) planAngles(
@@ -296,7 +359,8 @@ func (h *PublicationBuildHandler) preparePublicationBuildRequest(
 			IdentityProviderID: decision.ProviderID, AssuredAt: h.now().UTC(),
 		},
 		Input: publicationbuilder.BuildInput{
-			Idea: source.idea, Sources: source.sources, Destinations: destinations,
+			OptionCount: input.Body.OptionCount,
+			Idea:        source.idea, Sources: source.sources, Destinations: destinations,
 			Direction: source.direction, DestinationPolicy: policy,
 		},
 		ContextURLs:    source.contextURLs,
@@ -707,16 +771,15 @@ func (h *PublicationBuildHandler) publicationBuildOutputProfiles(
 	preferred string,
 ) []publicationbuilder.OutputProfile {
 	profiles := make([]publicationbuilder.OutputProfile, 0)
-	seen := map[string]struct{}{}
+	seen := map[string]int{}
 	accountConstraints := map[string]any(nil)
 	for _, capability := range capabilities.All() {
 		if capability.Provider != account.Platform || !capability.OpenPostQueued || capability.UnavailableReason != "" {
 			continue
 		}
-		if _, exists := seen[capability.OutputProfile]; exists || capability.OutputProfile == "" {
+		if capability.OutputProfile == "" {
 			continue
 		}
-		seen[capability.OutputProfile] = struct{}{}
 		maxSegments := 1
 		if capability.Profile == models.ContentProfileThread {
 			maxSegments = maxPublicationBuildThreadSegments
@@ -734,10 +797,26 @@ func (h *PublicationBuildHandler) publicationBuildOutputProfiles(
 			}
 			capabilities.ApplyAccountConstraints(&resolved, capabilities.AccountConstraintInput{Constraints: accountCapabilities.Constraints})
 		}
-		profiles = append(profiles, publicationbuilder.OutputProfile{
+		profile := publicationbuilder.OutputProfile{
 			Key: capability.OutputProfile, TextLimit: resolved.TextLimit, MaxSegments: maxSegments,
-			MediaMaxCount: resolved.Media.MaxCount, AllowedMIMEs: slices.Clone(resolved.Media.AllowedMIMEs),
-		})
+			MediaMinCount: resolved.Media.MinCount, MediaMaxCount: resolved.Media.MaxCount, AllowedMIMEs: slices.Clone(resolved.Media.AllowedMIMEs),
+		}
+		if index, exists := seen[profile.Key]; exists {
+			// Text, link, and image authoring variants share one native post key.
+			// Snapshot all supported shapes instead of dropping images after text.
+			prior := &profiles[index]
+			prior.TextLimit = min(prior.TextLimit, profile.TextLimit)
+			prior.MediaMinCount = min(prior.MediaMinCount, profile.MediaMinCount)
+			prior.MediaMaxCount = max(prior.MediaMaxCount, profile.MediaMaxCount)
+			for _, mime := range profile.AllowedMIMEs {
+				if !slices.Contains(prior.AllowedMIMEs, mime) {
+					prior.AllowedMIMEs = append(prior.AllowedMIMEs, mime)
+				}
+			}
+			continue
+		}
+		seen[profile.Key] = len(profiles)
+		profiles = append(profiles, profile)
 	}
 	preferred = strings.TrimSpace(preferred)
 	if preferred == "" {
@@ -935,6 +1014,8 @@ func publicationBuildVoiceError(err error) error {
 
 func publicationBuildError(err error) error {
 	switch {
+	case errors.Is(err, publicationbuilder.ErrInvalidOption):
+		return huma.Error400BadRequest("Post edits are invalid for the selected destination or visual template")
 	case errors.Is(err, publicationbuilder.ErrBuildNotFound):
 		return huma.Error404NotFound("Publication build not found")
 	case errors.Is(err, publicationbuilder.ErrIdempotencyConflict):

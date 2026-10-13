@@ -44,6 +44,8 @@
 	import { schedulingQueryAPI } from '$lib/query/scheduling';
 	import type { components } from '$lib/api/types';
 	import AIWorkspaceDialog from '$lib/components/post-builder/ai-workspace-dialog.svelte';
+	import PostOptions from '$lib/components/post-builder/post-options.svelte';
+	import { renderPostVisual, savePostVisual, releasePostVisual } from '$lib/post-builder/visuals';
 	import type {
 		AIAngle,
 		AIGenerationPhase,
@@ -63,6 +65,7 @@
 		type PublicationBuildAngle,
 		type PublicationBuildRequest,
 		type PublicationBuildResult,
+		type PublicationPostOption,
 		type PublicationOpportunity
 	} from '$lib/post-builder/client';
 	import { applyPublicationBuildResult } from '$lib/post-builder/apply';
@@ -276,10 +279,21 @@
 			treatment: z.string(),
 			role: z.string(),
 			brief: z.string(),
-			source_ref: z.string().optional()
+			source_ref: z.string().optional(),
+			template_id: z.string().optional(),
+			alt_text: z.string().optional()
 		}),
 		warnings: z.array(z.string()).optional()
 	});
+	const attachmentRequirementSchema = z.object({
+		kind: z.enum(['image', 'video']),
+		brief: z.string(),
+		document: z.json().optional()
+	});
+	type AttachmentRequirement = z.infer<typeof attachmentRequirementSchema>;
+	let requirementReviewId = $state('');
+	let requirementReviewText = $state('');
+	let aiAttachmentRequirements = $state.raw<Record<string, AttachmentRequirement>>({});
 	const aiBuildMetadataSchema = z.object({
 		version: z.literal(1),
 		strategies: z.array(aiPlatformStrategySchema)
@@ -292,6 +306,7 @@
 		requestedOutputProfiles: Record<string, string>;
 		formatLockedByAccount: Record<string, boolean>;
 		strategies: AIPlatformStrategy[];
+		attachmentRequirements: Record<string, AttachmentRequirement>;
 	}
 
 	interface Props {
@@ -424,6 +439,8 @@
 	let aiWorkspaceOpen = $state(false);
 	let aiWorkspaceEntry = $state<AIWorkspaceEntry>('build');
 	let aiWorkspaceStep = $state<AIWorkspaceStep>('angles');
+	let aiPostOptions = $state.raw<PublicationPostOption[]>([]);
+	let aiOptionMedia = $state.raw<Record<string, string[]> | undefined>();
 	let aiOpportunities = $state.raw<PublicationOpportunity[]>([]);
 	let aiSelectedOpportunityID = $state('');
 	let aiAngles = $state.raw<PublicationBuildAngle[]>([]);
@@ -1312,6 +1329,7 @@
 			segmentSettingsByPost,
 			mediaSettingsByAccount,
 			aiAppliedStrategies,
+			aiAttachmentRequirements,
 			scheduledDate: selectedDate?.toString() ?? null,
 			selectedTime,
 			randomDelayOverride,
@@ -1368,6 +1386,7 @@
 		for (const field of visibleSettings(account)) {
 			if (field.scope !== scope || next[field.key] !== undefined) continue;
 			if (field.default !== undefined) next[field.key] = parseComposerSettingValue(field.default);
+			else if (field.control === 'optional_boolean') continue;
 			else if (field.type === 'boolean') next[field.key] = false;
 			else next[field.key] = '';
 		}
@@ -2163,6 +2182,15 @@
 			if (rendition.segments[0]) rendition.segments[0].description = description;
 		}
 
+		for (const rendition of payload.renditions) {
+			const first = rendition.segments?.[0];
+			if (!first) continue;
+			const settings = { ...first.settings };
+			delete settings.attachment_requirement;
+			const requirement = aiAttachmentRequirements[rendition.social_account_id];
+			if (requirement) settings.attachment_requirement = requirement;
+			first.settings = settings;
+		}
 		if (aiAppliedStrategies.length > 0) {
 			payload.metadata[AI_BUILD_METADATA_KEY] = {
 				version: 1,
@@ -2180,6 +2208,14 @@
 			publication.metadata?.[AI_BUILD_METADATA_KEY]
 		);
 		aiAppliedStrategies = builderMetadata.success ? builderMetadata.data.strategies : [];
+		aiAttachmentRequirements = Object.fromEntries(
+			(publication.renditions ?? []).flatMap((rendition) => {
+				const requirement = attachmentRequirementSchema.safeParse(
+					rendition.segments?.[0]?.settings?.attachment_requirement
+				);
+				return requirement.success ? [[rendition.social_account_id, requirement.data]] : [];
+			})
+		);
 		selectedSocialSetId = publication.social_set_id ?? '';
 		requestedOutputProfiles = Object.fromEntries(
 			(publication.renditions ?? [])
@@ -2365,6 +2401,10 @@
 									selectedAccounts.find((account) => account.id === accountId)!
 								).body,
 								url: post === posts[0] ? linkUrl : '',
+								settings:
+									post === posts[0] && aiAttachmentRequirements[accountId]
+										? { attachment_requirement: aiAttachmentRequirements[accountId] }
+										: undefined,
 								media: (getVariantMediaIds(accountId, post.key) ?? post.mediaIds).map(
 									(mediaId) => ({
 										media_id: mediaId,
@@ -3068,6 +3108,7 @@
 		latestGenerationUndo = null;
 		aiAppliedResult = null;
 		aiAppliedStrategies = [];
+		aiAttachmentRequirements = {};
 		postBuilderError = '';
 		publicationId = '';
 		selectedSocialSetId = '';
@@ -3744,6 +3785,7 @@
 		aiPendingResult = null;
 		aiAppliedResult = null;
 		aiAppliedStrategies = [];
+		aiAttachmentRequirements = {};
 		aiApplyPending = false;
 		aiBuildCreateRejected = false;
 		aiBuildPublicationID = '';
@@ -4816,14 +4858,17 @@
 	}
 
 	function composerAISnapshot(): string {
-		return composerBuildFingerprint({
-			posts,
-			variants,
-			linkUrl,
-			accountIds: selectedAccountIds,
-			requestedOutputProfiles,
-			formatLockedByAccount
-		});
+		return (
+			JSON.stringify(aiAttachmentRequirements) +
+			composerBuildFingerprint({
+				posts,
+				variants,
+				linkUrl,
+				accountIds: selectedAccountIds,
+				requestedOutputProfiles,
+				formatLockedByAccount
+			})
+		);
 	}
 
 	function selectedAIPlatforms(): string[] {
@@ -4897,7 +4942,7 @@
 			const profile = profiles.find((candidate) => candidate.is_default) ?? profiles[0];
 			if (profile) {
 				aiVoiceName = profile.name;
-				aiVoiceProfileID = profile.id;
+				aiVoiceProfileID = '';
 			}
 		} catch (cause) {
 			if (cause instanceof DOMException && cause.name === 'AbortError') return;
@@ -5002,7 +5047,8 @@
 
 	async function continuePublicationOpportunity(): Promise<void> {
 		if (!aiSelectedOpportunityID || !aiGenerationIdea.trim()) return;
-		await loadPublicationAngles(aiGenerationIdea);
+		aiIdeationBrief = aiGenerationIdea;
+		await startSelectedPublicationBuild();
 	}
 
 	async function buildPostWithAI() {
@@ -5019,25 +5065,28 @@
 			return;
 		}
 
+		if (!sourcePost.content.trim() && sourcePost.mediaIds.length === 0) {
+			await goto(resolveAppPath('/ideate'));
+			return;
+		}
 		const workspaceID = selectedWorkspaceId;
 		repurposeReviewActive = false;
+		aiPostOptions = [];
+		aiOptionMedia = undefined;
 		aiWorkspaceOpen = true;
 		aiWorkspaceEntry = sourcePost.content.trim() ? 'build' : 'ideate';
-		aiWorkspaceStep = aiWorkspaceEntry === 'build' ? 'angles' : 'brief';
+		aiWorkspaceStep = 'brief';
 		aiGenerationIdea = sourcePost.content.trim();
-		if (aiWorkspaceEntry === 'ideate') aiIdeationBrief = '';
+		aiIdeationBrief = sourcePost.content.trim();
 		aiSelectedOpportunityID = '';
 		aiSelectedAngleID = '';
 		aiAngles = [];
 		aiBuildCreateRejected = false;
 		postBuilderError = '';
-		if (aiWorkspaceEntry === 'build') buildingPost = true;
-		else aiOpportunityLoading = false;
+		buildingPost = false;
+		aiOpportunityLoading = false;
 		await loadAIWorkspaceVoice(workspaceID);
 		if (workspaceID !== selectedWorkspaceId) return;
-		if (aiWorkspaceEntry === 'build') {
-			await loadPublicationAngles(aiGenerationIdea);
-		}
 	}
 
 	function persistActivePublicationBuild(
@@ -5072,7 +5121,8 @@
 	async function startSelectedPublicationBuild(): Promise<void> {
 		if (buildingPost) return;
 		const angle = aiAngles.find((candidate) => candidate.id === aiSelectedAngleID);
-		if (!angle || !aiGenerationIdea.trim()) return;
+		const idea = repurposeReviewActive ? aiGenerationIdea : aiIdeationBrief;
+		if ((repurposeReviewActive && !angle) || !idea.trim()) return;
 		const buildWorkspaceID = selectedWorkspaceId;
 		buildingPost = true;
 		postBuilderError = '';
@@ -5091,7 +5141,7 @@
 		const buildBaseline = composerAISnapshot();
 		try {
 			const build = await createPublicationBuild(
-				publicationBuildRequest(aiGenerationIdea, angle),
+				{ ...publicationBuildRequest(idea, angle), option_count: repurposeReviewActive ? 0 : 4 },
 				`composer-${crypto.randomUUID()}`
 			);
 			if (
@@ -5154,6 +5204,13 @@
 		}
 		buildingPost = false;
 		if (build.state === 'ready' && build.result) {
+			if (build.result.options?.length) {
+				aiPostOptions = structuredClone(build.result.options);
+				aiPendingResult = build.result;
+				aiWorkspaceStep = 'options';
+				aiWorkspaceOpen = true;
+				return;
+			}
 			aiPendingResult = build.result;
 			if (aiGenerationBaseline && composerAISnapshot() !== aiGenerationBaseline) {
 				aiApplyPending = true;
@@ -5175,6 +5232,54 @@
 		}
 	}
 
+	async function useAIPostOption(option: PublicationPostOption): Promise<void> {
+		if (buildingPost) return;
+		const workspaceID = selectedWorkspaceId;
+		const expectedPublicationID = publicationId;
+		buildingPost = true;
+		postBuilderError = '';
+		const mediaByAccount: Record<string, string[]> = {};
+		try {
+			const saved = new Map<string, string>();
+			for (const destination of option.destinations) {
+				mediaByAccount[destination.account_id] = [];
+				if (
+					destination.media.treatment === 'use_source' &&
+					destination.media.source_ref?.startsWith('media:')
+				)
+					mediaByAccount[destination.account_id] = [destination.media.source_ref.slice(6)];
+				const recipe = destination.media.document;
+				if (!recipe) continue;
+				const key = JSON.stringify(recipe);
+				let id = saved.get(key);
+				if (!id) {
+					const visual = await renderPostVisual(workspaceID, recipe);
+					try {
+						id = (await savePostVisual(workspaceID, visual, destination.media.alt_text ?? '')).id;
+					} finally {
+						releasePostVisual(visual);
+					}
+					saved.set(key, id);
+				}
+				if (workspaceID !== selectedWorkspaceId || expectedPublicationID !== publicationId) return;
+				mediaByAccount[destination.account_id] = [id];
+			}
+			aiOptionMedia = mediaByAccount;
+			aiPendingResult = option;
+			if (aiGenerationBaseline && composerAISnapshot() !== aiGenerationBaseline) {
+				aiApplyPending = true;
+				aiWorkspaceStep = 'generating';
+				return;
+			}
+			applyReadyPublicationBuild();
+		} catch (cause) {
+			if (workspaceID === selectedWorkspaceId)
+				postBuilderError = cause instanceof Error ? cause.message : m.compose_ai_build_failed();
+		} finally {
+			if (workspaceID === selectedWorkspaceId) buildingPost = false;
+		}
+	}
+
 	function captureAIComposerCheckpoint(): AIComposerCheckpoint {
 		return {
 			posts: posts.map((post) => ({ ...post, mediaIds: [...post.mediaIds] })),
@@ -5185,7 +5290,8 @@
 			linkUrl,
 			requestedOutputProfiles: { ...requestedOutputProfiles },
 			formatLockedByAccount: { ...formatLockedByAccount },
-			strategies: structuredClone(aiAppliedStrategies)
+			strategies: structuredClone(aiAppliedStrategies),
+			attachmentRequirements: structuredClone(aiAttachmentRequirements)
 		};
 	}
 
@@ -5198,6 +5304,7 @@
 		requestedOutputProfiles = { ...checkpoint.requestedOutputProfiles };
 		formatLockedByAccount = { ...checkpoint.formatLockedByAccount };
 		aiAppliedStrategies = structuredClone(checkpoint.strategies);
+		aiAttachmentRequirements = structuredClone(checkpoint.attachmentRequirements);
 		aiAppliedResult = null;
 		aiMemeCandidates = [];
 		aiMemeError = '';
@@ -5215,7 +5322,7 @@
 		const checkpoint = captureAIComposerCheckpoint();
 		if (!generationUndo) generationUndo = checkpoint;
 		latestGenerationUndo = checkpoint;
-		const applied = applyPublicationBuildResult(result, sourcePost);
+		const applied = applyPublicationBuildResult(result, sourcePost, aiOptionMedia);
 		posts = applied.posts;
 		variants = new SvelteMap(Object.entries(applied.variants));
 		requestedOutputProfiles = {
@@ -5226,6 +5333,24 @@
 		activePostIndex = 0;
 		activeVariantAccountId = null;
 		linkUrl = firstComposerURL(posts[0]?.content ?? '');
+		aiAttachmentRequirements = Object.fromEntries(
+			result.destinations.flatMap((destination) => {
+				const kind =
+					destination.media.treatment === 'attach_image'
+						? 'image'
+						: destination.media.treatment === 'attach_video'
+							? 'video'
+							: '';
+				return kind
+					? [
+							[
+								destination.account_id,
+								attachmentRequirementSchema.parse({ kind, brief: destination.media.brief })
+							]
+						]
+					: [];
+			})
+		);
 		aiAppliedResult = result;
 		aiAppliedStrategies = result.destinations.map((destination) => ({
 			account_id: destination.account_id,
@@ -5242,7 +5367,9 @@
 		postBuilderError = (result.skipped ?? [])
 			.map((destination) => `${getPlatformName(destination.platform)}: ${destination.reason}`)
 			.join(' ');
-		void loadAIMemeRecommendations(result);
+		if (!aiOptionMedia) void loadAIMemeRecommendations(result);
+		aiPostOptions = [];
+		aiOptionMedia = undefined;
 		void startFirstComposition('text');
 		void resolveCapabilities();
 		soundPreferences.play('success');
@@ -6099,6 +6226,7 @@
 		latestGenerationUndo = null;
 		aiAppliedResult = null;
 		aiAppliedStrategies = [];
+		aiAttachmentRequirements = {};
 		repurposePrivateContextNotes = '';
 		repurposeReviewActive = false;
 		postBuilderError = '';
@@ -6633,6 +6761,36 @@
 				/>
 			{/if}
 			<div class="mx-auto w-full max-w-2xl px-3 py-4 md:px-6 md:py-6">
+				{#each Object.entries(aiAttachmentRequirements).filter(([accountID]) => selectedAccountIds.includes(accountID) && (!activeVariantAccountId || activeVariantAccountId === accountID)) as [accountID, requirement] (accountID)}
+					{@const account = selectedAccounts.find((item) => item.id === accountID)}
+					{@const attached = posts.some((post) =>
+						(getVariantMediaIds(accountID, post.key) ?? post.mediaIds).some((id) =>
+							mediaMimeTypes.get(id)?.startsWith(`${requirement.kind}/`)
+						)
+					)}
+					{#if !attached}
+						<section class="mb-3 rounded-lg border border-dashed p-3 text-sm">
+							<p class="font-medium">
+								{account ? accountLabel(account) : ''}: {requirement.kind === 'video'
+									? m.ideate_video_needed()
+									: m.ideate_image_needed()}
+							</p>
+							<p class="mt-1 text-muted-foreground">{requirement.brief}</p>
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								class="mt-2"
+								onclick={() => {
+									requirementReviewId = accountID;
+									requirementReviewText = posts[0]
+										? (getVariantContent(accountID, posts[0].key) ?? posts[0].content)
+										: '';
+								}}>{m.ideate_remove_requirement()}</Button
+							>
+						</section>
+					{/if}
+				{/each}
 				{#if selectedAccounts.length > 0}
 					<section
 						class="mb-3 flex items-center gap-1 border-b"
@@ -6697,31 +6855,36 @@
 				{/if}
 
 				{#if visibleAIStrategies.length > 0}
-					<div
-						class="mb-3 flex gap-2 overflow-x-auto border-y py-3"
-						aria-label={m.compose_ai_strategy_label()}
-					>
-						{#each visibleAIStrategies as destination (destination.account_id)}
-							<div class="min-w-48 rounded-lg border bg-muted/30 px-3 py-2 text-xs">
-								<p class="font-medium text-foreground">
-									{getPlatformName(destination.platform)} · {localizedAIObjective(
-										destination.objective
-									)}
-								</p>
-								<p class="mt-1 text-muted-foreground">
-									{destination.media.treatment === 'none'
-										? m.compose_ai_no_media_recommended()
-										: destination.media.brief ||
-											localizedAIMediaTreatment(destination.media.treatment)}
-								</p>
-								{#if destination.warnings?.length}
-									<p class="mt-1 text-amber-700 dark:text-amber-300">
-										{destination.warnings.join(' ')}
+					<details>
+						<summary class="min-h-11 cursor-pointer py-3 text-sm text-muted-foreground"
+							>{m.compose_ai_strategy_label()}</summary
+						>
+						<div
+							class="mb-3 flex gap-2 overflow-x-auto border-y py-3"
+							aria-label={m.compose_ai_strategy_label()}
+						>
+							{#each visibleAIStrategies as destination (destination.account_id)}
+								<div class="min-w-48 rounded-lg border bg-muted/30 px-3 py-2 text-xs">
+									<p class="font-medium text-foreground">
+										{getPlatformName(destination.platform)} · {localizedAIObjective(
+											destination.objective
+										)}
 									</p>
-								{/if}
-							</div>
-						{/each}
-					</div>
+									<p class="mt-1 text-muted-foreground">
+										{destination.media.treatment === 'none'
+											? m.compose_ai_no_media_recommended()
+											: destination.media.brief ||
+												localizedAIMediaTreatment(destination.media.treatment)}
+									</p>
+									{#if destination.warnings?.length}
+										<p class="mt-1 text-amber-700 dark:text-amber-300">
+											{destination.warnings.join(' ')}
+										</p>
+									{/if}
+								</div>
+							{/each}
+						</div>
+					</details>
 				{/if}
 
 				{#if textCardAccounts.length && !textCardNoticeDismissed}
@@ -7130,7 +7293,9 @@
 	bind:open={aiWorkspaceOpen}
 	entry={aiWorkspaceEntry}
 	step={aiWorkspaceStep}
-	copy={repurposeReviewActive ? repurposeWorkspaceCopy : aiWorkspaceCopy}
+	copy={repurposeReviewActive
+		? repurposeWorkspaceCopy
+		: { ...aiWorkspaceCopy, getIdeas: m.ideate_generate() }}
 	opportunities={aiWorkspaceOpportunities}
 	selectedOpportunityId={aiSelectedOpportunityID}
 	angles={aiWorkspaceAngles}
@@ -7158,7 +7323,7 @@
 		const selected = aiAngles.find((candidate) => candidate.id === angle.id);
 		if (selected) aiObjective = selected.objective;
 	}}
-	onDiscover={() => void discoverPublicationIdeas()}
+	onDiscover={() => void startSelectedPublicationBuild()}
 	onContinue={() => void continuePublicationOpportunity()}
 	onFindMore={() => void loadPublicationOpportunities(true)}
 	onBack={aiWorkspaceEntry === 'ideate'
@@ -7188,11 +7353,18 @@
 				{m.compose_ai_brief()}
 				<Textarea
 					bind:value={aiIdeationBrief}
-					maxlength={1000}
+					maxlength={20000}
 					rows={5}
 					placeholder={m.compose_ai_brief_placeholder()}
 				/>
 			</label>
+			<Button
+				type="button"
+				variant="ghost"
+				class="mt-2"
+				onclick={() => void discoverPublicationIdeas()}
+				disabled={buildingPost}>{m.compose_ai_ideate()}</Button
+			>
 		{:else if aiWorkspaceStep === 'angles'}
 			<div class="grid gap-3 rounded-lg border bg-muted/25 p-3 sm:grid-cols-2">
 				<label class="grid gap-1.5 text-xs font-medium">
@@ -7252,7 +7424,64 @@
 			</div>
 		{/if}
 	{/snippet}
+	{#snippet results()}
+		<PostOptions
+			sources={aiPendingResult?.sources ?? []}
+			options={aiPostOptions}
+			accounts={selectedAccounts}
+			workspaceId={selectedWorkspaceId}
+			busy={buildingPost}
+			onUse={(option) => void useAIPostOption(option)}
+			onChange={(option) =>
+				(aiPostOptions = aiPostOptions.map((item) => (item.id === option.id ? option : item)))}
+		/>
+	{/snippet}
 </AIWorkspaceDialog>
+
+<Dialog.Root
+	open={!!requirementReviewId}
+	onOpenChange={(open) => {
+		if (!open) requirementReviewId = '';
+	}}
+>
+	<Dialog.Content class="sm:max-w-lg">
+		<Dialog.Header
+			><Dialog.Title>{m.ideate_review_without_media()}</Dialog.Title><Dialog.Description
+				>{m.ideate_review_without_media_description()}</Dialog.Description
+			></Dialog.Header
+		>
+		<label class="grid gap-2 text-sm font-medium"
+			>{m.ideate_post_text()}<Textarea bind:value={requirementReviewText} rows={5} /></label
+		>
+		<Dialog.Footer
+			><Button variant="outline" onclick={() => (requirementReviewId = '')}
+				>{m.common_cancel()}</Button
+			><Button
+				disabled={!requirementReviewText.trim()}
+				onclick={() => {
+					if (!posts[0]) return;
+					handleVariantChange(requirementReviewId, 0, requirementReviewText);
+					const next = { ...aiAttachmentRequirements };
+					delete next[requirementReviewId];
+					aiAttachmentRequirements = next;
+					const profiles = { ...requestedOutputProfiles };
+					delete profiles[requirementReviewId];
+					requestedOutputProfiles = profiles;
+					formatLockedByAccount = { ...formatLockedByAccount, [requirementReviewId]: false };
+					validationIssues = [];
+					aiAppliedStrategies = aiAppliedStrategies.map((strategy) =>
+						strategy.account_id === requirementReviewId
+							? { ...strategy, media: { treatment: 'none', role: 'none', brief: '' } }
+							: strategy
+					);
+					requirementReviewId = '';
+					scheduleCapabilityResolve();
+					scheduleAutoSave();
+				}}>{m.ideate_save_without_media()}</Button
+			></Dialog.Footer
+		>
+	</Dialog.Content>
+</Dialog.Root>
 
 <Dialog.Root bind:open={destinationActionOpen}>
 	<Dialog.Content class="sm:max-w-md">

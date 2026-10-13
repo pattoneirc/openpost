@@ -100,6 +100,8 @@ for (const scheme of ["light", "dark"] as const) {
         await expect(resize).toBeVisible();
         expect((await resize.boundingBox())!.height).toBeGreaterThanOrEqual(44);
         await expect(resize).toHaveAttribute("aria-valuenow", String(originalHeight));
+        // Raw CDP touch skips actionability checks. Wait for menu placement to settle.
+        await resize.click({ trial: true });
         const box = (await resize.boundingBox())!;
         const touch = await page.context().newCDPSession(page);
         const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };

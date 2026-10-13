@@ -10,10 +10,11 @@ const output = resolve(root, "assets/screenshots");
 const screens = [
   ["drafts", "Drafts"],
   ["composer", "Post"],
+  ["ideate", "Ideate"],
   ["calendar", "Calendar"],
   ["analytics", "Analytics"],
 ];
-const width = 1480;
+const width = 1840;
 const phoneWidth = 320;
 const bezel = 10;
 const screenWidth = phoneWidth - bezel * 2;

@@ -521,7 +521,7 @@ const extensionArticles = Object.fromEntries<ToolArticle>(
 			questions: []
 		}
 	])
-) as Record<'youtube-localizer' | 'x-timeline-blocker', ToolArticle>;
+) as Record<'youtube-localizer' | 'feed-limiter', ToolArticle>;
 
 export const toolArticles = Object.assign(
 	extensionArticles,

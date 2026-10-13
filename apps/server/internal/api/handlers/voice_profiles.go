@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -185,7 +186,7 @@ func (h *VoiceProfileHandler) get(ctx context.Context, input *VoiceProfilePathIn
 	if err := h.requireWorkspaceAccess(ctx, input.WorkspaceID, false); err != nil {
 		return nil, err
 	}
-	profile, err := h.profiles.Get(ctx, input.WorkspaceID, input.PathID)
+	profile, err := h.profiles.Get(ctx, input.WorkspaceID, voiceProfilePathID(input.PathID))
 	if err != nil {
 		return nil, voiceProfileError(err)
 	}
@@ -196,7 +197,7 @@ func (h *VoiceProfileHandler) update(ctx context.Context, input *UpdateVoiceProf
 	if err := h.requireWorkspaceAccess(ctx, input.Body.WorkspaceID, true); err != nil {
 		return nil, err
 	}
-	profile, err := h.profiles.Update(ctx, input.PathID, voiceprofiles.UpdateInput{
+	profile, err := h.profiles.Update(ctx, voiceProfilePathID(input.PathID), voiceprofiles.UpdateInput{
 		WorkspaceID: input.Body.WorkspaceID, ExpectedRevision: input.Body.ExpectedRevision,
 		Name: input.Body.Name, Definition: input.Body.Definition,
 	})
@@ -210,7 +211,7 @@ func (h *VoiceProfileHandler) setDefault(ctx context.Context, input *SetDefaultV
 	if err := h.requireWorkspaceAccess(ctx, input.Body.WorkspaceID, true); err != nil {
 		return nil, err
 	}
-	profile, err := h.profiles.SetDefault(ctx, input.PathID, voiceprofiles.SetDefaultInput{
+	profile, err := h.profiles.SetDefault(ctx, voiceProfilePathID(input.PathID), voiceprofiles.SetDefaultInput{
 		WorkspaceID: input.Body.WorkspaceID, ExpectedRevision: input.Body.ExpectedRevision,
 	})
 	if err != nil {
@@ -226,7 +227,7 @@ func (h *VoiceProfileHandler) delete(ctx context.Context, input *DeleteVoiceProf
 	if err := h.requireWorkspaceAccess(ctx, input.WorkspaceID, true); err != nil {
 		return nil, err
 	}
-	if err := h.profiles.Delete(ctx, input.PathID, voiceprofiles.DeleteInput{
+	if err := h.profiles.Delete(ctx, voiceProfilePathID(input.PathID), voiceprofiles.DeleteInput{
 		WorkspaceID: input.WorkspaceID, ExpectedRevision: input.ExpectedRevision,
 	}); err != nil {
 		return nil, voiceProfileError(err)
@@ -241,7 +242,7 @@ func (h *VoiceProfileHandler) assignAccount(ctx context.Context, input *AssignVo
 		return nil, err
 	}
 	resolved, err := h.profiles.AssignAccount(ctx, voiceprofiles.AssignmentInput{
-		WorkspaceID: input.Body.WorkspaceID, AccountID: input.PathAccountID,
+		WorkspaceID: input.Body.WorkspaceID, AccountID: voiceProfilePathID(input.PathAccountID),
 		VoiceProfileID: input.Body.VoiceProfileID,
 	})
 	if err != nil {
@@ -308,4 +309,12 @@ func voiceProfileError(err error) error {
 	default:
 		return huma.Error503ServiceUnavailable("Voice Profiles are temporarily unavailable")
 	}
+}
+
+func voiceProfilePathID(value string) string {
+	decoded, err := url.PathUnescape(value)
+	if err != nil {
+		return value
+	}
+	return decoded
 }

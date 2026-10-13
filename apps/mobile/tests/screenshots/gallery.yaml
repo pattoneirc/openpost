@@ -10,21 +10,80 @@ appId: com.openpost.app
 - extendedWaitUntil:
     visible: Recent drafts
     timeout: 120000
-- takeScreenshot: ${OUTPUT}/drafts-${SCHEME}
+- takeScreenshot: drafts-${SCHEME}
 - tapOn: Calendar
 - assertVisible: October 2026
-- takeScreenshot: ${OUTPUT}/calendar-${SCHEME}
+- takeScreenshot: calendar-${SCHEME}
 - tapOn: Analytics
 - assertVisible: Followers
 - assertVisible: Trends
-- takeScreenshot: ${OUTPUT}/analytics-${SCHEME}
+- takeScreenshot: analytics-${SCHEME}
 - tapOn: Drafts
 - tapOn: ".*A few thoughts on building in public.*"
 - assertVisible: ".*Social Set.*"
 - assertVisible: Queue next slot
-- takeScreenshot: ${OUTPUT}/composer-${SCHEME}
+- takeScreenshot: composer-${SCHEME}
 - tapOn: ".*Choose Social Set and destinations.*"
 - assertVisible: Shortform writing
-- assertVisible: Studio team
+- assertVisible: ".*Studio team.*"
 - assertVisible: Close
 - tapOn: Close
+
+- tapOn: Cancel
+- tapOn:
+    text: Ideate
+    index: 0
+- tapOn: ".*Your idea.*"
+- inputText: I deleted 15,000 lines and the product has more features now.
+- tapOn: What do you want to post about?
+- extendedWaitUntil:
+    visible: Give me four posts
+    timeout: 20000
+- takeScreenshot: ideate-input-${SCHEME}
+- tapOn: Give me four posts
+- extendedWaitUntil:
+    visible: The shorter version
+    timeout: 20000
+- extendedWaitUntil:
+    visible: "Me: i deleted 15,000 lines.*"
+    timeout: 20000
+- waitForAnimationToEnd
+- takeScreenshot: ideate-${SCHEME}
+- scrollUntilVisible:
+    element: A message from the codebase
+    direction: DOWN
+- takeScreenshot: ideate-visual-${SCHEME}
+- scrollUntilVisible:
+    element: Demo video needed.*
+    direction: DOWN
+- assertVisible: Show what changed
+- scrollUntilVisible:
+    element: The engineering take
+    direction: DOWN
+- takeScreenshot: ideate-fourth-${SCHEME}
+
+- scrollUntilVisible:
+    element: A message from the codebase
+    direction: UP
+    centerElement: true
+- tapOn:
+    text: Use this post
+    below: A message from the codebase
+    index: 0
+- extendedWaitUntil:
+    visible: Destinations.*
+    timeout: 20000
+- tapOn: Bluesky, @studio.bsky.social, draft
+- assertVisible: No text
+- takeScreenshot: ideate-selected-${SCHEME}
+
+- tapOn: Back
+- openLink: com.openpost.app:///privacy
+- extendedWaitUntil:
+    visible: App analytics
+    timeout: 20000
+- assertVisible: Decline
+- assertVisible: Allow analytics
+- tapOn: Decline
+- assertVisible: Decline, Selected
+- takeScreenshot: privacy-${SCHEME}

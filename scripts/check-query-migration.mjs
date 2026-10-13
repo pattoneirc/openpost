@@ -56,6 +56,13 @@ const imperativeReadAllowlist = [
     reason: "bounded live build-status poll resumed from a persisted operation",
   },
   {
+    file: "apps/mobile/src/components/native-telemetry-runtime.tsx",
+    endpoint: "/telemetry/config",
+    count: 1,
+    reason:
+      "bounded one-shot SDK privacy/runtime bootstrap, not render-path server state, matching the web telemetry boundary",
+  },
+  {
     file: "apps/web/src/lib/telemetry.ts",
     endpoint: "/telemetry/config",
     count: 1,

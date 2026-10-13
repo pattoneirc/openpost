@@ -2,12 +2,17 @@
 	import './layout.css';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { marketingAgentMarkdownUrl, resolveMarketingSocial } from '@openpost/social-images';
+	import {
+		marketingAgentMarkdownUrl,
+		marketingTelemetryPath,
+		resolveMarketingSocial
+	} from '@openpost/social-images';
 	import { ModeWatcher } from 'mode-watcher';
 	import { onMount } from 'svelte';
 	import { afterNavigate } from '$app/navigation';
 	import {
 		captureTelemetryPageView,
+		captureTelemetryEvent,
 		configureTelemetry,
 		installGlobalErrorCapture,
 		telemetryConsentCopy
@@ -26,7 +31,9 @@
 	const structuredDataJSON = $derived(JSON.stringify(structuredData).replaceAll('<', '\\u003c'));
 
 	afterNavigate((navigation) => {
-		captureTelemetryPageView(navigation.to?.route.id ?? '/unknown');
+		captureTelemetryPageView(
+			marketingTelemetryPath(navigation.to?.url.pathname ?? page.url.pathname)
+		);
 	});
 
 	onMount(() => {
@@ -45,8 +52,44 @@
 			surface: 'marketing'
 		});
 		const removeErrorCapture = installGlobalErrorCapture();
+		function measureCTA(event: MouseEvent) {
+			if (!(event.target instanceof Element)) return;
+			const anchor = event.target.closest('a');
+			if (!anchor) return;
+			const url = new URL(anchor.href, location.origin);
+			let action: 'signup' | 'pricing' | 'docs' | 'tool' | 'github';
+			let target: string;
+			if (url.origin === 'https://app.openpo.st' && url.pathname === '/register') {
+				action = 'signup';
+				target = '/register';
+			} else if (url.origin === location.origin && url.pathname === '/pricing') {
+				action = 'pricing';
+				target = '/pricing';
+			} else if (url.origin === location.origin && /^\/docs(?:\/|$)/.test(url.pathname)) {
+				action = 'docs';
+				target = '/docs';
+			} else if (
+				url.origin === location.origin &&
+				url.pathname.startsWith('/tools/') &&
+				marketingTelemetryPath(url.pathname) !== '/unknown'
+			) {
+				action = 'tool';
+				target = marketingTelemetryPath(url.pathname);
+			} else if (url.origin === 'https://github.com' && url.pathname === '/getopenpost/openpost') {
+				action = 'github';
+				target = 'openpost_repository';
+			} else return;
+			const placement = anchor.closest('header,nav')
+				? 'navigation'
+				: anchor.closest('footer')
+					? 'footer'
+					: 'page';
+			captureTelemetryEvent('marketing cta clicked', { action, placement, target });
+		}
+		document.addEventListener('click', measureCTA);
 		return () => {
 			removeErrorCapture();
+			document.removeEventListener('click', measureCTA);
 		};
 	});
 </script>

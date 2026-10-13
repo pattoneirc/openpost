@@ -13,7 +13,12 @@ const { Image } = require("react-native");
 const photo = Image.resolveAssetSource(
   require("../../../../tests/app/fixtures/product-screenshots/lisbon-tram.png"),
 ).uri;
-const workspace = { id: "mobile-review", name: "Studio", organization_id: "review", role: "owner" };
+const workspace = {
+  id: "mobile-review",
+  name: "Studio",
+  organization_id: "review",
+  role: "owner",
+};
 const now = new Date();
 const at = (day, hour) => new Date(now.getFullYear(), now.getMonth(), day, hour).toISOString();
 const media = [
@@ -33,7 +38,12 @@ const account = {
 };
 const accounts = [
   account,
-  { ...account, id: "threads-account", platform: "threads", account_username: "studio" },
+  {
+    ...account,
+    id: "threads-account",
+    platform: "threads",
+    account_username: "studio",
+  },
   { ...account, id: "x-account", platform: "x", account_username: "studio" },
   {
     ...account,
@@ -42,8 +52,18 @@ const accounts = [
     instance_url: "https://masto.pt",
     account_username: "studio",
   },
-  { ...account, id: "linkedin-account", platform: "linkedin", account_username: "Studio team" },
-  { ...account, id: "facebook-account", platform: "facebook", account_username: "Studio" },
+  {
+    ...account,
+    id: "linkedin-account",
+    platform: "linkedin",
+    account_username: "Studio team",
+  },
+  {
+    ...account,
+    id: "facebook-account",
+    platform: "facebook",
+    account_username: "Studio",
+  },
 ];
 const post = (id, text, status, day, hour, image = true) => ({
   id,
@@ -155,7 +175,11 @@ const overview = {
     account_id: account.id,
     platform: account.platform,
     username: account.account_username,
-    reference: { type: "openpost", publication_id: p.publication_id, rendition_id: "result-one" },
+    reference: {
+      type: "openpost",
+      publication_id: p.publication_id,
+      rendition_id: "result-one",
+    },
     metric_availability: "available",
   })),
   publications: content,
@@ -173,11 +197,174 @@ const overview = {
       ...point,
       value: point.value > 20 ? Math.round(point.value / 4) : -5,
     })),
-    engagement: series.map((point) => ({ ...point, value: Math.round(point.value / 4) })),
+    engagement: series.map((point) => ({
+      ...point,
+      value: Math.round(point.value / 4),
+    })),
   },
   insights: [],
 };
+const ideateDocument = {
+  schema_version: 1,
+  template_id: "messages",
+  title: "A smaller codebase",
+  appearance: "light",
+  frame: "natural",
+  text_size: "normal",
+  conversation: {
+    name: "The codebase",
+    self_id: "me",
+    show_header: true,
+    timestamp: "Today 9:41 AM",
+    read_receipt: "Read 9:42 AM",
+    people: [
+      { id: "me", name: "Me" },
+      { id: "code", name: "The codebase" },
+    ],
+    messages: [
+      { id: "one", sender_id: "me", text: "i deleted 15,000 lines" },
+      {
+        id: "two",
+        sender_id: "code",
+        text: "thanks. i have more features now",
+      },
+    ],
+  },
+};
+const option = (id, label, text, media) => ({
+  id,
+  label,
+  canonical_text: text,
+  direction: {
+    canonical_text: text,
+    factual_kernel: ["The author deleted 15,000 lines and the product has more features."],
+    thesis: "Less code, more features.",
+    outcome: "shares",
+    audience: "Builders",
+    angle: label,
+    route: media.treatment === "none" ? "thesis_led" : "artifact_led",
+    claims: [],
+    media,
+    destinations: accounts.map((account) => ({
+      account_id: account.id,
+      include: true,
+      reason: "Selected by the author.",
+    })),
+  },
+  review_flags: [],
+  destinations: accounts.map((account) => ({
+    account_id: account.id,
+    platform: account.platform,
+    objective: "shares",
+    archetype: media.treatment === "none" ? "observation" : "artifact_joke",
+    output_profile: `${account.platform}.post`,
+    preview: text || label,
+    claims: [],
+    follow_up_notes: [],
+    segments: [{ body: text }],
+    media,
+    warnings: [],
+    format_locked: false,
+  })),
+  skipped: [],
+});
+const ideateVoice = {
+  id: "studio-voice",
+  workspace_id: workspace.id,
+  name: "Studio voice",
+  is_default: true,
+  revision: 1,
+  schema_version: 1,
+  definition: {
+    identity_summary: "A founder building useful software.",
+    preferred_language: "English",
+    traits: ["Direct", "Dry humor"],
+  },
+  assigned_account_ids: [],
+  created_at: now.toISOString(),
+  updated_at: now.toISOString(),
+};
+const ideateBuild = {
+  id: "native-four-posts",
+  workspace_id: workspace.id,
+  state: "ready",
+  phase: "ready",
+  revision: 1,
+  voice_profile_id: ideateVoice.id,
+  created_at: now.toISOString(),
+  updated_at: now.toISOString(),
+  input: {
+    idea: "I deleted 15,000 lines and the product has more features now.",
+    option_count: 4,
+    destination_policy: "require_all",
+    direction: {},
+    destinations: accounts.map((account) => ({
+      account_id: account.id,
+      platform: account.platform,
+      label: account.account_username,
+      voice: {
+        id: ideateVoice.id,
+        name: ideateVoice.name,
+        revision: 1,
+        definition: {
+          identity: ideateVoice.definition.identity_summary,
+          language: "English",
+        },
+      },
+      allowed_output_profiles: [
+        {
+          key: `${account.platform}.post`,
+          text_limit: account.platform === "x" ? 280 : account.platform === "bluesky" ? 300 : 500,
+          max_segments: 1,
+          media_max_count: 4,
+          allowed_mimes: ["image/*"],
+        },
+      ],
+    })),
+  },
+  result: {
+    canonical_text: "",
+    destinations: [],
+    direction: {},
+    review_flags: [],
+    skipped: [],
+    sources: [],
+    options: [
+      option(
+        "option-1",
+        "The shorter version",
+        "Deleted 15,000 lines.\n\nThe product has more features now.\n\nStarting to suspect the code was the bug.",
+        { treatment: "none", role: "none", brief: "" },
+      ),
+      option("option-2", "A message from the codebase", "", {
+        treatment: "template",
+        template_id: "messages",
+        role: "punchline",
+        brief: "A fictional conversation with the codebase.",
+        alt_text: "Me: i deleted 15,000 lines. The codebase: thanks. i have more features now.",
+        document: ideateDocument,
+      }),
+      option(
+        "option-3",
+        "Show what changed",
+        "15,000 lines gone. More features.\n\nHere’s what the product does now.",
+        {
+          treatment: "attach_video",
+          role: "proof",
+          brief: "Record a short walkthrough of the real product after the refactor.",
+        },
+      ),
+      option(
+        "option-4",
+        "The engineering take",
+        "Sometimes the best feature is the code you delete.\n\n15,000 lines gone. More features left.",
+        { treatment: "none", role: "none", brief: "" },
+      ),
+    ],
+  },
+};
 const routes = new Map([
+  ["/telemetry/config", { enabled: false, environment: "test", edition: "selfhost" }],
   [
     "/app/bootstrap",
     {
@@ -189,6 +376,8 @@ const routes = new Map([
     },
   ],
   ["/workspaces", [workspace]],
+  ["/voice-profiles", [ideateVoice]],
+  ["/publication-builds/native-four-posts", ideateBuild],
   ["/accounts", accounts],
   [
     "/social-sets",
@@ -197,7 +386,9 @@ const routes = new Map([
         id: "studio-set",
         name: "Shortform writing",
         is_default: true,
-        accounts: accounts.map((account) => ({ social_account_id: account.id })),
+        accounts: accounts.map((account) => ({
+          social_account_id: account.id,
+        })),
       },
     ],
   ],
@@ -227,8 +418,77 @@ function jsonResponse(value, status = 200) {
 global.fetch = async (input, options = {}) => {
   const url = new URL(typeof input === "string" ? input : input.url);
   const method = options.method || input.method || "GET";
-  if (method !== "GET") return jsonResponse({ detail: "Screenshot data is read-only" }, 405);
   const path = url.pathname.replace(/^\/api\/v1/, "");
+  if (method === "POST") {
+    const body = options.body ? JSON.parse(options.body) : await input.json();
+    if (path === "/publication-builds") {
+      ideateBuild.state = "ready";
+      return jsonResponse(ideateBuild, 202);
+    }
+    if (path === "/screenshot-templates/designs")
+      return jsonResponse({
+        id: "native-design",
+        revision: 1,
+        document: body.document,
+        workspace_id: workspace.id,
+      });
+    if (path === "/media/upload-session") {
+      if (body.mime_type !== "image/png" || body.source !== "screenshot_template")
+        return jsonResponse({ detail: "Expected an editable PNG" }, 422);
+      const fs = require("expo-file-system/legacy");
+      const base64 = await fs.readAsStringAsync(`${fs.cacheDirectory}ideate-native-design.png`, {
+        encoding: fs.EncodingType.Base64,
+      });
+      const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+      const width = new DataView(bytes.buffer).getUint32(16);
+      const height = new DataView(bytes.buffer).getUint32(20);
+      if (!base64.startsWith("iVBORw0KGgo") || width !== 1080 || !height)
+        return jsonResponse({ detail: "Native artifact export was invalid" }, 422);
+      global.ideateExport = {
+        id: "native-png",
+        url: `data:image/png;base64,${base64}`,
+        mime_type: "image/png",
+        original_filename: body.filename,
+        width,
+        height,
+        alt_text: body.alt_text,
+      };
+      return jsonResponse({ media_id: "native-png", deduped: true });
+    }
+    if (
+      path === "/media/upload-session/native-png/complete" ||
+      path === "/screenshot-templates/designs/native-design/exports"
+    )
+      return jsonResponse({});
+    if (path === "/publication-builds/native-four-posts/options/option-2/commit") {
+      if (
+        body.expected_revision !== ideateBuild.revision ||
+        !global.ideateExport ||
+        body.media?.length !== accounts.length ||
+        body.edits?.some((edit) => edit.document?.template_id !== "messages")
+      )
+        return jsonResponse({ detail: "Incomplete native selection" }, 422);
+      const chosen = post("chosen-ideate", "", "draft", 5, 9, false);
+      chosen.scheduled_at = undefined;
+      chosen.renditions = chosen.renditions.map((rendition) => ({
+        ...rendition,
+        media: [global.ideateExport],
+        segments: [
+          {
+            id: `segment-${rendition.id}`,
+            body: "",
+            settings: {},
+            media: [global.ideateExport],
+          },
+        ],
+      }));
+      posts.push(chosen);
+      ideateBuild.state = "committed";
+      ideateBuild.publication_id = chosen.id;
+      return jsonResponse({ publication_id: chosen.id });
+    }
+  }
+  if (method !== "GET") return jsonResponse({ detail: "Screenshot data is read-only" }, 405);
   let value = routes.get(path);
   if (path === "/publications") {
     value = posts.filter((p) =>
@@ -239,7 +499,10 @@ global.fetch = async (input, options = {}) => {
   } else if (path.startsWith("/publications/")) {
     value = posts.find((p) => path === `/publications/${p.id}`);
   } else if (path === "/analytics") {
-    value = { ...overview, range_days: Number(url.searchParams.get("days")) || 30 };
+    value = {
+      ...overview,
+      range_days: Number(url.searchParams.get("days")) || 30,
+    };
   }
   return value === undefined
     ? jsonResponse({ detail: `No screenshot fixture for ${path}` }, 404)

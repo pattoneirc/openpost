@@ -325,6 +325,7 @@
 				size="icon"
 				class="size-11"
 				aria-label={mode.current === 'dark' ? 'Use light theme' : 'Use dark theme'}
+				disabled={!hydrated}
 				onclick={toggleMode}
 			>
 				{#if mode.current === 'dark'}<Sun />{:else}<Moon />{/if}
@@ -391,6 +392,7 @@
 						size="icon"
 						class="size-11"
 						aria-label={mode.current === 'dark' ? 'Use light theme' : 'Use dark theme'}
+						disabled={!hydrated}
 						onclick={toggleMode}
 					>
 						{#if mode.current === 'dark'}<Sun />{:else}<Moon />{/if}

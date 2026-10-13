@@ -15,6 +15,7 @@
     "@openpost/social-images": "workspace:*",
     "@openpost/telemetry": "workspace:*",
     "@openpost/ui": "workspace:*",
+    "@posthog/nextjs-config": "1.11.1",
     "@scalar/json-magic": "0.13.3",
     "fumadocs-core": "^16.15.0",
     "fumadocs-mdx": "15.4.0",

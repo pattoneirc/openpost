@@ -5,6 +5,7 @@ export type PrimaryNavigationItem = {
 		| 'publications'
 		| 'communications'
 		| 'growth'
+		| 'ideate'
 		| 'analytics'
 		| 'media'
 		| 'editors'
@@ -17,6 +18,7 @@ export type PrimaryNavigationItem = {
 };
 
 export type AppRouteFamily =
+	| 'ideate'
 	| 'root'
 	| 'calendar'
 	| 'publications'
@@ -35,6 +37,7 @@ export const appRouteFamilies = {
 	publications: ['/publications', '/calendar'],
 	communications: ['/inbox'],
 	growth: ['/grow'],
+	ideate: ['/ideate', '/voice-profiles'],
 	workflows: ['/workflows'],
 	analytics: ['/analytics'],
 	media: ['/media'],
@@ -74,6 +77,7 @@ export const primaryNavigation: PrimaryNavigationItem[] = [
 		family: 'analytics',
 		mobile: false
 	},
+	{ id: 'ideate', label: 'Ideate', href: '/ideate', family: 'ideate', mobile: false },
 	{ id: 'media', label: 'Media', href: '/media', family: 'media', mobile: true },
 	{ id: 'workflows', label: 'Workflows', href: '/workflows', family: 'workflows', mobile: false },
 	{ id: 'settings', label: 'Settings', href: '/settings', family: 'settings', mobile: false }
@@ -101,6 +105,7 @@ export function isLocalEditorRoute(pathname: string): boolean {
 
 export function isMoreNavigationRoute(pathname: string): boolean {
 	return (
+		isAppRouteInFamily(pathname, 'ideate') ||
 		isAppRouteInFamily(pathname, 'workflows') ||
 		isAppRouteInFamily(pathname, 'growth') ||
 		isAppRouteInFamily(pathname, 'analytics') ||

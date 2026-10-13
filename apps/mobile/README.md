@@ -7,6 +7,7 @@ OpenPost Mobile is a standalone Expo app. It uses native tabs and platform contr
 - OpenPost Hosted or a self-hosted HTTPS server
 - Email, password, TOTP, and browser device pairing
 - Workspace selection and secure token storage
+- Ideate: one idea, four options, generated visuals, and voice defaults
 - Quick draft capture, the full composer, photos, and Android share capture
 - Destination selection, per-platform text, scheduling, and publish now
 - Calendar, queue, retry state, and provider-level post results

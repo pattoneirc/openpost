@@ -2808,6 +2808,12 @@
 					"idea": {
 						"type": "string"
 					},
+					"option_count": {
+						"description": "Generate four complete alternatives; zero keeps the single-package workflow",
+						"enum": [0, 4],
+						"format": "int64",
+						"type": "integer"
+					},
 					"sources": {
 						"items": {
 							"$ref": "#/components/schemas/SourceMaterial"
@@ -2833,11 +2839,21 @@
 					"direction": {
 						"$ref": "#/components/schemas/DirectorPlan"
 					},
+					"options": {
+						"description": "Four complete alternatives. Choosing one is an explicit author action",
+						"items": {
+							"$ref": "#/components/schemas/PostOption"
+						},
+						"type": ["array", "null"]
+					},
 					"review_flags": {
 						"items": {
 							"$ref": "#/components/schemas/ReviewFlag"
 						},
 						"type": ["array", "null"]
+					},
+					"selected_option_id": {
+						"type": "string"
 					},
 					"skipped": {
 						"items": {
@@ -3454,6 +3470,44 @@
 					}
 				},
 				"required": ["publication_id", "href"],
+				"type": "object"
+			},
+			"CommitPublicationOptionInputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": [
+							"https://example.com/api/v1/schemas/CommitPublicationOptionInputBody.json"
+						],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"edits": {
+						"description": "Author-edited text and visual recipes for the chosen alternative",
+						"items": {
+							"$ref": "#/components/schemas/OptionEdit"
+						},
+						"maxItems": 20,
+						"type": ["array", "null"]
+					},
+					"expected_revision": {
+						"description": "Revision read with the selected option snapshot",
+						"format": "int64",
+						"minimum": 1,
+						"type": "integer"
+					},
+					"media": {
+						"description": "Rendered Workspace image IDs for the selected alternative",
+						"items": {
+							"$ref": "#/components/schemas/OptionMedia"
+						},
+						"maxItems": 20,
+						"type": ["array", "null"]
+					}
+				},
+				"required": ["expected_revision"],
 				"type": "object"
 			},
 			"CompleteAccountSelectionInputBody": {
@@ -5126,6 +5180,12 @@
 						"maxLength": 20000,
 						"type": "string"
 					},
+					"option_count": {
+						"description": "Four complete creative alternatives, or the existing single package",
+						"enum": [0, 4],
+						"format": "int64",
+						"type": "integer"
+					},
 					"social_set_id": {
 						"description": "Optional Social Set candidate snapshot",
 						"type": "string"
@@ -6083,6 +6143,10 @@
 					},
 					"include": {
 						"type": "boolean"
+					},
+					"media": {
+						"$ref": "#/components/schemas/MediaPlan",
+						"description": "Optional destination-specific visual choice for a creative alternative"
 					},
 					"reason": {
 						"type": "string"
@@ -12300,14 +12364,24 @@
 			"MediaPlan": {
 				"additionalProperties": false,
 				"properties": {
+					"alt_text": {
+						"type": "string"
+					},
 					"brief": {
 						"type": "string"
+					},
+					"document": {
+						"$ref": "#/components/schemas/ScreenshotTemplateDocument",
+						"description": "Validated editable visual recipe, awaiting rendering and upload"
 					},
 					"role": {
 						"type": "string"
 					},
 					"source_ref": {
 						"description": "Exact source ID for source-bound media treatments",
+						"type": "string"
+					},
+					"template_id": {
 						"type": "string"
 					},
 					"treatment": {
@@ -13621,6 +13695,40 @@
 				"required": ["value", "label"],
 				"type": "object"
 			},
+			"OptionEdit": {
+				"additionalProperties": false,
+				"properties": {
+					"account_id": {
+						"type": "string"
+					},
+					"document": {
+						"$ref": "#/components/schemas/ScreenshotTemplateDocument"
+					},
+					"segments": {
+						"items": {
+							"$ref": "#/components/schemas/SegmentPlan"
+						},
+						"maxItems": 25,
+						"minItems": 1,
+						"type": ["array", "null"]
+					}
+				},
+				"required": ["account_id", "segments"],
+				"type": "object"
+			},
+			"OptionMedia": {
+				"additionalProperties": false,
+				"properties": {
+					"account_id": {
+						"type": "string"
+					},
+					"media_id": {
+						"type": "string"
+					}
+				},
+				"required": ["account_id", "media_id"],
+				"type": "object"
+			},
 			"OrganizationAuditEvent": {
 				"additionalProperties": false,
 				"properties": {
@@ -13999,6 +14107,10 @@
 						"type": "integer"
 					},
 					"media_max_count": {
+						"format": "int64",
+						"type": "integer"
+					},
+					"media_min_count": {
 						"format": "int64",
 						"type": "integer"
 					},
@@ -14531,6 +14643,51 @@
 					}
 				},
 				"required": ["account_id", "platform", "supported", "enabled", "status", "posts"],
+				"type": "object"
+			},
+			"PostOption": {
+				"additionalProperties": false,
+				"properties": {
+					"canonical_text": {
+						"type": "string"
+					},
+					"destinations": {
+						"items": {
+							"$ref": "#/components/schemas/DestinationPlan"
+						},
+						"type": ["array", "null"]
+					},
+					"direction": {
+						"$ref": "#/components/schemas/DirectorPlan"
+					},
+					"id": {
+						"type": "string"
+					},
+					"label": {
+						"type": "string"
+					},
+					"review_flags": {
+						"items": {
+							"$ref": "#/components/schemas/ReviewFlag"
+						},
+						"type": ["array", "null"]
+					},
+					"skipped": {
+						"items": {
+							"$ref": "#/components/schemas/SkippedDestination"
+						},
+						"type": ["array", "null"]
+					}
+				},
+				"required": [
+					"id",
+					"label",
+					"canonical_text",
+					"direction",
+					"destinations",
+					"skipped",
+					"review_flags"
+				],
 				"type": "object"
 			},
 			"PostingScheduleResponse": {
@@ -18233,6 +18390,11 @@
 						},
 						"type": ["array", "null"]
 					},
+					"settings": {
+						"additionalProperties": {},
+						"description": "Authored segment settings, including attachment requirements",
+						"type": "object"
+					},
 					"title": {
 						"description": "Canonical segment title",
 						"type": "string"
@@ -18652,6 +18814,9 @@
 						"type": "string"
 					},
 					"label": {
+						"type": "string"
+					},
+					"mime_type": {
 						"type": "string"
 					},
 					"publishable": {
@@ -19295,6 +19460,33 @@
 					}
 				},
 				"required": ["app", "existed", "requires_restart"],
+				"type": "object"
+			},
+			"SavePublicationOptionInputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": ["https://example.com/api/v1/schemas/SavePublicationOptionInputBody.json"],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"edits": {
+						"items": {
+							"$ref": "#/components/schemas/OptionEdit"
+						},
+						"maxItems": 20,
+						"minItems": 1,
+						"type": ["array", "null"]
+					},
+					"expected_revision": {
+						"format": "int64",
+						"minimum": 1,
+						"type": "integer"
+					}
+				},
+				"required": ["expected_revision", "edits"],
 				"type": "object"
 			},
 			"SaveRepostSettingsInputBody": {
@@ -20131,6 +20323,10 @@
 						},
 						"type": ["array", "null"]
 					},
+					"date_time": {
+						"description": "Value must be an RFC 3339 timestamp with a timezone",
+						"type": "boolean"
+					},
 					"local_date_time": {
 						"type": "boolean"
 					},
@@ -20246,6 +20442,10 @@
 							"type": "string"
 						},
 						"type": ["array", "null"]
+					},
+					"post_only": {
+						"description": "Choose this setting on each post, never in reusable Social Set defaults",
+						"type": "boolean"
 					},
 					"required": {
 						"type": "boolean"
@@ -48480,6 +48680,240 @@
 					}
 				},
 				"summary": "Send a ready build to the composer",
+				"tags": ["Publication Builds"]
+			}
+		},
+		"/publication-builds/{id}/options/{option_id}": {
+			"put": {
+				"operationId": "save-publication-option",
+				"parameters": [
+					{
+						"in": "path",
+						"name": "id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"in": "path",
+						"name": "option_id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SavePublicationOptionInputBody"
+							}
+						}
+					},
+					"required": true
+				},
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Build"
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"400": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Bad Request"
+					},
+					"403": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Forbidden"
+					},
+					"404": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Not Found"
+					},
+					"409": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Conflict"
+					},
+					"422": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Unprocessable Entity"
+					},
+					"500": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Internal Server Error"
+					},
+					"503": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Service Unavailable"
+					}
+				},
+				"summary": "Save author edits to one alternative",
+				"tags": ["Publication Builds"]
+			}
+		},
+		"/publication-builds/{id}/options/{option_id}/commit": {
+			"post": {
+				"operationId": "commit-publication-option",
+				"parameters": [
+					{
+						"in": "path",
+						"name": "id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"in": "path",
+						"name": "option_id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CommitPublicationOptionInputBody"
+							}
+						}
+					},
+					"required": true
+				},
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/CommitPublicationBuildOutputBody"
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"400": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Bad Request"
+					},
+					"403": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Forbidden"
+					},
+					"404": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Not Found"
+					},
+					"409": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Conflict"
+					},
+					"422": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Unprocessable Entity"
+					},
+					"500": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Internal Server Error"
+					},
+					"503": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Service Unavailable"
+					}
+				},
+				"summary": "Choose one creative alternative and create a draft",
 				"tags": ["Publication Builds"]
 			}
 		},

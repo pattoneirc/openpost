@@ -430,8 +430,8 @@ func prepareYouTubeUpload(req UploadMediaRequest) (youtubeVideoInsertRequest, er
 	if title == "" {
 		return youtubeVideoInsertRequest{}, fmt.Errorf("youtube upload requires an explicit title")
 	}
-	if strings.ContainsAny(firstNonEmptyString(settingString(req.Settings, "title"), strings.TrimSpace(req.Title)), "<>") {
-		return youtubeVideoInsertRequest{}, fmt.Errorf("youtube titles cannot contain <> characters")
+	if err := providerlimits.ValidateYouTubeTitleCharacters(firstNonEmptyString(settingString(req.Settings, "title"), strings.TrimSpace(req.Title))); err != nil {
+		return youtubeVideoInsertRequest{}, err
 	}
 	if err := providerlimits.ValidateYouTubeDescription(req.Description); err != nil {
 		return youtubeVideoInsertRequest{}, err
@@ -441,6 +441,17 @@ func prepareYouTubeUpload(req UploadMediaRequest) (youtubeVideoInsertRequest, er
 	case "public", "unlisted", "private":
 	default:
 		return youtubeVideoInsertRequest{}, fmt.Errorf("youtube upload requires an explicit supported privacy setting")
+	}
+	publishAt := settingString(req.Settings, "publish_at")
+	if publishAt != "" {
+		at, err := time.Parse(time.RFC3339, publishAt)
+		if err != nil {
+			return youtubeVideoInsertRequest{}, fmt.Errorf("youtube publish_at must be an RFC 3339 time")
+		}
+		if privacy != "private" {
+			return youtubeVideoInsertRequest{}, fmt.Errorf("youtube publish_at requires private privacy")
+		}
+		publishAt = at.UTC().Format(time.RFC3339Nano)
 	}
 	categoryID := settingString(req.Settings, "category_id")
 	if categoryID == "" {
@@ -455,10 +466,11 @@ func prepareYouTubeUpload(req UploadMediaRequest) (youtubeVideoInsertRequest, er
 		},
 		Status: youtubeVideoStatus{
 			PrivacyStatus:           privacy,
+			PublishAt:               publishAt,
 			License:                 firstNonEmptyString(settingString(req.Settings, "license"), "youtube"),
 			Embeddable:              settingBoolDefault(req.Settings, "embeddable", true),
-			SelfDeclaredMadeForKids: settingBool(req.Settings, "self_declared_made_for_kids"),
-			ContainsSyntheticMedia:  settingBool(req.Settings, "contains_synthetic_media"),
+			SelfDeclaredMadeForKids: settingBoolPtr(req.Settings, "self_declared_made_for_kids"),
+			ContainsSyntheticMedia:  settingBoolPtr(req.Settings, "contains_synthetic_media"),
 		},
 		PaidProductPlacementDetails: youtubePaidProductPlacementDetails{
 			HasPaidProductPlacement: settingBool(req.Settings, "paid_placement"),
@@ -1299,10 +1311,11 @@ type youtubeVideoSnippet struct {
 
 type youtubeVideoStatus struct {
 	PrivacyStatus           string `json:"privacyStatus"`
+	PublishAt               string `json:"publishAt,omitempty"`
 	License                 string `json:"license,omitempty"`
 	Embeddable              bool   `json:"embeddable"`
-	SelfDeclaredMadeForKids bool   `json:"selfDeclaredMadeForKids,omitempty"`
-	ContainsSyntheticMedia  bool   `json:"containsSyntheticMedia,omitempty"`
+	SelfDeclaredMadeForKids *bool  `json:"selfDeclaredMadeForKids,omitempty"`
+	ContainsSyntheticMedia  *bool  `json:"containsSyntheticMedia,omitempty"`
 }
 
 type youtubePaidProductPlacementDetails struct {

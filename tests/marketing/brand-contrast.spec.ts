@@ -18,7 +18,10 @@ test("public logo remains legible when the visitor switches appearance", async (
       exact: true,
     });
     if (await navigation.isVisible()) await navigation.click();
-    if (await switchTheme.isVisible()) await switchTheme.click();
+    const currentScheme = await page
+      .locator("html")
+      .evaluate((html) => (html.classList.contains("dark") ? "dark" : "light"));
+    if (currentScheme !== scheme) await switchTheme.click();
     const closeNavigation = header.getByRole("button", {
       name: "Close navigation",
       exact: true,
@@ -54,4 +57,31 @@ test("public logo remains legible when the visitor switches appearance", async (
   }
   expect(colors[0]).not.toEqual(colors[1]);
   expect(colors[2]).toEqual(colors[0]);
+});
+
+test("the first theme switch waits for hydration @desktop", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  let releaseScripts!: () => void;
+  const scriptsReady = new Promise<void>((resolve) => {
+    releaseScripts = resolve;
+  });
+  await page.route("**/*", async (route) => {
+    if (route.request().resourceType() === "script") await scriptsReady;
+    await route.continue();
+  });
+  try {
+    await page.goto("/", { waitUntil: "commit" });
+    const switchTheme = page.locator("header.marketing-nav").getByRole("button", {
+      name: "Use dark theme",
+      exact: true,
+    });
+    await expect(switchTheme).toBeVisible();
+    await expect(switchTheme).toBeDisabled();
+    const switching = switchTheme.click();
+    releaseScripts();
+    await switching;
+    await expect(page.locator("html")).toHaveClass(/\bdark\b/);
+  } finally {
+    releaseScripts();
+  }
 });

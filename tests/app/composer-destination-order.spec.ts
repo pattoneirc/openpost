@@ -25,6 +25,8 @@ test("composer destination order survives edits, reload and inventory return", a
     ]);
   // A valid indexed query plan exposes ordering that cannot rely on tied timestamps.
   execFileSync("sqlite3", [
+    "-cmd",
+    ".timeout 5000",
     db,
     "CREATE INDEX IF NOT EXISTS audit_renditions_read_order ON renditions(publication_id,created_at,id)",
   ]);

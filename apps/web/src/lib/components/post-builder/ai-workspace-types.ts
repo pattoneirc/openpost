@@ -1,6 +1,6 @@
 export type AIWorkspaceEntry = 'ideate' | 'build';
 
-export type AIWorkspaceStep = 'brief' | 'opportunities' | 'angles' | 'generating';
+export type AIWorkspaceStep = 'brief' | 'opportunities' | 'angles' | 'generating' | 'options';
 
 export interface AIOpportunity {
 	id: string;

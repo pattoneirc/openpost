@@ -49,33 +49,58 @@ function parseRuntimeTelemetryConfig(value: RuntimeTelemetryValue): RuntimeTelem
 	};
 }
 
-export async function initializeAppTelemetry(): Promise<void> {
-	try {
-		const response = await fetch('/api/v1/telemetry/config', {
-			credentials: 'include',
-			headers: { Accept: 'application/json' }
-		});
-		if (!response.ok) throw new Error(`telemetry config returned ${response.status}`);
-		const payload: RuntimeTelemetryValue = await response.json();
-		const config = parseRuntimeTelemetryConfig(payload);
-		if (!config) throw new Error('telemetry config response was invalid');
-		configureTelemetry({
-			enabled: config.enabled,
-			projectToken: config.project_token,
-			apiHost: config.api_host,
-			uiHost: config.ui_host,
-			environment: config.environment,
-			edition: config.edition,
-			version: config.version,
-			revision: config.revision,
-			surface: 'app'
-		});
-	} catch {
-		configureTelemetry({
-			enabled: false,
-			environment: 'unknown',
-			edition: 'unknown',
-			surface: 'app'
+let initialization: Promise<void> | null = null;
+let configurationFailed = false;
+let recoveryInstalled = false;
+
+export function initializeAppTelemetry(): Promise<void> {
+	if (initialization) return initialization;
+	if (!recoveryInstalled && typeof window !== 'undefined') {
+		recoveryInstalled = true;
+		window.addEventListener('online', () => {
+			if (configurationFailed) void initializeAppTelemetry();
 		});
 	}
+	initialization = resolveAppTelemetry().finally(() => {
+		initialization = null;
+	});
+	return initialization;
+}
+
+async function resolveAppTelemetry(): Promise<void> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			const response = await fetch('/api/v1/telemetry/config', {
+				credentials: 'include',
+				headers: { Accept: 'application/json' },
+				signal: AbortSignal.timeout(5000)
+			});
+			if (!response.ok) throw new Error('Telemetry configuration unavailable');
+			const payload: RuntimeTelemetryValue = await response.json();
+			const config = parseRuntimeTelemetryConfig(payload);
+			if (!config) throw new Error('Telemetry configuration invalid');
+			configurationFailed = false;
+			configureTelemetry({
+				enabled: config.enabled,
+				projectToken: config.project_token,
+				apiHost: config.api_host,
+				uiHost: config.ui_host,
+				environment: config.environment,
+				edition: config.edition,
+				version: config.version,
+				revision: config.revision,
+				surface: 'app'
+			});
+			return;
+		} catch {
+			if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+		}
+	}
+	configurationFailed = true;
+	configureTelemetry({
+		enabled: false,
+		environment: 'unknown',
+		edition: 'unknown',
+		surface: 'app'
+	});
 }

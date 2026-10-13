@@ -114,6 +114,9 @@ async function dynamicMarketingReferences(root = repositoryRoot) {
   );
   for (const extension of browserExtensions) {
     references.add(extension.screenshot.replace(/^\/assets\//u, ""));
+    for (const screenshot of extension.screenshots) {
+      references.add(screenshot.src.replace(/^\/assets\//u, ""));
+    }
   }
   for (const guide of marketingGuides) {
     if (guide.comparison) references.add(guide.comparison.logo.replace(/^\/assets\//u, ""));

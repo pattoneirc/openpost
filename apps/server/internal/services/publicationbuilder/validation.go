@@ -34,7 +34,7 @@ const (
 
 var (
 	allowedClaimStatuses   = []string{"supported", "user_asserted", "opinion", "parody", "needs_verification"}
-	allowedMediaTreatments = []string{"none", "use_source", "annotate_source", "meme", "statement_card", "carousel", "concept_image", "short_video_script", "edit_existing_video"}
+	allowedMediaTreatments = []string{"none", "use_source", "annotate_source", "meme", "statement_card", "carousel", "concept_image", "short_video_script", "edit_existing_video", "template", "attach_image", "attach_video"}
 	allowedDirectorRoutes  = []string{"artifact_led", "thesis_led"}
 	allowedSourceKinds     = []string{"text", "url", "image", "audio", "video", "document"}
 	publishableSourceKinds = []string{"text", "image", "audio", "video", "document"}
@@ -46,6 +46,9 @@ func validateBuildInput(input BuildInput) error {
 
 //nolint:gocyclo // The external build contract has independent limits that remain explicit here.
 func validateBuildInputWithStoredReferences(input BuildInput, hasStoredReferences bool) error {
+	if input.OptionCount != 0 && input.OptionCount != 4 {
+		return errors.New("option_count must be zero or four")
+	}
 	if strings.TrimSpace(input.Idea) == "" && len(input.Sources) == 0 && len(input.Parts) == 0 && len(input.Images) == 0 && len(input.Files) == 0 && len(input.Audio) == 0 && len(input.Videos) == 0 && !hasStoredReferences {
 		return errors.New("an idea or source is required")
 	}
@@ -257,11 +260,23 @@ func validateDestinationPlan(plan DestinationPlan, destination Destination, poli
 		return fmt.Errorf("adapter returned %d segments, allowed 1 to %d", len(plan.Segments), maxSegments)
 	}
 	for index, segment := range plan.Segments {
-		if strings.TrimSpace(segment.Body) == "" {
+		allowsEmptyCaption := index == 0 && profile.MediaMaxCount > 0 && (plan.Media.Document != nil || plan.Media.Treatment == "use_source" || plan.Media.Treatment == "attach_image" || plan.Media.Treatment == "attach_video")
+		if strings.TrimSpace(segment.Body) == "" && !allowsEmptyCaption {
 			return fmt.Errorf("adapter segment %d has no body", index+1)
 		}
 		if profile.TextLimit > 0 && capabilities.TextLength(destination.Platform, segment.Body) > profile.TextLimit {
 			return fmt.Errorf("adapter segment %d exceeds %s text limit of %d", index+1, destination.Platform, profile.TextLimit)
+		}
+		if capability, found := capabilities.FindOutput(destination.Platform, plan.OutputProfile); found {
+			if profile.TextLimit > 0 {
+				capability.TextLimit = profile.TextLimit
+				capability.Content.Body.MaxLength = profile.TextLimit
+			}
+			for _, issue := range capabilities.ValidateTextContent(capability, segment.Body, segment.Title, segment.Description, nil) {
+				if issue.Severity == "error" {
+					return fmt.Errorf("adapter segment %d: %s", index+1, issue.Message)
+				}
+			}
 		}
 	}
 	if len(plan.Claims) > maxClaims {
@@ -275,6 +290,15 @@ func validateDestinationPlan(plan DestinationPlan, destination Destination, poli
 	}
 	if err := validateMediaPlan(plan.Media, sources); err != nil {
 		return err
+	}
+	if plan.Media.Treatment == "attach_image" || plan.Media.Treatment == "attach_video" {
+		mimeType := "image/png"
+		if plan.Media.Treatment == "attach_video" {
+			mimeType = "video/mp4"
+		}
+		if profile.MediaMaxCount < 1 || !sourceMIMEAllowed(sourceReference{mimeType: mimeType}, profile.AllowedMIMEs) {
+			return errors.New("output profile does not support the requested attachment kind")
+		}
 	}
 	if plan.Media.Treatment == "use_source" {
 		if err := validatePublishedSourceMedia(plan.Media, profile, sources); err != nil {

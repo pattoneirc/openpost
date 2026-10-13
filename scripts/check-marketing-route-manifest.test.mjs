@@ -40,7 +40,7 @@ export const faqs = [];
   assert.deepEqual(catalogSlugs(source, "tools"), [
     ...previewTools.map((tool) => tool.slug),
     "youtube-localizer",
-    "x-timeline-blocker",
+    "feed-limiter",
     "counter",
   ]);
 });

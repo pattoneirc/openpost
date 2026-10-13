@@ -413,6 +413,13 @@ export function normalizeMarketingPath(pathname) {
     .replace(/^\/+|\/+$/g, "")}`;
 }
 
+// Only catalogue-owned public paths are safe analytics dimensions. Unknown
+// paths can contain user data and must never be forwarded to analytics.
+export function marketingTelemetryPath(pathname) {
+  const path = normalizeMarketingPath(pathname);
+  return marketingByPath.has(path) ? path : "/unknown";
+}
+
 export function canonicalMarketingUrl(pathname) {
   const path = normalizeMarketingPath(pathname);
   return path === "/" ? marketingSiteUrl : `${marketingSiteUrl}${path}`;
@@ -516,3 +523,16 @@ export const docsSocialEntries = Object.freeze(
     agentCorpus: entry.agentCorpus,
   })),
 );
+
+const documentationRoutes = new Set(docsSocialEntries.map((entry) => entry.route));
+
+export function documentationTelemetryPath(pathname) {
+  const path = normalizeMarketingPath(pathname);
+  const route =
+    path === docsBasePath
+      ? "/"
+      : path.startsWith(`${docsBasePath}/`)
+        ? path.slice(docsBasePath.length)
+        : path;
+  return documentationRoutes.has(route) ? docsPath(route) : `${docsBasePath}/unknown`;
+}

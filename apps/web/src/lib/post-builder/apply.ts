@@ -14,7 +14,8 @@ export interface AppliedPublicationBuild {
 
 export function applyPublicationBuildResult(
 	result: PublicationBuildResult,
-	currentSource: PostItem
+	currentSource: PostItem,
+	mediaByAccount?: Record<string, string[]>
 ): AppliedPublicationBuild {
 	const maximumSegments = Math.max(
 		1,
@@ -32,7 +33,10 @@ export function applyPublicationBuildResult(
 		return {
 			...empty,
 			content,
-			mediaIds: index === 0 ? [...currentSource.mediaIds] : []
+			mediaIds:
+				index === 0
+					? [...(mediaByAccount?.[result.destinations[0]?.account_id] ?? currentSource.mediaIds)]
+					: []
 		};
 	});
 
@@ -44,9 +48,13 @@ export function applyPublicationBuildResult(
 					post.key,
 					{
 						content: destination.segments[index]?.body ?? '',
-						mediaIds: [...post.mediaIds],
+						mediaIds: mediaByAccount
+							? index === 0
+								? [...(mediaByAccount[destination.account_id] ?? [])]
+								: []
+							: [...post.mediaIds],
 						contentInherited: false,
-						mediaInherited: true
+						mediaInherited: !mediaByAccount
 					}
 				])
 			)

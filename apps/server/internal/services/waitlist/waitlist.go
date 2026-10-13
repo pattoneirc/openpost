@@ -6,12 +6,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/mail"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/openpost/backend/internal/jobregistry"
+	"github.com/openpost/backend/internal/telemetry"
 	"github.com/uptrace/bun"
 )
 
@@ -32,11 +34,14 @@ type notificationPayload struct {
 type Service struct {
 	db         *bun.DB
 	webhookURL string
+	telemetry  telemetry.Recorder
 }
 
 func NewService(db *bun.DB, webhookURL string) *Service {
 	return &Service{db: db, webhookURL: strings.TrimSpace(webhookURL)}
 }
+
+func (s *Service) SetTelemetry(recorder telemetry.Recorder) { s.telemetry = recorder }
 
 func (s *Service) Join(ctx context.Context, email string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -44,7 +49,8 @@ func (s *Service) Join(ctx context.Context, email string) error {
 	if err != nil || address.Address != email || len(email) > 254 {
 		return ErrInvalidEmail
 	}
-	return s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+	var committed *entry
+	err = s.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		item := &entry{ID: uuid.NewString(), Email: email, CreatedAt: time.Now().UTC()}
 		result, err := tx.NewInsert().Model(item).On("CONFLICT (email) DO NOTHING").Exec(ctx)
 		if err != nil {
@@ -63,8 +69,21 @@ func (s *Service) Join(ctx context.Context, email string) error {
 			return err
 		}
 		_, err = tx.NewInsert().Model(job).Exec(ctx)
+		if err == nil {
+			committed = item
+		}
 		return err
 	})
+	if err == nil && committed != nil && s.telemetry != nil {
+		identity := telemetry.BrowserDistinctID(ctx)
+		if identity == "" {
+			identity = "waitlist:" + committed.ID
+		}
+		if captureErr := s.telemetry.Capture(ctx, telemetry.Event{Name: telemetry.EventHostedWaitlistJoined, DistinctID: identity, UUID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("waitlist:"+committed.ID)).String(), Timestamp: committed.CreatedAt}); captureErr != nil {
+			log.Printf("Failed to enqueue waitlist telemetry: %v", captureErr)
+		}
+	}
+	return err
 }
 
 func (s *Service) HandleNotification(ctx context.Context, payload string) error {

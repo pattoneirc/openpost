@@ -18,6 +18,7 @@ import (
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/services/sourcecontext"
 	"github.com/openpost/backend/internal/services/workspaceaccess"
+	"github.com/openpost/backend/internal/telemetry"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
 )
@@ -90,6 +91,7 @@ type AssetLoader interface {
 type StoredAuthorityFunc func(context.Context, workspaceaccess.StoredAuthority) error
 
 type ApplicationConfig struct {
+	Telemetry       telemetry.Recorder
 	Model           string
 	Now             func() time.Time
 	SourceLoader    SourceLoader
@@ -99,6 +101,7 @@ type ApplicationConfig struct {
 }
 
 type Application struct {
+	telemetry       telemetry.Recorder
 	db              *bun.DB
 	builder         PackageBuilder
 	model           string
@@ -218,7 +221,7 @@ func NewApplication(db *bun.DB, builder PackageBuilder, config ApplicationConfig
 		}
 	}
 	return &Application{
-		db: db, builder: builder, model: strings.TrimSpace(config.Model), now: now,
+		telemetry: config.Telemetry, db: db, builder: builder, model: strings.TrimSpace(config.Model), now: now,
 		sourceLoader: config.SourceLoader, assetLoader: config.AssetLoader, authorizeStored: authorize,
 		leaseDuration: leaseDuration,
 	}, nil
@@ -330,6 +333,9 @@ func (application *Application) Enqueue(ctx context.Context, request CreateBuild
 		return build, false, decodeErr
 	}
 	build, err := decodeBuild(*record)
+	if err == nil {
+		application.captureTelemetry(ctx, telemetry.EventPublicationBuildQueued, record, map[string]any{"destination_count": len(request.Input.Destinations), "option_count": request.Input.OptionCount})
+	}
 	return build, true, err
 }
 
@@ -364,7 +370,28 @@ func GetStoredBuild(ctx context.Context, db *bun.DB, userID, buildID string) (Bu
 	if err != nil {
 		return Build{}, fmt.Errorf("load publication build: %w", err)
 	}
-	return decodeBuild(record)
+	build, err := decodeBuild(record)
+	if err != nil || build.State != BuildStateFailed || build.Input.OptionCount != 4 {
+		return build, err
+	}
+	// A failed generation attempt is not a terminal build while its durable job
+	// is processing or waiting to retry. Keep readers polling until that settles.
+	identity, err := jobregistry.PublicationBuildIdentity(build.ID)
+	if err != nil {
+		return Build{}, err
+	}
+	active, err := db.NewSelect().Model((*models.Job)(nil)).
+		Where("type = ? AND scope_id = ? AND dedupe_key = ?", jobregistry.TypePublicationBuild, identity.ScopeID, identity.DedupeKey).
+		Where("status IN (?, ?)", jobregistry.StatusPending, jobregistry.StatusProcessing).Exists(ctx)
+	if err != nil {
+		return Build{}, fmt.Errorf("inspect publication build retry: %w", err)
+	}
+	if active {
+		build.State = BuildStateQueued
+		build.Phase = BuildPhaseQueued
+		build.ErrorCode, build.ErrorMessage = "", ""
+	}
+	return build, nil
 }
 
 //nolint:gocyclo // Lease fencing and durable phase transitions stay visible in the job execution boundary.
@@ -470,6 +497,7 @@ func (application *Application) HandleJob(ctx context.Context, jobType, payload 
 	if rows == 0 {
 		return nil
 	}
+	application.captureTelemetry(ctx, telemetry.EventPublicationBuildCompleted, &record, map[string]any{"destination_count": len(result.Destinations)})
 	return nil
 }
 
@@ -488,6 +516,7 @@ func resolvedSourceIndex(input BuildInput) []ResolvedSource {
 		resolved = append(resolved, ResolvedSource{
 			ID:          source.ID,
 			Kind:        source.Kind,
+			MIMEType:    source.MIMEType,
 			Label:       source.Label,
 			Publishable: source.Publishable,
 		})
@@ -767,6 +796,8 @@ func (application *Application) fail(
 	var generation *generationFailure
 	if errors.As(cause, &generation) {
 		code = generation.code
+	} else if code == "generation_failed" && errors.Is(cause, context.DeadlineExceeded) {
+		code = "generation_timeout"
 	}
 	now := application.now().UTC()
 	model, providerRequestID, usageJSON := trace.encoded()
@@ -793,6 +824,12 @@ func (application *Application) fail(
 	if rows == 0 {
 		return nil
 	}
+	status := 0
+	var provider *ai.ProviderError
+	if errors.As(cause, &provider) {
+		status = provider.StatusCode
+	}
+	application.captureTelemetry(ctx, telemetry.EventPublicationBuildFailed, record, map[string]any{"error_code": code, "http_status": status})
 	return &safeBuildJobError{code: code, message: message}
 }
 

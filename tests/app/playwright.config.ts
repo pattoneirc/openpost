@@ -88,6 +88,8 @@ export default defineConfig({
         OPENPOST_DIAGNOSTICS_ENABLED: "false",
         OPENPOST_DIAGNOSTICS_INGEST_ENABLED: "false",
         OPENPOST_TELEMETRY_ENABLED: "false",
+        // Stored Builder fixtures exercise mutations without sending generation requests.
+        OPENROUTER_API_KEY: "e2e-unused-openrouter-key",
       },
       command: [
         `rm -f ${dbPath}`,

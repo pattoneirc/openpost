@@ -7,33 +7,12 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/openpost/backend/internal/models"
+	"github.com/openpost/backend/internal/screenshottemplates"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect"
 )
 
-func screenshotTemplateMediaIDs(doc ScreenshotTemplateDocument) []string {
-	var ids []string
-	if doc.Meme != nil {
-		ids = append(ids, doc.Meme.OverlayMediaIDs...)
-		if doc.Meme.ParentMediaID != "" {
-			ids = append(ids, doc.Meme.ParentMediaID)
-		}
-	}
-	if doc.Conversation != nil {
-		for _, person := range doc.Conversation.People {
-			if person.AvatarMediaID != "" {
-				ids = append(ids, person.AvatarMediaID)
-			}
-		}
-		for _, message := range doc.Conversation.Messages {
-			if message.ImageMediaID != "" {
-				ids = append(ids, message.ImageMediaID)
-			}
-		}
-	}
-	slices.Sort(ids)
-	return slices.Compact(ids)
-}
+var screenshotTemplateMediaIDs = screenshottemplates.MediaIDs
 
 // Lock sources in the same order as the media lifecycle so saving cannot race trash or purge.
 func validateScreenshotTemplateMedia(ctx context.Context, tx bun.Tx, workspaceID string, doc ScreenshotTemplateDocument) error {

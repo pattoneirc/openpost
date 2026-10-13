@@ -8,11 +8,14 @@ import (
 
 func TestRequestConsumerClass(t *testing.T) {
 	tests := []struct {
-		name      string
-		route     string
-		userAgent string
-		want      string
+		name       string
+		route      string
+		userAgent  string
+		clientHint string
+		want       string
 	}{
+		{name: "native", clientHint: "native", userAgent: "Mozilla/5.0", want: "native"},
+		{name: "untrusted hint", clientHint: "private-string", want: "api"},
 		{name: "cli", userAgent: "openpost-cli/v4.5.6", want: "cli"},
 		{name: "mcp proxy", userAgent: "openpost-mcp/v1.2.3", want: "mcp"},
 		{name: "mcp route", route: "/api/v1/mcp", userAgent: "unknown", want: "mcp"},
@@ -25,7 +28,7 @@ func TestRequestConsumerClass(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, requestConsumerClass(tt.route, tt.userAgent))
+			require.Equal(t, tt.want, requestConsumerClass(tt.route, tt.userAgent, tt.clientHint))
 		})
 	}
 }

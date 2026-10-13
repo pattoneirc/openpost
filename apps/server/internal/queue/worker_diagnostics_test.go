@@ -15,6 +15,7 @@ import (
 	"github.com/openpost/backend/internal/jobregistry"
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/services/publisher"
+	"github.com/openpost/backend/internal/telemetry"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,6 +78,8 @@ func TestWorkerDiagnosticsReportedWhenPersistenceFails(t *testing.T) {
 	reporter := sink.reporter(t)
 	worker := NewWorker(db, "worker-diag", time.Second, nil, nil, stubStorage{})
 	worker.SetDiagnosticsReporter(reporter)
+	recorder := &telemetry.MemoryRecorder{}
+	worker.SetTelemetry(recorder)
 
 	// Break persistence: the job row is deleted before finalization, so the
 	// terminal-state update affects zero rows and returns early.
@@ -84,6 +87,7 @@ func TestWorkerDiagnosticsReportedWhenPersistenceFails(t *testing.T) {
 	require.NoError(t, err)
 	worker.finishFailedJob(t.Context(), job, errors.New("nil pointer dereference in publish renderer"))
 
+	require.Len(t, recorder.Exceptions, 1, "terminal processing failure remains observable when its job row vanished")
 	reporter.Flush()
 	reports := sink.all()
 	require.Len(t, reports, 1)

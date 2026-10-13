@@ -16,11 +16,17 @@ import (
 )
 
 const (
+	EventAPIMutationCompleted          = "api mutation completed"
 	EventPublicationScheduled          = "publication scheduled"
 	EventPublicationQueued             = "publication queued"
 	EventRenditionPublished            = "rendition published"
 	EventRenditionFailed               = "rendition failed"
 	EventBillingCheckoutCreated        = "billing checkout created"
+	EventPublicationBuildQueued        = "publication build queued"
+	EventPublicationBuildCompleted     = "publication build completed"
+	EventPublicationBuildFailed        = "publication build failed"
+	EventWorkflowRunFinished           = "workflow run finished"
+	EventHostedWaitlistJoined          = "hosted waitlist joined"
 	EventSignupCompleted               = "signup completed"
 	EventPlanConfirmed                 = "plan confirmed"
 	EventWorkspaceCreated              = "workspace created"
@@ -37,11 +43,17 @@ const (
 )
 
 var eventPropertyAllowlists = map[string]map[string]struct{}{
+	EventAPIMutationCompleted:          propertySet("route", "method", "http_status", "response_class"),
 	EventPublicationScheduled:          propertySet("publication_id", "job_id", "intent", "content_profile", "destination_count"),
 	EventPublicationQueued:             propertySet("publication_id", "job_id", "intent", "content_profile", "destination_count"),
 	EventRenditionPublished:            propertySet("publication_id", "rendition_id", "platform", "profile", "output_profile", "intent", "content_profile", "segment_count"),
 	EventRenditionFailed:               propertySet("publication_id", "rendition_id", "platform", "profile", "output_profile", "intent", "content_profile", "error_kind", "error_code", "http_status", "retryable", "retry"),
 	EventBillingCheckoutCreated:        propertySet("checkout_id", "organization_id", "plan_id", "billing_period", "provider"),
+	EventPublicationBuildQueued:        propertySet("build_id", "destination_count", "option_count"),
+	EventPublicationBuildCompleted:     propertySet("build_id", "destination_count"),
+	EventPublicationBuildFailed:        propertySet("build_id", "error_code", "http_status"),
+	EventWorkflowRunFinished:           propertySet("workflow_id", "run_id", "mode", "outcome", "step_count"),
+	EventHostedWaitlistJoined:          propertySet(),
 	EventSignupCompleted:               propertySet(),
 	EventPlanConfirmed:                 propertySet("plan_id", "billing_period"),
 	EventWorkspaceCreated:              propertySet(),
@@ -62,6 +74,9 @@ var eventPropertyAllowlists = map[string]map[string]struct{}{
 // canonical public-provider catalogue (see the parity test); reddit is not
 // a supported provider and must stay rejected.
 var eventPropertyValues = map[string]map[string]struct{}{
+	"response_class":      propertySet("2xx", "3xx", "4xx", "5xx"),
+	"mode":                propertySet("live", "preview", "test"),
+	"outcome":             propertySet("succeeded", "failed"),
 	"signal":              propertySet("text", "media", "content_mode"),
 	"plan_id":             propertySet("founder", "team", "agency"),
 	"billing_period":      propertySet("monthly", "annual"),
@@ -246,6 +261,7 @@ func (r *postHogRecorder) Capture(ctx context.Context, event Event) error {
 		return err
 	}
 	properties := copyProperties(event.Properties)
+	properties["client"] = RequestClient(ctx)
 	if event.WorkspaceID != "" {
 		properties["workspace_id"] = event.WorkspaceID
 	}
@@ -302,6 +318,7 @@ func IsAnonymousDistinctID(value string) bool {
 
 func (r *postHogRecorder) CaptureException(ctx context.Context, exception Exception) error {
 	message := newExceptionMessage(exception, r.config, time.Now().UTC())
+	message.Properties["client"] = RequestClient(ctx)
 	return posthog.EnqueueWithContext(ctx, r.client, message)
 }
 
@@ -358,7 +375,8 @@ func (r *postHogRecorder) WrapHTTP(next http.Handler) http.Handler {
 		// default request metadata includes the concrete path, user agent, and IP;
 		// our privacy contract permits only application-owned route templates.
 		requestContext.Properties = posthog.NewProperties()
-		ctx := posthog.WithFreshRequestContext(request.Context(), requestContext)
+		ctx := context.WithValue(request.Context(), requestClientKey{}, requestClient(request))
+		ctx = posthog.WithFreshRequestContext(ctx, requestContext)
 		next.ServeHTTP(writer, request.WithContext(ctx))
 	})
 }

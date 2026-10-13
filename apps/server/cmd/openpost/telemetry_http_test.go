@@ -10,11 +10,51 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humaecho"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/openpost/backend/internal/telemetry"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTelemetryObserverCountsRESTMutationResponses(t *testing.T) {
+	for _, status := range []int{http.StatusAccepted, http.StatusUnprocessableEntity, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			recorder := &telemetry.MemoryRecorder{}
+			e := echo.New()
+			e.Use(observeHTTPFailures(recorder, nil))
+			api := humaecho.NewWithGroup(e, e.Group("/api/v1"), huma.DefaultConfig("Test", "1"))
+			huma.Register(api, huma.Operation{OperationID: "mutation", Method: http.MethodPost, Path: "/publications/{id}", DefaultStatus: status},
+				func(context.Context, *struct {
+					ID string `path:"id"`
+				}) (*struct {
+					Body struct {
+						Accepted bool `json:"accepted"`
+					}
+				}, error) {
+					if status >= 400 {
+						return nil, huma.NewError(status, "private request detail")
+					}
+					return &struct {
+						Body struct {
+							Accepted bool `json:"accepted"`
+						}
+					}{}, nil
+				})
+			response := httptest.NewRecorder()
+			e.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/publications/private-post-id?token=private", nil))
+			require.Equal(t, status, response.Code)
+			require.Len(t, recorder.Events, 1)
+			require.Equal(t, "api mutation completed", recorder.Events[0].Name)
+			require.Equal(t, "/api/v1/publications/:id", recorder.Events[0].Properties["route"])
+			require.Equal(t, status, recorder.Events[0].Properties["http_status"])
+			payload, err := json.Marshal(recorder.Events)
+			require.NoError(t, err)
+			require.NotContains(t, string(payload), "private")
+		})
+	}
+}
 
 func TestTelemetryErrorHandlerCapturesHandledServerErrorsWithoutRawURL(t *testing.T) {
 	recorder := &telemetry.MemoryRecorder{}
@@ -91,7 +131,7 @@ func TestTelemetryStreamingFailureUsesCommittedStatusAndRequestCancellation(t *t
 				HandleError:   true,
 				LogValuesFunc: func(echo.Context, middleware.RequestLoggerValues) error { return nil },
 			}))
-			e.Use(observeDiagnosticFailures(reporter))
+			e.Use(observeHTTPFailures(recorder, reporter))
 			installTelemetryErrorHandler(e, recorder, reporter)
 			e.GET("/media/:id", func(c echo.Context) error {
 				return c.Stream(http.StatusOK, "video/mp4", iotest.ErrReader(tc.streamError))
@@ -200,4 +240,27 @@ func TestTelemetryIndependentStreamFailureSurvivesCancelledRequestWithRealSDK(t 
 	case <-time.After(5 * time.Second):
 		t.Fatal("queued stream failure did not reach the local telemetry receiver")
 	}
+}
+
+func TestTelemetryObserverCapturesHuma500(t *testing.T) {
+	harness, reporter := newDiagnosticsHTTPHarness(t)
+	recorder := &telemetry.MemoryRecorder{}
+	e := echo.New()
+	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		HandleError:   true,
+		LogValuesFunc: func(echo.Context, middleware.RequestLoggerValues) error { return nil },
+	}))
+	e.Use(observeHTTPFailures(recorder, reporter))
+	installTelemetryErrorHandler(e, recorder, reporter)
+	api := humaecho.New(e, huma.DefaultConfig("Analytics audit", "1"))
+	huma.Register(api, huma.Operation{OperationID: "audit-failure", Method: http.MethodGet, Path: "/audit/failure"},
+		func(context.Context, *struct{}) (*struct{ Body string }, error) {
+			return nil, huma.Error500InternalServerError("fixture failure")
+		})
+	response := httptest.NewRecorder()
+	e.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/audit/failure", nil))
+	require.Equal(t, http.StatusInternalServerError, response.Code)
+	reporter.Flush()
+	require.Len(t, harness.all(), 1, "maintainer diagnostics receives the API failure")
+	require.Len(t, recorder.Exceptions, 1, "PostHog must also observe unexpected API 500 responses")
 }

@@ -1,11 +1,15 @@
 import { applyAPIRequestHeaders, client } from '$lib/api/client';
 import { queryTransportRequest } from '$lib/query/transport';
+import type { ScreenshotDocument } from '@openpost/query-catalog';
 
 export interface PublicationBuildMediaPlan {
 	treatment: string;
 	role: string;
 	brief: string;
 	source_ref?: string;
+	template_id?: string;
+	document?: ScreenshotDocument | null;
+	alt_text?: string;
 }
 
 export interface PublicationBuildDirection {
@@ -36,7 +40,12 @@ export interface PublicationOpportunity {
 	why_now: string;
 	signal_date: string;
 	hook: string;
-	angles: Array<{ id: string; label: string; thesis: string; approach: string }>;
+	angles: Array<{
+		id: string;
+		label: string;
+		thesis: string;
+		approach: string;
+	}>;
 	platform_treatments: Array<{
 		platform: string;
 		objective: string;
@@ -53,6 +62,7 @@ export interface PublicationBuildAsset {
 }
 
 export interface PublicationBuildRequest {
+	option_count?: 0 | 4;
 	workspace_id: string;
 	idea: string;
 	account_ids: string[];
@@ -80,6 +90,14 @@ export interface PublicationBuildDestinationPlan {
 }
 
 export interface PublicationBuildResult {
+	sources?: Array<{
+		id: string;
+		kind: string;
+		label: string;
+		mime_type?: string;
+		publishable: boolean;
+	}>;
+	options?: PublicationPostOption[];
 	canonical_text: string;
 	direction: {
 		thesis: string;
@@ -99,9 +117,15 @@ export interface PublicationBuildResult {
 	}>;
 }
 
+export interface PublicationPostOption extends Omit<PublicationBuildResult, 'options'> {
+	id: string;
+	label: string;
+}
+
 export interface PublicationBuild {
 	id: string;
 	workspace_id: string;
+	publication_id?: string;
 	state: 'queued' | 'building' | 'ready' | 'committed' | 'failed' | 'cancelled';
 	phase:
 		| 'queued'
@@ -119,6 +143,63 @@ export interface PublicationBuild {
 	error_code?: string;
 	error_message?: string;
 	updated_at: string;
+	context_urls?: string[];
+	assets?: PublicationBuildAsset[];
+	social_set_id?: string;
+	voice_profile_id?: string;
+	input?: {
+		idea: string;
+		sources?: Array<{ id: string; text?: string }>;
+		direction?: PublicationBuildDirection;
+		destinations: Array<{ account_id: string }>;
+		option_count?: number;
+	};
+}
+
+export async function commitPublicationOption(
+	buildId: string,
+	optionId: string,
+	media: Array<{ account_id: string; media_id: string }>,
+	option: PublicationPostOption,
+	revision: number
+) {
+	const result = await client.POST('/publication-builds/{id}/options/{option_id}/commit', {
+		params: { path: { id: buildId, option_id: optionId } },
+		body: {
+			expected_revision: revision,
+			media,
+			edits: option.destinations.map((destination) => ({
+				account_id: destination.account_id,
+				segments: destination.segments,
+				document: destination.media.document ?? undefined
+			}))
+		}
+	});
+	if (result.error || !result.data)
+		throw new Error(result.error?.detail || 'Could not create the draft.');
+	return result.data;
+}
+
+export async function savePublicationOption(
+	buildId: string,
+	option: PublicationPostOption,
+	revision: number
+): Promise<PublicationBuild> {
+	const result = await client.PUT('/publication-builds/{id}/options/{option_id}', {
+		params: { path: { id: buildId, option_id: option.id } },
+		body: {
+			expected_revision: revision,
+			edits: option.destinations.map((destination) => ({
+				account_id: destination.account_id,
+				segments: destination.segments,
+				document: destination.media.document ?? undefined
+			}))
+		}
+	});
+	if (result.error || !result.data)
+		throw new Error(result.error?.detail || 'Could not save the post edits.');
+	// SAFETY: The backend enforces the same Build state and phase values as getPublicationBuild.
+	return result.data as PublicationBuild;
 }
 
 type MutationMethod = 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -144,7 +225,10 @@ async function apiMutationRequest<T>(
 		let message = `OpenPost could not complete this AI request (${response.status}).`;
 		try {
 			// SAFETY: Problem responses are inspected only for optional string fields and retain a bounded fallback.
-			const problem = (await response.json()) as { detail?: string; title?: string };
+			const problem = (await response.json()) as {
+				detail?: string;
+				title?: string;
+			};
 			message = problem.detail || problem.title || message;
 		} catch {
 			// Keep the bounded fallback when the server did not return a problem document.
