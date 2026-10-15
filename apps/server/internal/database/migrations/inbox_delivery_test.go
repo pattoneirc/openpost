@@ -46,7 +46,8 @@ func exerciseInboxDeliveryUpgrade(t *testing.T, db *bun.DB) {
 	require.NoError(t, err)
 	_, err = db.NewInsert().Model(&models.SocialAccount{ID: "account-inbox", WorkspaceID: "ws-inbox", Platform: "tiktok", AccountID: "provider-account", Slug: "inbox", AccessTokenEnc: []byte("token"), IsActive: true}).Exec(ctx)
 	require.NoError(t, err)
-	_, err = db.NewInsert().Model(&models.Publication{ID: "pub-inbox", WorkspaceID: "ws-inbox", CreatedByID: "user-1", Status: models.PublicationStatusScheduled}).Exec(ctx)
+	_, err = db.NewInsert().Model(&models.Publication{ID: "pub-inbox", WorkspaceID: "ws-inbox", CreatedByID: "user-1", Status: models.PublicationStatusScheduled}).
+		Column("id", "workspace_id", "created_by", "title", "source_content", "status").Returning("").Exec(ctx)
 	require.NoError(t, err)
 	_, err = db.NewInsert().Model(&models.Rendition{ID: "rend-inbox", PublicationID: "pub-inbox", SocialAccountID: "account-inbox", Platform: "tiktok", TargetKey: "rendition", Status: models.RenditionStatusScheduled}).Exec(ctx)
 	require.NoError(t, err)

@@ -26,9 +26,14 @@
 	const account = $derived(accounts.find((item) => item.id === accountId) ?? accounts[0]);
 </script>
 
-<section class="grid min-w-0 gap-4" aria-label={m.ideate_results()}>
+<section
+	class="grid min-w-0 gap-4"
+	aria-label={options.length === 1 ? m.series_edit_post() : m.ideate_results()}
+>
 	<div class="flex flex-wrap items-center justify-between gap-3">
-		<p class="text-sm text-muted-foreground">{m.ideate_choose_one()}</p>
+		<p class="text-sm text-muted-foreground">
+			{options.length === 1 ? m.series_edit_description() : m.ideate_choose_one()}
+		</p>
 		<AppSelect
 			value={account?.id}
 			options={accounts.map((item) => ({

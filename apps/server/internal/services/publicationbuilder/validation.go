@@ -46,6 +46,9 @@ func validateBuildInput(input BuildInput) error {
 
 //nolint:gocyclo // The external build contract has independent limits that remain explicit here.
 func validateBuildInputWithStoredReferences(input BuildInput, hasStoredReferences bool) error {
+	if input.SeriesCount < 0 || input.SeriesCount > MaxSeriesCount || (input.SeriesCount > 0 && input.OptionCount != 0) {
+		return errors.New("choose alternatives or a series of up to three posts")
+	}
 	if input.OptionCount != 0 && input.OptionCount != 4 {
 		return errors.New("option_count must be zero or four")
 	}

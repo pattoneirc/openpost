@@ -38,7 +38,10 @@ import {
 import type { Project, TimelineItem } from '../project/types';
 import { mediaPool } from './pool.svelte';
 import { resolveMediaBlob } from './resolve-media-blob';
-import { resolveAnimatedItemAt } from '../timeline/animated-properties';
+import {
+	resolveAnimatedItemAt,
+	type AnimatedItemMotionContext
+} from '../timeline/animated-properties';
 import { scaleItemForCanvas } from './render-geometry';
 import { ItemRasterizer } from './item-rasterizer';
 import { animatedFrameIndexForItem, isAnimatedImageMedia } from './animated-image-plan';
@@ -272,6 +275,7 @@ export class TimelineFrameRenderer {
 	private readonly orderedItems: TimelineItem[];
 	private readonly transitions: PreparedTransition[];
 	private readonly itemsById: Map<string, TimelineItem>;
+	private readonly motionContext: AnimatedItemMotionContext;
 	private readonly burnSubtitles: boolean;
 	private readonly trackOrderById: Map<string, number>;
 	private readonly adjustmentLayers: AdjustmentLayerScope[];
@@ -321,6 +325,13 @@ export class TimelineFrameRenderer {
 		this.fps = project.metadata.fps;
 		this.itemRasterizer = new ItemRasterizer(this.width, this.height, this.fps);
 		const items = project.timeline?.items ?? [];
+		this.motionContext = {
+			fps: this.fps,
+			frameWidth: project.metadata.width,
+			frameHeight: project.metadata.height,
+			items,
+			itemById: new Map(items.map((item) => [item.id, item]))
+		};
 		const tracks = project.timeline?.tracks ?? [];
 		this.trackOrderById = new Map(tracks.map((track) => [track.id, track.order]));
 		this.adjustmentLayers = collectAdjustmentLayers(items, tracks);
@@ -672,12 +683,7 @@ export class TimelineFrameRenderer {
 			)
 			.map((item) =>
 				scaleItemForCanvas(
-					resolveAnimatedItemAt(item, frame, {
-						fps: this.fps,
-						frameWidth: this.project.metadata.width,
-						frameHeight: this.project.metadata.height,
-						items: this.project.timeline?.items ?? []
-					}),
+					resolveAnimatedItemAt(item, frame, this.motionContext),
 					this.width / this.project.metadata.width,
 					this.height / this.project.metadata.height
 				)
@@ -687,12 +693,7 @@ export class TimelineFrameRenderer {
 		const resolveParticipant = async (
 			item: TimelineItem
 		): Promise<StackTransitionParticipant | null> => {
-			const animatedItem = resolveAnimatedItemAt(item, frame, {
-				fps: this.fps,
-				frameWidth: this.project.metadata.width,
-				frameHeight: this.project.metadata.height,
-				items: this.project.timeline?.items ?? []
-			});
+			const animatedItem = resolveAnimatedItemAt(item, frame, this.motionContext);
 			const resolvedItem = scaleItemForCanvas(
 				{
 					...animatedItem,

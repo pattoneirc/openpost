@@ -47,3 +47,5 @@ export * from "./publication-builds";
 export * from "./analytics-overview";
 
 export * from "./image-generation";
+
+export * from "./publication-reviews";

@@ -19,7 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const buildEntry = fileURLToPath(new URL("../packages/ui/scripts/build.mjs", import.meta.url));
 const dependencies = fileURLToPath(new URL("../node_modules", import.meta.url));
-const SLOW_BUILD_MS = 12_000;
+const SLOW_BUILD_MS = 25_000;
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), "openpost-ui-lock-"));
@@ -97,7 +97,7 @@ async function waitForStarted(packageRoot) {
 
 test(
   "concurrent UI builds keep exclusive output access throughout a slow child build",
-  { timeout: 30_000 },
+  { timeout: 45_000 },
   async (t) => {
     const setup = await fixture(t);
     const first = runBuild(t, setup, { FIXTURE_BUILD_DELAY_MS: String(SLOW_BUILD_MS) });

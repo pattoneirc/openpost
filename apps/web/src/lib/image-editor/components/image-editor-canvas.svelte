@@ -1024,6 +1024,7 @@
 		magicScanBusy = true;
 		magicScanProgress = 0;
 		magicScanError = '';
+		magicPreviewMask = null;
 		try {
 			const mask = await magicScan.scan(
 				{
@@ -1036,10 +1037,14 @@
 				},
 				{
 					signal: controller.signal,
-					onProgress: (fraction) => (magicScanProgress = fraction)
+					onProgress: (fraction) => {
+						if (magicScanAbort === controller && !controller.signal.aborted) {
+							magicScanProgress = fraction;
+						}
+					}
 				}
 			);
-			if (controller.signal.aborted) return;
+			if (controller.signal.aborted || magicScanAbort !== controller) return;
 			if (
 				preview &&
 				editor.document &&
@@ -1053,8 +1058,10 @@
 				};
 				await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
 			}
+			if (controller.signal.aborted || magicScanAbort !== controller) return;
 			onComplete(mask);
 		} catch (cause) {
+			if (controller.signal.aborted || magicScanAbort !== controller) return;
 			if (cause instanceof DOMException && cause.name === 'AbortError') return;
 			magicScanError =
 				cause instanceof RangeError
@@ -1066,10 +1073,12 @@
 						: m.image_editor_magic_scan_failed();
 			canvasAnnouncement = magicScanError;
 		} finally {
-			if (magicScanAbort === controller) magicScanAbort = null;
-			magicScanBusy = false;
-			magicScanProgress = 0;
-			magicPreviewMask = null;
+			if (magicScanAbort === controller) {
+				magicScanAbort = null;
+				magicScanBusy = false;
+				magicScanProgress = 0;
+				magicPreviewMask = null;
+			}
 		}
 	}
 
@@ -2183,7 +2192,7 @@
 		{/if}
 		{#if magicScanBusy || magicScanError}
 			<div
-				class="absolute top-3 left-1/2 z-50 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-2 rounded-lg border bg-background/95 px-2 py-1 text-xs shadow-lg"
+				class="absolute top-3 left-1/2 z-50 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-2 rounded-lg border bg-background/95 px-2 py-1 text-xs shadow-lg sm:top-auto sm:bottom-3"
 				role="status"
 			>
 				<span>

@@ -113,11 +113,7 @@ interface ImageObjectFixture extends ImageEditorImageGeometry {
 
 interface ImageGeometryAdapterInternals {
 	fabric: object;
-	updateObject(
-		target: ImageObjectFixture,
-		previous: ImageEditorLayer,
-		next: ImageEditorLayer
-	): void;
+	updateObject(target: ImageObjectFixture, layer: ImageEditorLayer): void;
 }
 
 describe('OpenPost Image Editor image geometry', () => {
@@ -205,9 +201,24 @@ describe('OpenPost Image Editor image geometry', () => {
 			const internals = adapterInternals<ImageGeometryAdapterInternals>(adapter);
 			internals.fabric = {};
 
-			internals.updateObject(imageObject, previous, next);
+			internals.updateObject(imageObject, next);
 
-			expect(imageObject).toMatchObject(computeImageGeometry(next, 1920, 1080));
+			if (fit === 'cover') {
+				expect(imageObject).toMatchObject({
+					left: 40,
+					top: 80,
+					width: 1920,
+					height: 960,
+					cropX: 0,
+					cropY: 60
+				});
+				expect(imageObject.scaleX).toBeCloseTo(0.625);
+			} else {
+				expect(imageObject).toMatchObject({ width: 1920, height: 1080, cropX: 0, cropY: 0 });
+				expect(imageObject.left).toBeCloseTo(106.66666666666667);
+				expect(imageObject.top).toBe(80);
+				expect(imageObject.scaleX).toBeCloseTo(5 / 9);
+			}
 			expect(imageObject.scaleX).toBeCloseTo(imageObject.scaleY);
 		}
 	);
@@ -399,11 +410,11 @@ describe('OpenPost Image Editor canvas reconciliation', () => {
 		});
 		const internals = adapterInternals<{
 			fabric: object;
-			updateObject(target: typeof object, before: ImageEditorLayer, after: ImageEditorLayer): void;
+			updateObject(target: typeof object, layer: ImageEditorLayer): void;
 		}>(adapter);
 		internals.fabric = {};
 
-		internals.updateObject(object, previous, next);
+		internals.updateObject(object, next);
 
 		expect(object.text).toBe('Photo audit Olá, world!');
 	});

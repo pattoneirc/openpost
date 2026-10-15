@@ -108,6 +108,9 @@ var configTestEnvKeys = []string{
 	"OPENPOST_SMTP_SERVER_NAME",
 	"OPENPOST_EXTRA_CORS_ORIGINS",
 	"OPENPOST_CORS_EXTRA_ORIGINS",
+	"OPENPOST_TRUSTED_PROXY_CIDRS",
+	"OPENPOST_WORKFLOWS_AI_ENABLED",
+	"OPENPOST_WORKFLOWS_AI_MONTHLY_CALL_LIMIT",
 	"X_CLIENT_ID",
 	"TWITTER_CLIENT_ID",
 	"X_CLIENT_SECRET",
@@ -737,4 +740,35 @@ func TestHostedWaitlistDefaultsAndReopening(t *testing.T) {
 			require.Equal(t, tc.want, Load().HostedWaitlistEnabled)
 		})
 	}
+}
+
+func TestSelfHostedRuntimeRejectsWildcardCORS(t *testing.T) {
+	cfg := Load()
+	cfg.Edition = EditionSelfHost
+	cfg.CORSOrigins = []string{"https://app.example.com", "*"}
+	require.ErrorContains(t, cfg.ValidateRuntime(), "without wildcard origins")
+}
+
+func TestRuntimeProxyAndWorkflowLimits(t *testing.T) {
+	t.Setenv("OPENPOST_TRUSTED_PROXY_CIDRS", "127.0.0.1/32, ::1/128")
+	cfg := Load()
+	require.Equal(t, []string{"127.0.0.1/32", "::1/128"}, cfg.TrustedProxyCIDRs)
+	require.True(t, cfg.WorkflowsAIEnabled)
+	require.Equal(t, int64(1000), cfg.WorkflowsAIMonthlyCalls)
+	require.NoError(t, cfg.ValidateRuntime())
+	t.Setenv("OPENPOST_TRUSTED_PROXY_CIDRS", "::ffff:10.0.0.0/120")
+	require.NoError(t, Load().ValidateRuntime())
+	t.Setenv("OPENPOST_TRUSTED_PROXY_CIDRS", "::ffff:10.0.0.0/80")
+	require.ErrorContains(t, Load().ValidateRuntime(), "OPENPOST_TRUSTED_PROXY_CIDRS")
+	t.Setenv("OPENPOST_TRUSTED_PROXY_CIDRS", "0.0.0.0/not-a-prefix")
+	require.ErrorContains(t, Load().ValidateRuntime(), "OPENPOST_TRUSTED_PROXY_CIDRS")
+	t.Setenv("OPENPOST_TRUSTED_PROXY_CIDRS", "")
+	t.Setenv("OPENPOST_WORKFLOWS_AI_MONTHLY_CALL_LIMIT", "-1")
+	require.ErrorContains(t, Load().ValidateRuntime(), "OPENPOST_WORKFLOWS_AI_MONTHLY_CALL_LIMIT")
+	t.Setenv("OPENPOST_WORKFLOWS_AI_MONTHLY_CALL_LIMIT", "0")
+	t.Setenv("OPENPOST_WORKFLOWS_AI_ENABLED", "false")
+	cfg = Load()
+	require.False(t, cfg.WorkflowsAIEnabled)
+	require.Zero(t, cfg.WorkflowsAIMonthlyCalls)
+	require.NoError(t, cfg.ValidateRuntime())
 }

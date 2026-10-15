@@ -150,6 +150,26 @@ describe('theme manifest value validation', () => {
 		expect(themeColorContrastRatio('rgb(0 0 0 / 50%)', 'white')).toBeCloseTo(3.98, 2);
 	});
 
+	it('rechecks edited colors after repeated validation and browsing other palettes', () => {
+		const manifest = resolveBuiltInTheme('workshop', 'light').manifest;
+		const originalInk = manifest.colors.ink;
+		expect(isSafeThemeSchemeManifestValues(manifest)).toBe(true);
+		manifest.colors.ink = manifest.colors.canvas;
+		expect(isSafeThemeSchemeManifestValues(manifest)).toBe(false);
+		manifest.colors.ink = originalInk;
+		expect(isSafeThemeSchemeManifestValues(manifest)).toBe(true);
+
+		for (let index = 0; index < 2048; index += 1) {
+			expect(isSafeThemeColor(`#${index.toString(16).padStart(6, '0')}`)).toBe(true);
+		}
+		expect(themeColorContrastRatio('black', 'white')).toBe(21);
+		expect(themeColorContrastRatio('rgb(0 0 0 / 50%)', 'white')).toBeCloseTo(3.98, 2);
+		manifest.colors.ink = 'rgb(foo)';
+		expect(isSafeThemeSchemeManifestValues(manifest)).toBe(false);
+		manifest.colors.ink = originalInk;
+		expect(isSafeThemeSchemeManifestValues(manifest)).toBe(true);
+	});
+
 	it('rejects a custom Dither button recipe when its texture makes the label unreadable', () => {
 		const manifest = resolveBuiltInTheme('workshop', 'light').manifest;
 		expect(isSafeThemeSchemeManifestValues(manifest)).toBe(true);

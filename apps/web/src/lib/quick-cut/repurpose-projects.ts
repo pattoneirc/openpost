@@ -9,7 +9,7 @@ import { portableVideoProjectDocument } from '@openpost/video-project';
 import { m } from '$lib/paraglide/messages';
 import { uploadMediaFile } from '$lib/media-upload-client';
 import { CloudVideoProjectRepository } from '$lib/video-editor/cloud/project-repository';
-import { hashBlob } from '$lib/video-editor/project-bundle/bundle-utils';
+import { createHash } from './fingerprint';
 import { deleteHandle } from '$lib/video-editor/workspace-fs/handles-db';
 import { writeJsonAtomic, removeEntry } from '$lib/video-editor/workspace-fs/fs-primitives';
 import { getWorkspaceRoot } from '$lib/video-editor/workspace-fs/root';
@@ -72,8 +72,6 @@ export async function createRepurposeProjects(input: {
 	if (!file) throw new Error(m.repurpose_source_missing());
 	guard();
 	let handle = source.handle;
-	const sha256 = input.storage === 'cloud' ? await hashBlob(file) : '';
-	guard();
 	if (input.storage === 'local' && !handle) {
 		if (!root) throw new Error(m.repurpose_folder_missing());
 		let directory = root;
@@ -95,6 +93,9 @@ export async function createRepurposeProjects(input: {
 		}
 		file = await handle.getFile();
 	}
+	const contentFingerprint = await createHash(file, signal);
+	const sha256 = contentFingerprint.slice('sha256:'.length);
+	guard();
 	const repository =
 		input.storage === 'cloud' ? new CloudVideoProjectRepository(input.workspaceId) : null;
 	for (const [index, choice] of input.choices.entries()) {
@@ -105,6 +106,10 @@ export async function createRepurposeProjects(input: {
 			...portableVideoProjectDocument(metadata),
 			selectedAudioTrackIndices: [repurposeAudioTrack(source)!],
 			id: crypto.randomUUID(),
+			name: file.name,
+			size: file.size,
+			mimeType: file.type || source.mimeType,
+			contentFingerprint,
 			lastModified: file.lastModified,
 			file,
 			handle

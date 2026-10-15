@@ -87,3 +87,23 @@ appId: com.openpost.app
 - tapOn: Decline
 - assertVisible: Decline, Selected
 - takeScreenshot: privacy-${SCHEME}
+
+- openLink: com.openpost.app:///publications/client-review
+- extendedWaitUntil:
+    visible: Approve this version
+    timeout: 20000
+- assertVisible: Please review this launch version.
+- scrollUntilVisible:
+    element: Submitted launch title
+    direction: DOWN
+- assertVisible: Submitted launch description
+- takeScreenshot: client-review-${SCHEME}
+- scrollUntilVisible:
+    element: Approve this version
+    direction: DOWN
+- tapOn: Approve this version
+- extendedWaitUntil:
+    visible: Client approved.*
+    timeout: 20000
+- assertNotVisible: Approve this version
+- takeScreenshot: client-approved-${SCHEME}

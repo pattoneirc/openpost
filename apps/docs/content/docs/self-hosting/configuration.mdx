@@ -16,6 +16,8 @@ The Docker Compose example reads `.env` when the container starts. Keep deployme
 
 Use HTTPS for a public instance and make sure your proxy forwards API and media requests. Set these URLs before registering provider callbacks. Changing the app URL later can require updating callback URLs in provider portals and reconnecting accounts. [Provider integrations](/self-hosting/integrations) lists the callback for each provider.
 
+When a proxy terminates HTTPS, configure `OPENPOST_TRUSTED_PROXY_CIDRS` for its upstream connection networks. Empty ignores forwarded IP and scheme headers. Follow [reverse proxy setup](/self-hosting/reverse-proxy) before upgrading or exposing the instance.
+
 ## Deployment secrets
 
 Generate each secret separately:
@@ -52,3 +54,7 @@ See [MCP endpoints and tools](/mcp/mcp-guide#choose-an-endpoint) before changing
 ## Useful controls
 
 Set up [email](/self-hosting/email) before enabling `OPENPOST_EMAIL_VERIFICATION_REQUIRED=true`. Add `OPENPOST_EXTRA_CORS_ORIGINS` only for other origins that need browser API access. Same-origin use needs no entry.
+
+## Workflow AI limits
+
+`OPENPOST_WORKFLOWS_AI_ENABLED=true` enables autonomous workflow AI dispatch. Set it to `false` to stop new AI calls. `OPENPOST_WORKFLOWS_AI_MONTHLY_CALL_LIMIT=1000` bounds calls per Workspace UTC month, including failed calls. Set the limit to `0` only when you intend unlimited operator-funded calls. These settings require a backend restart and do not change provider credentials or cancel calls already dispatched.

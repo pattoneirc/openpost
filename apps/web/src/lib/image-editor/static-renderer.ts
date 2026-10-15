@@ -1,3 +1,4 @@
+import { abortable } from '$lib/abortable';
 import { startProfileSpan } from '$lib/performance/profiling';
 import { strToU8, Zip, ZipPassThrough } from 'fflate';
 import type { ImageEditorDocument, ImageEditorPage } from './types';
@@ -48,7 +49,7 @@ export async function renderImageEditorPages(
 		}
 		onProgress?.(index + 1, pages.length);
 		signal?.throwIfAborted();
-		await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+		if (index + 1 < pages.length) await yieldExport(signal);
 	}
 	return results;
 }
@@ -60,7 +61,7 @@ export async function renderImageEditorPage(
 	signal?: AbortSignal
 ): Promise<ImageEditorRenderedPage> {
 	signal?.throwIfAborted();
-	await globalThis.document.fonts?.ready;
+	await waitForDocumentFonts(signal);
 	signal?.throwIfAborted();
 	const canvas = globalThis.document.createElement('canvas');
 	const adapter = new OpenPostFabricAdapter({
@@ -116,6 +117,31 @@ export async function renderImageEditorPage(
 	}
 }
 
+async function waitForDocumentFonts(signal?: AbortSignal): Promise<void> {
+	const ready = globalThis.document.fonts?.ready;
+	if (signal)
+		await abortable(
+			Promise.resolve(ready),
+			signal,
+			() => new DOMException('Rendering cancelled.', 'AbortError')
+		);
+	else await ready;
+}
+
+async function yieldExport(signal?: AbortSignal): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const task = new Promise<void>((resolve) => {
+		timer = setTimeout(resolve, 0);
+	});
+	try {
+		if (signal)
+			await abortable(task, signal, () => new DOMException('Export cancelled.', 'AbortError'));
+		else await task;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 function flattenCanvas(source: HTMLCanvasElement, matteColor: string): HTMLCanvasElement {
 	const flattened = globalThis.document.createElement('canvas');
 	flattened.width = source.width;
@@ -134,7 +160,7 @@ export async function renderImageEditorPreview(
 	signal?: AbortSignal
 ): Promise<Blob> {
 	signal?.throwIfAborted();
-	await globalThis.document.fonts?.ready;
+	await waitForDocumentFonts(signal);
 	signal?.throwIfAborted();
 	const canvas = globalThis.document.createElement('canvas');
 	const pageSize = imageEditorPageDimensions(imageEditorDocument, page);
@@ -249,7 +275,7 @@ export async function createRenderedPagesArchive(
 					bytesSinceYield += value.byteLength;
 					if (bytesSinceYield >= ARCHIVE_YIELD_BYTES) {
 						bytesSinceYield = 0;
-						await new Promise<void>((resolve) => setTimeout(resolve, 0));
+						await yieldExport(signal);
 					}
 				}
 				entry.push(new Uint8Array(), true);

@@ -17,6 +17,7 @@ import (
 	"github.com/openpost/backend/internal/services/workspaceaccess"
 	"github.com/openpost/backend/internal/telemetry"
 	"github.com/stretchr/testify/require"
+	"github.com/uptrace/bun"
 )
 
 type actionFunc func(context.Context, EffectRequest) (EffectResult, error)
@@ -29,9 +30,13 @@ type responseTransport func(*http.Request) (*http.Response, error)
 
 func (f responseTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
-func workflowTestService(t *testing.T, actions Actions) (*Service, workspaceaccess.ActorFacts) {
+func workflowTestService(t testing.TB, actions Actions) (*Service, workspaceaccess.ActorFacts) {
 	t.Helper()
-	db := newWorkflowSchemaTestDB(t)
+	return workflowTestServiceWithDB(t, actions, newWorkflowSchemaTestDB(t))
+}
+
+func workflowTestServiceWithDB(t testing.TB, actions Actions, db *bun.DB) (*Service, workspaceaccess.ActorFacts) {
+	t.Helper()
 	now := time.Now().UTC()
 	for _, row := range []any{
 		&models.User{ID: "user", Email: "workflow@example.com", PasswordHash: "hash", CreatedAt: now},

@@ -1,3 +1,4 @@
+import type { components } from '@openpost/api-contract';
 import { applyAPIRequestHeaders, client } from '$lib/api/client';
 import { queryTransportRequest } from '$lib/query/transport';
 import type { ScreenshotDocument } from '@openpost/query-catalog';
@@ -62,6 +63,7 @@ export interface PublicationBuildAsset {
 }
 
 export interface PublicationBuildRequest {
+	series_count?: number;
 	option_count?: 0 | 4;
 	workspace_id: string;
 	idea: string;
@@ -90,6 +92,7 @@ export interface PublicationBuildDestinationPlan {
 }
 
 export interface PublicationBuildResult {
+	series?: components['schemas']['SeriesConcept'][];
 	sources?: Array<{
 		id: string;
 		kind: string;
@@ -123,6 +126,7 @@ export interface PublicationPostOption extends Omit<PublicationBuildResult, 'opt
 }
 
 export interface PublicationBuild {
+	series_origin?: components['schemas']['SeriesOrigin'];
 	id: string;
 	workspace_id: string;
 	publication_id?: string;
@@ -149,10 +153,11 @@ export interface PublicationBuild {
 	voice_profile_id?: string;
 	input?: {
 		idea: string;
-		sources?: Array<{ id: string; text?: string }>;
+		sources?: Array<{ id: string; text?: string; publishable?: boolean }>;
 		direction?: PublicationBuildDirection;
 		destinations: Array<{ account_id: string }>;
 		option_count?: number;
+		series_count?: number;
 	};
 }
 
@@ -200,6 +205,19 @@ export async function savePublicationOption(
 		throw new Error(result.error?.detail || 'Could not save the post edits.');
 	// SAFETY: The backend enforces the same Build state and phase values as getPublicationBuild.
 	return result.data as PublicationBuild;
+}
+
+// Recovered device edits are validated by the existing server mutation before
+// being rendered. Never trust a stored visual document as an API response.
+export function recoverPublicationOption(
+	buildId: string,
+	optionId: string,
+	body: string
+): Promise<PublicationBuild> {
+	return apiMutationRequest(
+		`/publication-builds/${encodeURIComponent(buildId)}/options/${encodeURIComponent(optionId)}`,
+		{ method: 'PUT', body }
+	);
 }
 
 type MutationMethod = 'POST' | 'PUT' | 'PATCH' | 'DELETE';

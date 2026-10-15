@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -192,7 +191,7 @@ func TestFacebookContentAnalyticsUsesGraphNodeSpecificInsights(t *testing.T) {
 }
 
 func TestXAnalyticsUsesPublicMetricsAndKeepsMetricKindsDistinct(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(req.URL.Path, "/users/") {
 			_, _ = w.Write([]byte(`{"data":{"public_metrics":{"followers_count":30,"following_count":4,"tweet_count":10}}}`))
@@ -220,7 +219,7 @@ func TestXAnalyticsUsesPublicMetricsAndKeepsMetricKindsDistinct(t *testing.T) {
 }
 
 func TestXAnalyticsRejectsPartialContentResponses(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[{"public_metrics":{"like_count":8}}],"errors":[{"type":"https://api.x.com/2/problems/resource-not-found","title":"Not Found"}]}`))
 	}))
@@ -239,7 +238,7 @@ func TestXAnalyticsRejectsPartialContentResponses(t *testing.T) {
 }
 
 func TestXAnalyticsBacksOffWhenCreditsAreDepleted(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusPaymentRequired)
 		_, _ = w.Write([]byte(`{"title":"Credits depleted"}`))

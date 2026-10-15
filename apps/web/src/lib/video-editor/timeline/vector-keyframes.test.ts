@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TimelineItem } from '$lib/video-editor/project/types';
-import { promoteVectorKeyframes } from './vector-keyframes';
+import { interpolateVector, promoteVectorKeyframes } from './vector-keyframes';
+import type { VectorKeyframe } from '$lib/video-editor/project/types';
 
 function videoItem(keyframes: TimelineItem['keyframes']): TimelineItem {
 	return {
@@ -14,6 +15,29 @@ function videoItem(keyframes: TimelineItem['keyframes']): TimelineItem {
 		keyframes
 	};
 }
+
+it('preserves vector segment boundaries and outgoing hold easing across a longer lane', () => {
+	const keys: VectorKeyframe[] = [0, 10, 20, 35, 50, 100].map((frame, index) => ({
+		id: `key-${index}`,
+		frame,
+		value: { x: frame * 10, y: -frame * 10 },
+		easing: index === 1 || index === 3 ? 'hold' : 'linear'
+	}));
+	for (const [frame, expected] of [
+		[-1, 0],
+		[9.5, 95],
+		[20, 100],
+		[20.5, 205],
+		[50, 350],
+		[50.5, 505],
+		[101, 1000]
+	]) {
+		expect(interpolateVector(keys, frame)).toEqual({
+			x: expected,
+			y: -expected
+		});
+	}
+});
 
 describe('promoteVectorKeyframes', () => {
 	it('promotes the union of scalar frames with easing inheritance and source attribution', () => {

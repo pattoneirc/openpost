@@ -14,7 +14,8 @@ func TestMetaContentURLResolversReturnCanonicalPermalinks(t *testing.T) {
 	defer func() { httpClient = originalClient }()
 
 	httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		require.Equal(t, "access-token", req.URL.Query().Get(oauthParamAccessToken))
+		require.Empty(t, req.URL.Query().Get(oauthParamAccessToken))
+		require.Equal(t, "Bearer access-token", req.Header.Get("Authorization"))
 		switch req.URL.Host {
 		case "graph.facebook.com":
 			switch req.URL.Query().Get("fields") {

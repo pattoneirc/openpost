@@ -13,6 +13,11 @@
 	import { Button } from '$lib/components/ui/button';
 	import PageContainer from '$lib/components/page-container.svelte';
 	import InlineNotice from '$lib/components/inline-notice.svelte';
+	import PublicationReviewControl from '$lib/components/publication-review-control.svelte';
+	import PublicationReviewPreview from '$lib/components/publication-review-preview.svelte';
+	import { createQuery } from '@tanstack/svelte-query';
+	import { workspaceAccountsQueryOptions } from '@openpost/query-catalog';
+	import { queryAPI } from '$lib/query/api';
 	import PublicationDeliveryCard from '$lib/components/publication-delivery-card.svelte';
 	import PublicationHistory from '$lib/components/publication-history.svelte';
 	import ComposeTextPost from '$lib/components/compose-text-post.svelte';
@@ -63,12 +68,17 @@
 	);
 	const initialMediaIds = $derived(page.url.searchParams.getAll('media_id'));
 	const readOnlyPublication = $derived(
-		publication?.status === 'published' ||
+		!workspaceCtx.currentWorkspace?.can_edit ||
+			publication?.status === 'published' ||
 			publication?.status === 'publishing' ||
 			publication?.status === 'failed' ||
 			publication?.renditions?.some((rendition) => rendition.delivery !== undefined)
 	);
 
+	const reviewAccounts = createQuery(() => ({
+		...workspaceAccountsQueryOptions(queryAPI, publicationWorkspaceId),
+		enabled: Boolean(publicationWorkspaceId && !workspaceCtx.currentWorkspace?.can_edit)
+	}));
 	type DetailOperation = PublicationOperation<AuthIdentityToken | undefined>;
 
 	async function removeLocalRecord(): Promise<DestructiveActionOutcome> {
@@ -398,7 +408,7 @@
 		description={m.publication_detail_description({ status: statusLabel(publication.status) })}
 	>
 		{#snippet actions()}
-			{#if publication?.status === 'failed'}
+			{#if publication?.status === 'failed' && workspaceCtx.currentWorkspace?.can_edit}
 				<Button variant="outline" onclick={toggleFailureDismissal}>
 					{publication?.failure_dismissed_at
 						? m.activity_restore_failed()
@@ -418,7 +428,7 @@
 					{m.publication_remove_local()}
 				</Button>
 			{/if}
-			{@render copyAsDraftButton()}
+			{#if workspaceCtx.currentWorkspace?.can_edit}{@render copyAsDraftButton()}{/if}
 			<Button variant="outline" onclick={() => history.back()}>
 				<ThemeIcon role="arrow-left" class="mr-1.5 size-4" />
 				{m.common_back()}
@@ -426,7 +436,19 @@
 		{/snippet}
 
 		<div class="space-y-6">
-			{#if publication.status !== 'failed'}
+			<PublicationReviewControl
+				workspaceId={publication.workspace_id}
+				publicationId={publication.id}
+				reviewState={publication.review_state ?? ''}
+				onChanged={(next) => {
+					publication = next;
+				}}
+			/>
+			{#if !workspaceCtx.currentWorkspace?.can_edit}<PublicationReviewPreview
+					{publication}
+					accounts={reviewAccounts.data ?? []}
+				/>{/if}
+			{#if publication.status === 'published' || publication.status === 'publishing'}
 				<InlineNotice tone="info" message={m.publication_published_editing_explanation()} />
 			{/if}
 			{#if recoveryMessage}
@@ -466,8 +488,10 @@
 						<PublicationDeliveryCard
 							{rendition}
 							retrying={retryingRenditionID === rendition.id}
-							onRetry={retryRendition}
-							onManualResolution={reviewDestination}
+							onRetry={workspaceCtx.currentWorkspace?.can_edit ? retryRendition : undefined}
+							onManualResolution={workspaceCtx.currentWorkspace?.can_edit
+								? reviewDestination
+								: undefined}
 						/>
 					{/each}
 				</div>
@@ -477,8 +501,8 @@
 				publicationId={publication.id}
 				workspaceId={publication.workspace_id}
 				{retryingRenditionID}
-				onRetry={retryRendition}
-				onManualResolution={reviewDestination}
+				onRetry={workspaceCtx.currentWorkspace?.can_edit ? retryRendition : undefined}
+				onManualResolution={workspaceCtx.currentWorkspace?.can_edit ? reviewDestination : undefined}
 			/>
 		</div>
 	</PageContainer>
@@ -518,8 +542,10 @@
 						headingLevel={3}
 						showHeading={false}
 						{retryingRenditionID}
-						onRetry={retryRendition}
-						onManualResolution={reviewDestination}
+						onRetry={workspaceCtx.currentWorkspace?.can_edit ? retryRendition : undefined}
+						onManualResolution={workspaceCtx.currentWorkspace?.can_edit
+							? reviewDestination
+							: undefined}
 					/>
 				</div>
 			</Sheet.Content>

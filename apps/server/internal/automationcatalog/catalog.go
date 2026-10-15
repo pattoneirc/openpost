@@ -168,6 +168,7 @@ var operations = []Operation{
 	readDisabled("list-workflows"),
 	readDisabled("get-workflow"),
 	readDisabled("list-workflow-runs"),
+	readDisabled("list-workflow-run-summaries"),
 	readDisabled("get-workflow-run"),
 	readDisabled("list-workflow-connections"),
 	writeDisabled("create-workflow", EffectLocalMutation),

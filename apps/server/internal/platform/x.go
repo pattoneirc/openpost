@@ -53,6 +53,8 @@ const (
 	// X omits check_after_secs or sends 0 while a video or GIF is still
 	// processing. Wait at least this long before each STATUS poll.
 	xMediaProcessingMinDelay = time.Second
+	xMediaProcessingMaxPolls = 3
+	xMediaProcessingWindow   = time.Minute
 )
 
 type XRequestStore interface {
@@ -571,7 +573,7 @@ func (x *XAdapter) uploadMediaChunkedResumable(ctx context.Context, accessToken,
 		return "", err
 	}
 	if finalizeResp.ProcessingInfo != nil {
-		if err := x.waitForMediaProcessing(ctx, accessToken, mediaID, finalizeResp.ProcessingInfo); err != nil {
+		if err := x.waitForMediaProcessing(ctx, accessToken, mediaID, finalizeResp.ProcessingInfo, state.SessionExpiresAt); err != nil {
 			return "", err
 		}
 	}
@@ -590,44 +592,64 @@ type xMediaProcessingError struct {
 	Message string `json:"message"`
 }
 
-func (x *XAdapter) waitForMediaProcessing(ctx context.Context, accessToken, mediaID string, info *xMediaProcessingInfo) error {
-	if info.State == "failed" {
-		return xTerminalMediaProcessingError(info)
+func (x *XAdapter) waitForMediaProcessing(ctx context.Context, accessToken, mediaID string, info *xMediaProcessingInfo, expiresAt time.Time) error {
+	deadline := time.Now().Add(xMediaProcessingWindow)
+	if !expiresAt.IsZero() && expiresAt.Before(deadline) {
+		deadline = expiresAt
 	}
-	for info.State == "pending" || info.State == "in_progress" {
+	parent := ctx
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	for attempt := 0; attempt < xMediaProcessingMaxPolls && (info.State == "pending" || info.State == "in_progress"); attempt++ {
+		timer := time.NewTimer(xMediaProcessingDelay(info.CheckAfterSecs))
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(xMediaProcessingDelay(info.CheckAfterSecs)):
+			timer.Stop()
+			return xMediaProcessingInterrupted(parent, expiresAt)
+		case <-timer.C:
 		}
 
-		statusURL := x.uploadURL("/1.1/media/upload.json") + "?command=STATUS&media_id=" + url.QueryEscape(mediaID)
-		respBody, err := x.doSignedRequest(ctx, accessToken, "GET", statusURL, nil, nil)
+		next, err := x.mediaProcessingStatus(ctx, accessToken, mediaID)
 		if err != nil {
-			return fmt.Errorf("x STATUS check: %w", err)
+			if ctx.Err() != nil {
+				return xMediaProcessingInterrupted(parent, expiresAt)
+			}
+			return err
 		}
 
-		var statusResp struct {
-			ProcessingInfo *xMediaProcessingInfo `json:"processing_info"`
-		}
-		if err := json.Unmarshal(respBody, &statusResp); err != nil {
-			return fmt.Errorf("decoding X STATUS: %w", err)
-		}
-
-		if statusResp.ProcessingInfo == nil {
+		if next == nil {
 			return &MediaUploadError{RetryClassification: MediaRetryReconcile, Err: fmt.Errorf("x media processing status is missing")}
 		}
-		*info = *statusResp.ProcessingInfo
-
-		if info.State == "failed" {
-			return xTerminalMediaProcessingError(info)
-		}
+		*info = *next
 	}
 
-	if info.State == "succeeded" {
+	return xMediaProcessingOutcome(parent, expiresAt, info)
+}
+
+func xMediaProcessingOutcome(ctx context.Context, expiresAt time.Time, info *xMediaProcessingInfo) error {
+	if !expiresAt.IsZero() && !time.Now().Before(expiresAt) {
+		return xMediaProcessingInterrupted(ctx, expiresAt)
+	}
+	switch info.State {
+	case "succeeded":
 		return nil
+	case "failed":
+		return xTerminalMediaProcessingError(info)
+	case "pending", "in_progress":
+		return xMediaProcessingInterrupted(ctx, expiresAt)
+	default:
+		return fmt.Errorf("x media processing unexpected state: %s", info.State)
 	}
-	return fmt.Errorf("x media processing unexpected state: %s", info.State)
+}
+
+func xMediaProcessingInterrupted(ctx context.Context, expiresAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !expiresAt.IsZero() && !time.Now().Before(expiresAt) {
+		return &MediaUploadError{RetryClassification: MediaRetryTerminal, Err: fmt.Errorf("x media upload expired")}
+	}
+	return &MediaUploadError{RetryClassification: MediaRetryReconcile, Err: fmt.Errorf("x media processing is still pending")}
 }
 
 func xMediaProcessingDelay(checkAfterSecs int) time.Duration {

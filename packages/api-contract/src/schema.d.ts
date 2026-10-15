@@ -4514,6 +4514,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/publication-builds/{id}/series/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Edit a series concept before generating its post */
+        put: operations["update-series-concept"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publication-builds/{id}/series/{item_id}/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate one explicitly selected series post */
+        post: operations["generate-series-post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/publication-opportunities/discover": {
         parameters: {
             query?: never;
@@ -4546,6 +4580,40 @@ export interface paths {
         put?: never;
         /** Create a publication */
         post: operations["create-publication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publications/batch-schedule/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Schedule selected dates with independently replayable post receipts */
+        post: operations["confirm-batch-schedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publications/batch-schedule/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview exact dates for selected drafts without queuing them */
+        post: operations["preview-batch-schedule"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4734,6 +4802,41 @@ export interface paths {
          * @description Queues one publication job. Destinations that already succeeded and failures that require editing or reconnection are left unchanged.
          */
         post: operations["retry-failed-publication-renditions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publications/{id}/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the last 50 review requests and submitted versions */
+        get: operations["list-publication-reviews"];
+        put?: never;
+        /** Send this version to a client for required approval */
+        post: operations["request-publication-review"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/publications/{id}/reviews/{review_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Approve a submitted version or request changes */
+        put: operations["decide-publication-review"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -5454,6 +5557,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/video-project-summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Cloud Video Project summaries
+         * @description Project metadata for browsing, without the authored editing documents. Load a project by ID when opening it.
+         */
+        get: operations["list-video-project-summaries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/video-projects": {
         parameters: {
             query?: never;
@@ -5834,6 +5957,23 @@ export interface paths {
         post?: never;
         /** Delete an unused workflow connection */
         delete: operations["delete-workflow-connection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow-run-summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the latest 50 workflow runs without source data or step payloads */
+        get: operations["list-workflow-run-summaries"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -7213,6 +7353,63 @@ export interface components {
             /** @description Workspace owning the schedule slots */
             workspace_id: string;
         };
+        BatchScheduleConfirmInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/BatchScheduleConfirmInputBody.json
+             */
+            readonly $schema?: string;
+            batch_id: string;
+            items: components["schemas"]["BatchScheduleItem"][] | null;
+            workspace_id: string;
+        };
+        BatchScheduleItem: {
+            error?: string;
+            /** Format: int64 */
+            expected_revision: number;
+            preserved: boolean;
+            publication_id: string;
+            scheduled_at?: string;
+            title?: string;
+        };
+        BatchScheduleOutcome: {
+            error?: string;
+            publication_id: string;
+            /** @enum {string} */
+            state: "scheduled" | "failed";
+        };
+        BatchSchedulePreviewInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/BatchSchedulePreviewInputBody.json
+             */
+            readonly $schema?: string;
+            /** Format: date */
+            end_date: string;
+            /** Format: int64 */
+            hour: number;
+            /** Format: int64 */
+            interval_days: number;
+            /** Format: int64 */
+            minute: number;
+            publication_ids: string[] | null;
+            /** Format: date */
+            start_date: string;
+            use_slots: boolean;
+            workspace_id: string;
+        };
+        BatchSchedulePreviewOutputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/BatchSchedulePreviewOutputBody.json
+             */
+            readonly $schema?: string;
+            items: components["schemas"]["BatchScheduleItem"][] | null;
+            timezone: string;
+        };
         BeginEmailChangeInputBody: {
             /**
              * Format: uri
@@ -7433,6 +7630,7 @@ export interface components {
             result?: components["schemas"]["BuildResult"];
             /** Format: int64 */
             revision: number;
+            series_origin?: components["schemas"]["SeriesOrigin"];
             social_set_id?: string;
             state: string;
             /** Format: date-time */
@@ -7457,6 +7655,8 @@ export interface components {
              * @enum {integer}
              */
             option_count?: 0 | 4;
+            /** Format: int64 */
+            series_count?: number;
             sources?: components["schemas"]["SourceMaterial"][] | null;
         };
         BuildResult: {
@@ -7467,6 +7667,7 @@ export interface components {
             options?: components["schemas"]["PostOption"][] | null;
             review_flags: components["schemas"]["ReviewFlag"][] | null;
             selected_option_id?: string;
+            series?: components["schemas"]["SeriesConcept"][] | null;
             skipped: components["schemas"]["SkippedDestination"][] | null;
             sources?: components["schemas"]["ResolvedSource"][] | null;
         };
@@ -8509,6 +8710,11 @@ export interface components {
              * @enum {integer}
              */
             option_count?: 0 | 4;
+            /**
+             * Format: int64
+             * @description Plan up to three complementary posts before generating selected drafts
+             */
+            series_count?: number;
             /** @description Optional Social Set candidate snapshot */
             social_set_id?: string;
             /** @description Optional build-level Voice Profile override */
@@ -8667,7 +8873,7 @@ export interface components {
              * @description Workspace role to grant
              * @enum {string}
              */
-            role: "admin" | "editor" | "viewer";
+            role: "admin" | "editor" | "client" | "viewer";
         };
         CreateWorkspaceOutputBody: {
             /**
@@ -13080,6 +13286,11 @@ export interface components {
             renditions: components["schemas"]["RenditionResponse"][] | null;
             repost_override: components["schemas"]["Override"];
             /** Format: int64 */
+            review_epoch?: number;
+            review_id?: string;
+            /** @enum {string} */
+            review_state?: "pending" | "approved" | "changes_requested" | "needs_review";
+            /** Format: int64 */
             revision: number;
             scheduled_at?: string;
             segments: components["schemas"]["PublicationSegmentResponse"][] | null;
@@ -13089,6 +13300,56 @@ export interface components {
             status: string;
             title: string;
             updated_at: string;
+            workspace_id: string;
+        };
+        PublicationReviewDecisionInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/PublicationReviewDecisionInputBody.json
+             */
+            readonly $schema?: string;
+            /** @enum {string} */
+            decision: "approved" | "changes_requested";
+            /** Format: int64 */
+            expected_epoch: number;
+            feedback: string;
+        };
+        PublicationReviewInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/PublicationReviewInputBody.json
+             */
+            readonly $schema?: string;
+            /** Format: int64 */
+            expected_revision: number;
+            note: string;
+            reviewer_id: string;
+        };
+        PublicationReviewResponse: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/PublicationReviewResponse.json
+             */
+            readonly $schema?: string;
+            /** Format: date-time */
+            created_at: string;
+            current: boolean;
+            /** Format: date-time */
+            decided_at?: string;
+            decision?: string;
+            /** Format: int64 */
+            epoch: number;
+            feedback?: string;
+            id: string;
+            includes_schedule: boolean;
+            note: string;
+            publication_id: string;
+            requested_by: string;
+            reviewer_id: string;
+            snapshot: components["schemas"]["PublicationResponse"];
             workspace_id: string;
         };
         PublicationSegmentInput: {
@@ -13121,6 +13382,18 @@ export interface components {
             };
             title: string;
             url?: string;
+        };
+        PublicationSeriesConceptInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/PublicationSeriesConceptInputBody.json
+             */
+            readonly $schema?: string;
+            brief: string;
+            /** Format: int64 */
+            expected_revision: number;
+            title: string;
         };
         PublicationUpdateBody: {
             /**
@@ -14736,6 +15009,22 @@ export interface components {
             message: string;
             workspace_id: string;
         };
+        SeriesConcept: {
+            brief: string;
+            child_build_id?: string;
+            evidence: string;
+            id: string;
+            /** Format: int64 */
+            revision: number;
+            source_refs: string[] | null;
+            title: string;
+        };
+        SeriesOrigin: {
+            build_id: string;
+            item_id: string;
+            /** Format: int64 */
+            item_revision: number;
+        };
         SeriesPoint: {
             date: string;
             /** Format: int64 */
@@ -15018,6 +15307,16 @@ export interface components {
             interval: number;
             user_code: string;
             verification_url: string;
+        };
+        StartPublicationSeriesConceptInputBody: {
+            /**
+             * Format: uri
+             * @description A URL to the JSON Schema for this object.
+             * @example https://example.com/api/v1/schemas/StartPublicationSeriesConceptInputBody.json
+             */
+            readonly $schema?: string;
+            /** Format: int64 */
+            expected_revision: number;
         };
         StartWorkspaceCompositionInputBody: {
             /**
@@ -16094,7 +16393,7 @@ export interface components {
              * @description Replacement workspace role
              * @enum {string}
              */
-            role?: "admin" | "editor" | "viewer";
+            role?: "admin" | "editor" | "client" | "viewer";
             /**
              * @description Replacement workspace access state
              * @enum {string}
@@ -16467,6 +16766,25 @@ export interface components {
             revision: number;
             touched_targets: string[] | null;
         };
+        VideoProjectSummaryResponse: {
+            attention_reason?: string;
+            created_at: string;
+            created_by_user_id: string;
+            /** Format: int64 */
+            head_revision: number;
+            id: string;
+            name: string;
+            preview_object_key?: string;
+            retention_expires_at?: string;
+            /** @description Editor document family; empty for legacy projects without a string family */
+            schema_family: string;
+            /** @enum {string} */
+            sync_status: "pending" | "uploading" | "saving" | "synced" | "needs_attention";
+            trashed_at?: string;
+            updated_at: string;
+            updated_by_user_id: string;
+            workspace_id: string;
+        };
         Viewport: {
             /** Format: int64 */
             height: number;
@@ -16650,6 +16968,28 @@ export interface components {
             workflow_revision: number;
             workspace_id: string;
         };
+        WorkflowRunSummary: {
+            /** Format: date-time */
+            created_at: string;
+            current_step_id?: string;
+            definition: components["schemas"]["WorkflowDefinition"];
+            error?: string;
+            id: string;
+            mode: string;
+            /** Format: int64 */
+            revision: number;
+            state: string;
+            steps: components["schemas"]["WorkflowStepSummary"][] | null;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            wake_at?: string;
+            workflow_id: string;
+            workflow_name: string;
+            /** Format: int64 */
+            workflow_revision: number;
+            workspace_id: string;
+        };
         WorkflowSaveRequest: {
             /**
              * Format: uri
@@ -16731,6 +17071,10 @@ export interface components {
             };
             /** Format: date-time */
             started_at: string;
+            state: string;
+            step_id: string;
+        };
+        WorkflowStepSummary: {
             state: string;
             step_id: string;
         };
@@ -16836,7 +17180,7 @@ export interface components {
              * @description Workspace role
              * @enum {string}
              */
-            role: "admin" | "editor" | "viewer";
+            role: "admin" | "editor" | "client" | "viewer";
             /**
              * @description Workspace access state
              * @enum {string}
@@ -16849,8 +17193,14 @@ export interface components {
         };
         WorkspaceResponse: {
             avatar_url: string;
+            /** @description Whether the current user can decide an assigned publication review */
+            can_approve: boolean;
+            /** @description Whether the current user can connect or reconnect social accounts */
+            can_connect: boolean;
             /** @description Whether the current user can change workspace content */
             can_edit: boolean;
+            /** @description Whether this deployment accepts new client review requests */
+            client_reviews_enabled?: boolean;
             color: string;
             created_at: string;
             id: string;
@@ -16861,7 +17211,7 @@ export interface components {
              * @description Current user's workspace role
              * @enum {string}
              */
-            role: "admin" | "editor" | "viewer";
+            role: "admin" | "editor" | "client" | "viewer";
             /** @description Whether the current credential satisfies organization SSO */
             sso_authenticated: boolean;
             /** @description Whether the required provider is explicitly linked to this user */
@@ -21066,6 +21416,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ErrorModel"];
                 };
             };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
             /** @description Internal Server Error */
             500: {
                 headers: {
@@ -21119,6 +21478,15 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -21180,6 +21548,15 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -21311,6 +21688,15 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -34703,6 +35089,78 @@ export interface operations {
             };
         };
     };
+    "update-series-concept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationSeriesConceptInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Build"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "generate-series-post": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartPublicationSeriesConceptInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Build"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "discover-publication-opportunities": {
         parameters: {
             query?: never;
@@ -34933,6 +35391,72 @@ export interface operations {
             };
         };
     };
+    "confirm-batch-schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchScheduleConfirmInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchScheduleOutcome"][] | null;
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "preview-batch-schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchSchedulePreviewInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchSchedulePreviewOutputBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "preview-text-card": {
         parameters: {
             query?: never;
@@ -34985,6 +35509,15 @@ export interface operations {
             };
             /** @description Unprocessable Entity */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -35737,6 +36270,180 @@ export interface operations {
                 };
                 content: {
                     "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-publication-reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationReviewResponse"][] | null;
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "request-publication-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationReviewInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationReviewResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "decide-publication-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationReviewDecisionInputBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationReviewResponse"];
                 };
             };
             /** @description Forbidden */
@@ -39456,6 +40163,58 @@ export interface operations {
             };
         };
     };
+    "list-video-project-summaries": {
+        parameters: {
+            query: {
+                /** @description Workspace ID */
+                workspace_id: string;
+                /** @description Include projects in Trash */
+                include_trash?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VideoProjectSummaryResponse"][] | null;
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
     "list-video-projects": {
         parameters: {
             query: {
@@ -41540,6 +42299,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkflowDeleteOutputBody"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "list-workflow-run-summaries": {
+        parameters: {
+            query: {
+                workspace_id: string;
+                workflow_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowRunSummary"][] | null;
                 };
             };
             /** @description Bad Request */
@@ -43979,7 +44824,7 @@ export interface operations {
                 /** @description Case-insensitive member or invitation email search */
                 q?: string;
                 /** @description Filter by role */
-                role?: "all" | "admin" | "editor" | "viewer";
+                role?: "all" | "admin" | "editor" | "client" | "viewer";
                 /** @description Filter by member access or exact invitation lifecycle state */
                 status?: "all" | "active" | "inactive" | "pending" | "created" | "queued" | "sent" | "delivered" | "delivery_failed" | "delivery_unavailable" | "expired" | "revoked" | "accepted";
             };

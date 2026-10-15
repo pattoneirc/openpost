@@ -288,6 +288,7 @@ func (s *Service) publishedItems(ctx context.Context, workspaceID string, accoun
 		query = query.OrderExpr("published_at ASC, r.id ASC")
 	}
 	if workflow != nil {
+		query = query.Where("p.creation_source <> ?", "autopost")
 		query = query.Where("NOT EXISTS (SELECT 1 FROM workflow_events admitted WHERE admitted.workflow_id = ? AND admitted.source_fingerprint = ? AND admitted.event_key = r.id)", workflow.ID, workflow.SourceFingerprint)
 	}
 	if len(accounts) > 0 {

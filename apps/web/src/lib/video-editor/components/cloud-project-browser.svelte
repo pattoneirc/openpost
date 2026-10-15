@@ -5,7 +5,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { ProtectedIcon, ThemeIcon } from '$lib/themes/icons';
 	import type { Project } from '$lib/video-editor/project/types';
-	import type { CloudVideoProject } from '$lib/video-editor/cloud/project-repository';
+	import type { CloudVideoProjectSummary } from '$lib/video-editor/cloud/project-repository';
 
 	let {
 		projects,
@@ -25,21 +25,21 @@
 		ontoggleoffline,
 		onrefresh
 	}: {
-		projects: CloudVideoProject<Project>[];
-		trashedProjects: CloudVideoProject<Project>[];
+		projects: CloudVideoProjectSummary[];
+		trashedProjects: CloudVideoProjectSummary[];
 		loading: boolean;
 		error: string;
-		onopen: (project: CloudVideoProject<Project>) => Promise<void>;
-		ontrash: (project: CloudVideoProject<Project>) => Promise<void>;
-		onrestore: (project: CloudVideoProject<Project>) => Promise<void>;
+		onopen: (project: CloudVideoProjectSummary) => Promise<void>;
+		ontrash: (project: CloudVideoProjectSummary) => Promise<void>;
+		onrestore: (project: CloudVideoProjectSummary) => Promise<void>;
 		localProjects: Project[];
 		importingId: string | null;
 		onimportlocal: (project: Project) => Promise<void>;
 		exportingId: string | null;
-		onexport: (project: CloudVideoProject<Project>) => Promise<void>;
+		onexport: (project: CloudVideoProjectSummary) => Promise<void>;
 		offlineProjectIds: string[];
 		offlineBusyId: string | null;
-		ontoggleoffline: (project: CloudVideoProject<Project>) => Promise<void>;
+		ontoggleoffline: (project: CloudVideoProjectSummary) => Promise<void>;
 		onrefresh: () => Promise<void>;
 	} = $props();
 
@@ -52,7 +52,7 @@
 		)
 	);
 
-	async function trash(project: CloudVideoProject<Project>): Promise<void> {
+	async function trash(project: CloudVideoProjectSummary): Promise<void> {
 		busyProjectId = project.id;
 		try {
 			await ontrash(project);
@@ -61,7 +61,7 @@
 		}
 	}
 
-	async function restore(project: CloudVideoProject<Project>): Promise<void> {
+	async function restore(project: CloudVideoProjectSummary): Promise<void> {
 		busyProjectId = project.id;
 		try {
 			await onrestore(project);

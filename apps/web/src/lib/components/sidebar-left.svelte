@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { publicationView } from '$lib/stores/publication-view.svelte';
+	import { ideate } from '$lib/post-builder/ideate.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -57,7 +58,11 @@
 	);
 	const sidebarNavigationItems = $derived(workspaceNavigationItems);
 	const moreNavigationItems = $derived(
-		navigationItems.filter((item) => ['ideate', 'growth', 'editors', 'workflows'].includes(item.id))
+		navigationItems.filter(
+			(item) =>
+				['ideate', 'growth', 'editors', 'workflows'].includes(item.id) &&
+				(item.id !== 'ideate' || workspaceCtx.currentWorkspace?.can_edit)
+		)
 	);
 	const showDesktopPlanner = $derived(!sidebar.isMobile && sidebar.state === 'expanded');
 
@@ -138,6 +143,10 @@
 
 	function navigate(href: string) {
 		sidebar.setOpenMobile(false);
+		if (href === '/ideate') {
+			ideate.show();
+			return;
+		}
 		if (href === '/') {
 			if (!ui.startNewPost()) return;
 			if (currentPath === '/') return;
@@ -203,41 +212,44 @@
 			</div>
 		</div>
 
-		<div class="flex items-stretch gap-1 group-data-[collapsible=icon]:flex-col">
-			<Button
-				href={resolve('/')}
-				variant="focal"
-				size="sm"
-				class="min-w-0 flex-1 gap-2 group-data-[collapsible=icon]:px-0"
-				aria-label={m.sidebar_new_post()}
-				data-testid="sidebar-new-post"
-				onclick={handleNewPostClick}
+		{#if workspaceCtx.currentWorkspace?.can_edit}<div
+				class="flex items-stretch gap-1 group-data-[collapsible=icon]:flex-col"
 			>
-				<ThemeIcon role="compose" class="size-4" />
-				{#if sidebar.state !== 'collapsed'}<span>{m.sidebar_new_post()}</span>{/if}
-			</Button>
-			<DropdownMenu.Root>
-				<DropdownMenu.Trigger>
-					{#snippet child({ props })}<Button
-							{...props}
-							variant="outline"
-							size="sm"
-							class="w-9 px-0 group-data-[collapsible=icon]:w-full"
-							aria-label={m.editors_title()}
-							data-testid="sidebar-new-post-menu"
-							><ThemeIcon role="chevron-down" class="size-4" /></Button
-						>{/snippet}
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Content align="start">
-					<DropdownMenu.Item onclick={() => navigate('/image-editor')}
-						><ThemeIcon role="image" class="size-4" />{m.image_editor_title()}</DropdownMenu.Item
-					>
-					<DropdownMenu.Item onclick={() => navigate('/video-editor')}
-						><ThemeIcon role="video" class="size-4" />{m.video_editor_title()}</DropdownMenu.Item
-					>
-				</DropdownMenu.Content>
-			</DropdownMenu.Root>
-		</div>
+				<Button
+					href={resolve('/')}
+					variant="focal"
+					size="sm"
+					class="min-w-0 flex-1 gap-2 group-data-[collapsible=icon]:px-0"
+					aria-label={m.sidebar_new_post()}
+					data-testid="sidebar-new-post"
+					onclick={handleNewPostClick}
+				>
+					<ThemeIcon role="compose" class="size-4" />
+					{#if sidebar.state !== 'collapsed'}<span>{m.sidebar_new_post()}</span>{/if}
+				</Button>
+				<DropdownMenu.Root>
+					<DropdownMenu.Trigger>
+						{#snippet child({ props })}<Button
+								{...props}
+								variant="outline"
+								size="sm"
+								class="w-9 px-0 group-data-[collapsible=icon]:w-full"
+								aria-label={m.editors_title()}
+								data-testid="sidebar-new-post-menu"
+								><ThemeIcon role="chevron-down" class="size-4" /></Button
+							>{/snippet}
+					</DropdownMenu.Trigger>
+					<DropdownMenu.Content align="start">
+						<DropdownMenu.Item onclick={() => navigate('/image-editor')}
+							><ThemeIcon role="image" class="size-4" />{m.image_editor_title()}</DropdownMenu.Item
+						>
+						<DropdownMenu.Item onclick={() => navigate('/video-editor')}
+							><ThemeIcon role="video" class="size-4" />{m.video_editor_title()}</DropdownMenu.Item
+						>
+					</DropdownMenu.Content>
+				</DropdownMenu.Root>
+			</div>
+		{/if}
 	</Sidebar.Header>
 
 	<Sidebar.Content class={showDesktopPlanner ? 'overflow-y-auto pt-2' : 'px-2 py-3'}>

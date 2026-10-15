@@ -1,7 +1,8 @@
+import { NativeText as Text } from "@/components/native-text";
 import * as WebBrowser from "expo-web-browser";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useCallback, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, BackHandler, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, BackHandler, ScrollView, StyleSheet, View } from "react-native";
 
 import { BodyText, Button, ContentSection, Screen, useColors } from "@/components/ui";
 import { Brand } from "@/components/brand";

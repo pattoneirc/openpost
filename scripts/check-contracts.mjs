@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,9 +10,6 @@ const env = {
   ...process.env,
   GOCACHE: process.env.GOCACHE || path.join(root, ".devenv", "state", "go-build"),
 };
-
-// Only compare generated files that are committed. The docs copies are ignored
-// build artifacts, so they are expected to be absent in a clean checkout.
 const generatedPaths = [
   "apps/web/openapi.json",
   "apps/docs/content/docs/guides/media-limits.mdx",
@@ -23,78 +21,86 @@ const generatedPaths = [
   "packages/n8n-nodes-openpost/docs/selected-contract-report.md",
 ];
 
-// Checking must not mutate the shared working tree: generators run against the
-// current inputs, their outputs are compared, and every owned file is restored
-// before reporting. Run the owning generate command to update stale outputs.
-const before = await generatedHashes();
-const backups = await backupGeneratedPaths();
-let afterHashes;
+// Run generators against a snapshot of current source, including uncommitted
+// files. Checks never write or restore files in a shared checkout.
+const snapshot = await mkdtemp(path.join(os.tmpdir(), "openpost-contracts-"));
+let changed;
 try {
-  run("bun", ["scripts/sync-docs-openapi.mjs"]);
-  run("bun", ["run", "--filter", "@openpost/web", "generate:types"]);
-  run("bun", ["scripts/generate-selected-automation-contract.mjs"]);
-  afterHashes = await generatedHashes();
+  await copySourceSnapshot(snapshot);
+  run("bun", ["scripts/sync-docs-openapi.mjs"], snapshot);
+  run("bun", ["run", "--filter", "@openpost/web", "generate:types"], snapshot);
+  run("bun", ["scripts/generate-selected-automation-contract.mjs"], snapshot);
+  const expected = await generatedHashes(snapshot);
+  const current = await generatedHashes(root);
+  changed = generatedPaths.filter((file) => current.get(file) !== expected.get(file));
 } finally {
-  await restoreGeneratedPaths(backups);
+  await rm(snapshot, { recursive: true, force: true });
 }
-const after = afterHashes;
-const changed = generatedPaths.filter((file) => before.get(file) !== after.get(file));
 if (changed.length > 0) {
   console.error(`Generated contracts are stale: ${changed.join(", ")}`);
   console.error("Run the owning generate command, review the diff, and commit the result.");
   process.exit(1);
 }
-
 console.log(
   "Generated API, shared TypeScript, docs, CLI, and selected automation contracts are current.",
 );
 
-async function generatedHashes() {
-  const entries = await Promise.all(
-    generatedPaths.map(async (file) => {
-      try {
-        const contents = await readFile(path.join(root, file));
-        return [file, createHash("sha256").update(contents).digest("hex")];
-      } catch (error) {
-        if (error?.code === "ENOENT") return [file, null];
-        throw error;
-      }
-    }),
+async function copySourceSnapshot(destination) {
+  const listed = spawnSync(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    { cwd: root, encoding: "utf8" },
   );
-  return new Map(entries);
-}
-
-async function backupGeneratedPaths() {
-  const backups = new Map();
-  await Promise.all(
-    generatedPaths.map(async (file) => {
-      try {
-        const contents = await readFile(path.join(root, file));
-        backups.set(file, contents);
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-    }),
-  );
-  return backups;
-}
-
-async function restoreGeneratedPaths(backups) {
-  await Promise.all(
-    generatedPaths.map(async (file) => {
-      const target = path.join(root, file);
-      if (backups.has(file)) {
-        await writeFile(target, backups.get(file));
-      } else {
-        await rm(target, { force: true });
-      }
-    }),
-  );
-}
-
-function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, env, stdio: "inherit" });
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+  if (listed.status !== 0) throw new Error("Failed to list source files for contract check");
+  const files = [...new Set(listed.stdout.split("\0").filter(Boolean))];
+  for (const file of files) {
+    const target = path.join(destination, file);
+    await mkdir(path.dirname(target), { recursive: true });
+    try {
+      await cp(path.join(root, file), target, { dereference: true });
+    } catch (error) {
+      // Tracked deletions are part of the current source snapshot.
+      if (error?.code !== "ENOENT") throw error;
+    }
   }
+  const packageRoots = new Set([
+    "",
+    ...files
+      .filter((file) => path.basename(file) === "package.json")
+      .map((file) => path.dirname(file)),
+  ]);
+  for (const directory of packageRoots) {
+    const modules = path.join(root, directory, "node_modules");
+    try {
+      await symlink(modules, path.join(destination, directory, "node_modules"), "dir");
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+}
+
+async function generatedHashes(directory) {
+  return new Map(
+    await Promise.all(
+      generatedPaths.map(async (file) => {
+        try {
+          return [
+            file,
+            createHash("sha256")
+              .update(await readFile(path.join(directory, file)))
+              .digest("hex"),
+          ];
+        } catch (error) {
+          if (error?.code === "ENOENT") return [file, null];
+          throw error;
+        }
+      }),
+    ),
+  );
+}
+
+function run(command, args, cwd) {
+  const result = spawnSync(command, args, { cwd, env, stdio: "inherit" });
+  if (result.status !== 0)
+    throw new Error(`Contract generator failed with exit code ${result.status ?? 1}`);
 }

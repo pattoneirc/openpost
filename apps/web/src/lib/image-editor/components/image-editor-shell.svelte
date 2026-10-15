@@ -3036,8 +3036,7 @@
 			});
 			suppressSavedAnnouncementUntil = Date.now() + 5_000;
 			statusAnnouncement = m.image_editor_exported_pages({
-				count: mediaIDs.length,
-				suffix: mediaIDs.length === 1 ? '' : 's'
+				count: mediaIDs.length
 			});
 			finishMetric();
 		} catch (cause) {
@@ -4931,7 +4930,6 @@
 						<p class="mt-0.5 text-xs text-muted-foreground">
 							{m.image_editor_export_summary({
 								pages: exportPages.length,
-								suffix: exportPages.length === 1 ? '' : 's',
 								megapixels: (exportPixelCount / 1_000_000).toFixed(1)
 							})}
 						</p>

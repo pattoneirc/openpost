@@ -48,9 +48,21 @@ export function findNativeFormControlViolations(repoRoot) {
 function main() {
   const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const violations = findNativeFormControlViolations(repoRoot);
-  if (violations.length === 0) {
+  const nativeTextViolations = [];
+  for (const file of sourceFiles(resolve(repoRoot, "apps/mobile/src/app"), {
+    extensions: new Set([".tsx"]),
+    skipDirectoryNames: ["node_modules"],
+  })) {
+    const source = readFileSync(file, "utf8");
+    for (const match of source.matchAll(/import\s*\{([^}]+)\}\s*from\s*["']react-native["']/gu)) {
+      if (match[1].split(",").some((name) => /^Text(?:\s+as\s+\w+)?$/u.test(name.trim()))) {
+        nativeTextViolations.push(relative(repoRoot, file));
+      }
+    }
+  }
+  if (violations.length === 0 && nativeTextViolations.length === 0) {
     process.stdout.write(
-      "ui-consistency: shared form primitives cover every visible Svelte control\n",
+      "ui-consistency: shared form primitives and native text cover page controls\n",
     );
     return;
   }
@@ -60,6 +72,11 @@ function main() {
   );
   for (const violation of violations) {
     process.stderr.write(`- ${violation.file}:${violation.line} native <${violation.control}>\n`);
+  }
+  for (const file of nativeTextViolations) {
+    process.stderr.write(
+      `- ${file} use NativeText for Dynamic Type instead of react-native Text\n`,
+    );
   }
   process.exitCode = 1;
 }

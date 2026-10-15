@@ -11,6 +11,7 @@ Brand names and logos belong to their respective owners.
 | `dokploy.svg`   | [Dokploy logo](https://github.com/Dokploy/dokploy/blob/canary/apps/dokploy/public/logo.svg)                                                                              |
 | `nixos.svg`     | [Simple Icons: NixOS](https://simpleicons.org/?q=nixos)                                                                                                                  |
 | `portainer.svg` | [Simple Icons: Portainer](https://simpleicons.org/?q=portainer)                                                                                                          |
+| `umbrelos.png`  | [Umbrel official website icon](https://umbrel.com/icons/icon-512.png), downloaded unchanged from the website's icon assets                                               |
 | `zimaos.png`    | [ZimaOS logo](https://github.com/IceWhaleTech/ZimaOS/blob/main/assets/zima.png)                                                                                          |
 | `pixelfed.svg`  | [Simple Icons: Pixelfed](https://simpleicons.org/?q=pixelfed) (fill normalized to `currentColor`)                                                                        |
 | `peertube.svg`  | [Simple Icons: PeerTube](https://simpleicons.org/?q=peertube) (fill normalized to `currentColor`)                                                                        |

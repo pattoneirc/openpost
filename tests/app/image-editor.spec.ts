@@ -395,28 +395,46 @@ test("starter previews fit the complete canvas on narrow phones", async ({ page 
   test.setTimeout(60_000);
   await page.goto("/image-editor");
   const gallery = page.getByRole("region", { name: "Starter templates" });
-  await expect(gallery.locator("canvas").first()).toBeVisible();
+  await expect(gallery.getByRole("button").last()).toBeVisible();
+  await expect.poll(() => gallery.locator("canvas").count()).toBeLessThanOrEqual(2);
+  const starter = gallery.getByRole("button", { name: "Quick announcement" });
+  const preview = starter.locator(".template-preview-frame img");
+  await starter.scrollIntoViewIfNeeded();
+  await expect
+    .poll(() => preview.evaluate((image: HTMLImageElement) => image.naturalWidth))
+    .toBeGreaterThan(0);
   for (const width of [320, 390, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
+      await starter.scrollIntoViewIfNeeded();
       await expect
         .poll(() =>
-          gallery.locator("canvas").evaluateAll((canvases) =>
-            canvases.every((canvas) => {
-              const frame = canvas.parentElement!.getBoundingClientRect();
-              const bitmap = canvas.getBoundingClientRect();
-              return bitmap.width <= frame.width + 1 && bitmap.height <= frame.height + 1;
-            }),
-          ),
+          preview.evaluate((image: HTMLImageElement) => {
+            const frame = image.parentElement!.getBoundingClientRect();
+            const bitmap = image.getBoundingClientRect();
+            return (
+              image.naturalWidth > 0 &&
+              bitmap.width <= frame.width + 1 &&
+              bitmap.height <= frame.height + 1
+            );
+          }),
         )
         .toBe(true);
-      await gallery.screenshot({
+      await starter.screenshot({
         path: testInfo.outputPath(`templates-${width}-${colorScheme}.png`),
       });
     }
   }
-  const starter = gallery.getByRole("button", { name: "Quick announcement" });
+  const last = gallery.getByRole("button").last();
+  await last.scrollIntoViewIfNeeded();
+  await expect
+    .poll(() =>
+      last
+        .locator(".template-preview-frame img")
+        .evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBeGreaterThan(0);
   await starter.focus();
   await expect(starter).toBeFocused();
   await page.keyboard.press("Enter");

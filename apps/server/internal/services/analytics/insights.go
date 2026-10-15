@@ -2,15 +2,11 @@ package analytics
 
 import (
 	"context"
-	"database/sql"
-	"errors"
-	"fmt"
 	"sort"
 	"time"
 
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/platform"
-	"github.com/uptrace/bun"
 )
 
 const (
@@ -101,20 +97,12 @@ func (s *Service) loadStoredInsightContent(
 		}
 	}
 	latest := make(map[string]models.AnalyticsRenditionSnapshot, len(renditionIDs))
-	if len(renditionIDs) > 0 {
-		var snapshots []models.AnalyticsRenditionSnapshot
-		if err := s.db.NewSelect().Model(&snapshots).
-			Where("workspace_id = ?", workspaceID).
-			Where("rendition_id IN (?)", bun.List(renditionIDs)).
-			Order("rendition_id ASC", "captured_at DESC").
-			Scan(ctx); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("load stored analytics insight snapshots: %w", err)
-		}
-		for _, snapshot := range snapshots {
-			if _, exists := latest[snapshot.RenditionID]; !exists {
-				latest[snapshot.RenditionID] = snapshot
-			}
-		}
+	snapshots, err := s.loadLatestRenditionSnapshots(ctx, workspaceID, renditionIDs, time.Time{}, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, snapshot := range snapshots {
+		latest[snapshot.RenditionID] = snapshot
 	}
 
 	stored := make([]ContentOverview, 0, len(content))

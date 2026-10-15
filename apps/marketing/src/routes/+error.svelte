@@ -14,8 +14,6 @@
 <ErrorRecovery
 	status={page.status}
 	label={isNotFound ? marketingErrorRecovery.label : 'Page error'}
-	title={isNotFound ? marketingErrorRecovery.title : 'OpenPost could not load this page.'}
-	description={isNotFound
-		? marketingErrorRecovery.description
-		: 'Return to a maintained page and try again. If the problem continues, use one of the support paths below.'}
+	title={isNotFound ? marketingErrorRecovery.title : 'Page unavailable'}
+	description={isNotFound ? marketingErrorRecovery.description : 'Try again, or return home.'}
 />

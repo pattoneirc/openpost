@@ -5,11 +5,9 @@
 	import { Slider } from '$lib/components/ui/slider';
 	import { m } from '$lib/paraglide/messages';
 	import { formatBytes } from '$lib/video/constraints';
-	import { renderVideoEdit } from '$lib/video/editor';
 	import { videoPreparationErrorMessage } from '$lib/video/errors';
-	import { probeVideo } from '$lib/video/prepare';
 	import { firstPlatformVideoCodec } from '$lib/video/support';
-	import type { VideoMetadata } from '$lib/video/types';
+	import type { VideoEditRecipe, VideoMetadata } from '$lib/video/types';
 	import { ProtectedIcon } from '$lib/themes/icons';
 	import VideoCropOverlay from './video-crop-overlay.svelte';
 
@@ -84,6 +82,7 @@
 		sourceURL = url;
 		metadata = null;
 		const sequence = ++probeSequence;
+		const controller = new AbortController();
 		loading = true;
 		error = '';
 		selectedAspect = 'original';
@@ -91,17 +90,23 @@
 		cropZoom = 100;
 		cropSupported = null;
 		currentTime = 0;
-		void probeVideo(currentFile)
+		void import('$lib/video/prepare')
+			.then(({ probeVideo }) => {
+				controller.signal.throwIfAborted();
+				return probeVideo(currentFile, controller.signal);
+			})
 			.then(async (details) => {
 				if (sequence !== probeSequence) return;
 				metadata = details;
 				trimStart = 0;
 				trimEnd = details.durationSeconds;
+				let supported = false;
 				try {
-					cropSupported = Boolean(await firstPlatformVideoCodec(details.width, details.height));
+					supported = Boolean(await firstPlatformVideoCodec(details.width, details.height));
 				} catch {
-					cropSupported = false;
+					// Failed encoder checks leave cropping unavailable.
 				}
+				if (sequence === probeSequence) cropSupported = supported;
 			})
 			.catch((cause) => {
 				if (sequence !== probeSequence) return;
@@ -112,6 +117,8 @@
 			});
 		return () => {
 			probeSequence += 1;
+			controller.abort();
+			if (!completing) renderController?.abort();
 			URL.revokeObjectURL(url);
 		};
 	}
@@ -169,25 +176,34 @@
 		rendering = true;
 		renderProgress = 0;
 		error = '';
-		renderController = new AbortController();
+		const currentFile = file;
+		const recipe: VideoEditRecipe = {
+			version: 1,
+			trim: { startSeconds: trimStart, endSeconds: trimEnd },
+			crop
+		};
+		const controller = new AbortController();
+		renderController = controller;
 		try {
+			const { renderVideoEdit } = await import('$lib/video/editor');
+			controller.signal.throwIfAborted();
 			const edited = await renderVideoEdit(
-				file,
-				{
-					version: 1,
-					trim: { startSeconds: trimStart, endSeconds: trimEnd },
-					crop
-				},
+				currentFile,
+				recipe,
 				(progress) => (renderProgress = Math.max(renderProgress, progress)),
-				renderController.signal
+				controller.signal
 			);
+			controller.signal.throwIfAborted();
 			await finish(edited);
 		} catch (cause) {
+			if (controller.signal.aborted) return;
 			if (cause instanceof DOMException && cause.name === 'AbortError') return;
 			error = videoPreparationErrorMessage(cause, m.compose_upload_failed());
 		} finally {
-			rendering = false;
-			renderController = null;
+			if (renderController === controller) {
+				rendering = false;
+				renderController = null;
+			}
 		}
 	}
 
@@ -273,7 +289,7 @@
 
 <Dialog.Root {open} onOpenChange={handleOpenChange}>
 	<Dialog.Content
-		class="grid max-h-dvh gap-0 overflow-hidden p-0 sm:max-h-[calc(100dvh-2rem)] sm:max-w-4xl"
+		class="grid max-h-dvh grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-h-[calc(100dvh-2rem)] sm:max-w-4xl"
 		showCloseButton={!rendering}
 		onInteractOutside={(event) => rendering && event.preventDefault()}
 		onEscapeKeydown={(event) => rendering && event.preventDefault()}

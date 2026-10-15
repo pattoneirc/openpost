@@ -2,10 +2,9 @@
  * Snapshot capture/restore/equality over the timeline store.
  *
  * All store updates happen synchronously so undo/redo never exposes
- * intermediate states. Equality uses reference comparison — actions must
- * replace arrays/objects rather than mutate them in place for history
- * deduplication to work (the private mutators re-index and mark dirty but
- * the action layer replaces `items` via `_setItems` when shapes change).
+ * intermediate states. Capture deep-copies authored state because timeline
+ * actions can mutate items in place. Equality compares those copies
+ * structurally before recording an undo entry.
  *
  * Ported from FreeCut (MIT) — commands/snapshot.ts.
  */
@@ -82,14 +81,9 @@ export function restoreSnapshot(
 
 export function snapshotsEqual(a: TimelineSnapshot, b: TimelineSnapshot): boolean {
 	// Snapshots are deep copies (captureSnapshot clones), so equality is
-	// structural: JSON comparison keeps history dedup honest despite the
-	// store mutating item objects in place during edits.
+	// structural. Check scalars and small collections before serializing clips
+	// and nested sequences, so marker, track and master-bus edits can return early.
 	return (
-		JSON.stringify(a.items) === JSON.stringify(b.items) &&
-		JSON.stringify(a.tracks) === JSON.stringify(b.tracks) &&
-		JSON.stringify(a.transitions) === JSON.stringify(b.transitions) &&
-		JSON.stringify(a.markers) === JSON.stringify(b.markers) &&
-		JSON.stringify(a.sequenceRegistry) === JSON.stringify(b.sequenceRegistry) &&
 		a.inPoint === b.inPoint &&
 		a.outPoint === b.outPoint &&
 		a.fps === b.fps &&
@@ -98,6 +92,11 @@ export function snapshotsEqual(a: TimelineSnapshot, b: TimelineSnapshot): boolea
 		a.currentFrame === b.currentFrame &&
 		a.masterVolumeDb === b.masterVolumeDb &&
 		a.masterMuted === b.masterMuted &&
-		JSON.stringify(a.busAudioEq ?? null) === JSON.stringify(b.busAudioEq ?? null)
+		JSON.stringify(a.busAudioEq ?? null) === JSON.stringify(b.busAudioEq ?? null) &&
+		JSON.stringify(a.tracks) === JSON.stringify(b.tracks) &&
+		JSON.stringify(a.transitions) === JSON.stringify(b.transitions) &&
+		JSON.stringify(a.markers) === JSON.stringify(b.markers) &&
+		JSON.stringify(a.items) === JSON.stringify(b.items) &&
+		JSON.stringify(a.sequenceRegistry) === JSON.stringify(b.sequenceRegistry)
 	);
 }

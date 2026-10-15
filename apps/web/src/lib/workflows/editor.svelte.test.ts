@@ -48,6 +48,8 @@ const workspace: Workspace = {
 	organization_name: '',
 	role: 'admin',
 	can_edit: true,
+	can_connect: true,
+	can_approve: true,
 	sso_required: false,
 	sso_authenticated: true,
 	sso_identity_linked: true
@@ -237,7 +239,7 @@ it('keeps immutable run layout read-only and separate from device-local editor p
 	vi.mocked(client.GET).mockImplementation(
 		async (path) =>
 			({
-				data: path === '/workflow-runs' ? [run] : run,
+				data: path === '/workflow-run-summaries' ? [run] : run,
 				response: new Response()
 			}) as never
 	);
@@ -404,7 +406,10 @@ it.each(
 		// SAFETY: The editor reads only the run list and run detail in this case; both fixtures satisfy their declared response shapes.
 		vi.mocked(client.GET).mockImplementation(
 			async (path) =>
-				({ data: path === '/workflow-runs' ? [queued] : run, response: new Response() }) as never
+				({
+					data: path === '/workflow-run-summaries' ? [queued] : run,
+					response: new Response()
+				}) as never
 		);
 		const screen = await render(
 			Editor,
@@ -475,7 +480,10 @@ it.each(
 		// SAFETY: Both history endpoints return the complete immutable run fixture; no other GET is used by this case.
 		vi.mocked(client.GET).mockImplementation(
 			async (path) =>
-				({ data: path === '/workflow-runs' ? [run] : run, response: new Response() }) as never
+				({
+					data: path === '/workflow-run-summaries' ? [run] : run,
+					response: new Response()
+				}) as never
 		);
 		const screen = await render(
 			Editor,
@@ -662,7 +670,10 @@ it.each([
 		// SAFETY: These history requests return the complete typed Run fixture or its list.
 		vi.mocked(client.GET).mockImplementation(
 			async (path) =>
-				({ data: path === '/workflow-runs' ? [run] : run, response: new Response() }) as never
+				({
+					data: path === '/workflow-run-summaries' ? [run] : run,
+					response: new Response()
+				}) as never
 		);
 		const screen = await render(
 			Editor,

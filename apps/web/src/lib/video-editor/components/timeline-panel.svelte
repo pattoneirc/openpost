@@ -278,7 +278,8 @@
 		canLinkSelection,
 		expandSelectionWithLinkedItems,
 		getLinkedSyncOffsetFrames,
-		getSynchronizedLinkedItems
+		getSynchronizedLinkedItems,
+		getSynchronizedLinkedSelection
 	} from '$lib/video-editor/timeline/utils/linked-items';
 	import TimelineLinkedSyncBadge from './timeline-linked-sync-badge.svelte';
 	import { canDetachAudio, detachAudio } from '../timeline/actions/detach-audio';
@@ -3153,12 +3154,8 @@
 		breakingTransitionPreviewIds = breakingTransitionIds;
 		const editItems = unlockedEditItems(beforeSnapshot);
 		const moveSelectionIds = selectedItemIds.includes(id) ? selectedItemIds : [id];
-		const synchronizedIds = Array.from(
-			new Set(
-				moveSelectionIds.flatMap((selectedId) =>
-					getSynchronizedLinkedItems(editItems, selectedId).map((candidate) => candidate.id)
-				)
-			)
+		const synchronizedIds = getSynchronizedLinkedSelection(editItems, moveSelectionIds).map(
+			(candidate) => candidate.id
 		);
 		const rippleDownstreamIds = ripple
 			? editItems

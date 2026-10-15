@@ -88,6 +88,10 @@ export default defineConfig({
         OPENPOST_DIAGNOSTICS_ENABLED: "false",
         OPENPOST_DIAGNOSTICS_INGEST_ENABLED: "false",
         OPENPOST_TELEMETRY_ENABLED: "false",
+        // The local suite simulates distinct clients through its controlled loopback upstream.
+        OPENPOST_TRUSTED_PROXY_CIDRS: "127.0.0.1/32,::1/128",
+        // The isolated test server runs all roles after migration, so review admission is safe.
+        OPENPOST_CLIENT_REVIEWS_ENABLED: "true",
         // Stored Builder fixtures exercise mutations without sending generation requests.
         OPENROUTER_API_KEY: "e2e-unused-openrouter-key",
       },

@@ -9,7 +9,7 @@ type MagicScanWorkerResponse =
 	| { type: 'error'; id: string; name: string; message: string };
 
 export class ImageEditorMagicScan {
-	private worker: Worker | null = null;
+	private cancelWorker: (() => void) | null = null;
 	private activeID = '';
 
 	async scan(
@@ -26,28 +26,42 @@ export class ImageEditorMagicScan {
 		const id = crypto.randomUUID();
 		this.activeID = id;
 		if (typeof Worker === 'undefined' || pixels < WORKER_PIXEL_THRESHOLD) {
-			return scanMagicPixels(input, {
-				shouldCancel: () => options.signal?.aborted === true || this.activeID !== id,
-				onProgress: options.onProgress
-			});
+			const cancelled = () => options.signal?.aborted === true || this.activeID !== id;
+			try {
+				if (cancelled()) throw new DOMException('Pixel scan cancelled.', 'AbortError');
+				const mask = await scanMagicPixels(input, {
+					shouldCancel: cancelled,
+					onProgress: options.onProgress
+				});
+				if (cancelled()) throw new DOMException('Pixel scan cancelled.', 'AbortError');
+				return mask;
+			} finally {
+				if (this.activeID === id) this.activeID = '';
+			}
 		}
 		const worker = new Worker(new URL('./magic-scan.worker.ts', import.meta.url), {
 			type: 'module'
 		});
-		this.worker = worker;
 		return new Promise<Uint8Array>((resolve, reject) => {
-			const abort = () => worker.postMessage({ type: 'cancel', id });
+			let settled = false;
+			const abort = () =>
+				finish(() => reject(new DOMException('Pixel scan cancelled.', 'AbortError')));
 			const finish = (complete: () => void): void => {
+				if (settled) return;
+				settled = true;
 				options.signal?.removeEventListener('abort', abort);
 				worker.terminate();
-				if (this.worker === worker) this.worker = null;
-				if (this.activeID === id) this.activeID = '';
+				if (this.activeID === id) {
+					this.activeID = '';
+					this.cancelWorker = null;
+				}
 				complete();
 			};
+			this.cancelWorker = abort;
 			options.signal?.addEventListener('abort', abort, { once: true });
 			worker.onmessage = (event: MessageEvent<MagicScanWorkerResponse>) => {
 				const message = event.data;
-				if (message.id !== id) return;
+				if (settled || message.id !== id) return;
 				if (message.type === 'progress') options.onProgress?.(message.fraction);
 				if (message.type === 'complete') finish(() => resolve(message.mask));
 				if (message.type === 'error') {
@@ -65,20 +79,21 @@ export class ImageEditorMagicScan {
 				finish(() => reject(new DOMException('Pixel scan cancelled.', 'AbortError')));
 				return;
 			}
-			const data = Uint8Array.from(input.data);
-			worker.postMessage({ type: 'scan', id, ...input, data }, [data.buffer]);
+			try {
+				const data = input.data.slice();
+				worker.postMessage({ type: 'scan', id, ...input, data }, [data.buffer]);
+			} catch (error) {
+				finish(() => reject(error));
+			}
 		});
 	}
 
 	cancel(): void {
-		if (this.worker && this.activeID)
-			this.worker.postMessage({ type: 'cancel', id: this.activeID });
+		this.cancelWorker?.();
 		this.activeID = '';
 	}
 
 	dispose(): void {
 		this.cancel();
-		this.worker?.terminate();
-		this.worker = null;
 	}
 }

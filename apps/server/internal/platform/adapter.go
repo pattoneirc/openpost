@@ -152,6 +152,9 @@ type MediaItem struct {
 }
 
 type UploadMediaRequest struct {
+	// BeforeWrite revalidates the owning publication immediately before upload
+	// mutations. Resumable adapters must leave read-only reconciliation available.
+	BeforeWrite       func(context.Context) error
 	MimeType          string
 	Filename          string
 	Size              int64
@@ -171,6 +174,13 @@ type UploadMediaRequest struct {
 	// Resumable adapters use it after a worker restart or an ambiguous network
 	// response; ordinary upload adapters can keep using Reader.
 	OpenReaderAt func(offset int64) (io.ReadCloser, error)
+}
+
+func checkUploadWrite(ctx context.Context, req UploadMediaRequest) error {
+	if req.BeforeWrite != nil {
+		return req.BeforeWrite(ctx)
+	}
+	return nil
 }
 
 // DirectMediaPublisher is an optional publishing extension for providers, such

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/openpost/backend/internal/idempotency"
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/services/entitlements"
@@ -365,4 +366,30 @@ func TestJoinedTextCardEchoedMediaKeepsInheritance(t *testing.T) {
 	}}, canonical, sources)
 	require.NoError(t, err)
 	require.True(t, joined.SourceOverrides[0].MediaInherited)
+}
+
+func TestTextCardPreviewRateLimitProtectsAllPreviewCallers(t *testing.T) {
+	srv := newMCPTestServer(t)
+	_, err := srv.db.NewUpdate().Model((*models.SocialAccount)(nil)).Set("platform = 'pixelfed'").Where("id = 'account-1'").Exec(t.Context())
+	require.NoError(t, err)
+	userID := "preview-rate-" + uuid.NewString()
+	_, err = srv.db.NewUpdate().Model((*models.WorkspaceMember)(nil)).Set("user_id = ?", userID).Where("workspace_id = ?", "ws-1").Exec(t.Context())
+	require.NoError(t, err)
+	h := srv.handler.publicationHandler()
+	input := &PreviewTextCardInput{}
+	input.Body.SocialAccountID = "account-1"
+	input.Body.Text = "Preview"
+	input.Body.Settings = map[string]any{"text_card_shadow": false}
+	// Fill prior admissions directly; only the final allowed call needs a real
+	// image. Rendering 30 cards under -race can outlast the one-minute window.
+	for range 29 {
+		require.True(t, textCardPreviewLimiter.Allow("text-card-preview:"+userID, 30, time.Minute))
+	}
+	_, err = h.previewTextCardForUser(t.Context(), userID, input)
+	require.NoError(t, err)
+	_, err = h.previewTextCardForUser(t.Context(), userID, input)
+	require.ErrorContains(t, err, "rate limited")
+	var status interface{ GetStatus() int }
+	require.ErrorAs(t, err, &status)
+	require.Equal(t, http.StatusTooManyRequests, status.GetStatus())
 }

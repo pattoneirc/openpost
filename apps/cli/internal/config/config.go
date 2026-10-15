@@ -181,6 +181,9 @@ func Save(cfg Config) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
+	if err := f.Chmod(0600); err != nil {
+		return err
+	}
 	enc := toml.NewEncoder(f)
 	return enc.Encode(cfg)
 }

@@ -733,7 +733,8 @@ func (h *OIDCHandler) completeLoginCallback(
 	if err != nil {
 		return nil, err
 	}
-	claims, err := h.auth.auth.ValidateToken(authResponse.Body.Token)
+	sessionToken := cookieFromString(authResponse.SetCookie).Value
+	claims, err := h.auth.auth.ValidateToken(sessionToken)
 	if err != nil || claims.SessionID == "" {
 		return nil, huma.Error500InternalServerError("failed to create OIDC session")
 	}
@@ -758,7 +759,7 @@ func (h *OIDCHandler) completeLoginCallback(
 		ctx,
 		completion.User.ID,
 		claims.SessionID,
-		authResponse.Body.Token,
+		sessionToken,
 	)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("failed to create native OIDC handoff")

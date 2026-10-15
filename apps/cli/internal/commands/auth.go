@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -287,15 +288,19 @@ func runDeviceLogin(ctx context.Context, instance string, printOnly, open bool, 
 	}
 }
 
-func openURL(ctx context.Context, url string) error {
+func openURL(ctx context.Context, rawURL string) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("browser URL must be an HTTP or HTTPS address")
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.CommandContext(ctx, "open", url)
+		cmd = exec.CommandContext(ctx, "open", rawURL)
 	case "windows":
-		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", url)
+		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
-		cmd = exec.CommandContext(ctx, "xdg-open", url)
+		cmd = exec.CommandContext(ctx, "xdg-open", rawURL)
 	}
 	return cmd.Start()
 }

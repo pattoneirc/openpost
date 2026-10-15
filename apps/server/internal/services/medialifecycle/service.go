@@ -30,6 +30,8 @@ const (
 	TemporaryIdleDays = 14
 	TemporaryIdleAge  = TemporaryIdleDays * 24 * time.Hour
 	TrashRetentionAge = 7 * 24 * time.Hour
+	// Exceeds every direct-upload signing lifetime, including slow uploads.
+	AbandonedUploadAge = 24 * time.Hour
 
 	lifecycleBatchSize           = 250
 	jsonUpdateBatchSize          = 150
@@ -339,7 +341,8 @@ func sweepLifecycleBatch(
 		WhereGroup(" AND ", func(group *bun.SelectQuery) *bun.SelectQuery {
 			return group.
 				Where("retention_class = ? AND trashed_at IS NULL AND is_favorite = ? AND COALESCE(last_used_at, created_at) <= ?", RetentionTemporary, false, now.Add(-TemporaryIdleAge)).
-				WhereOr("trashed_at IS NOT NULL AND purge_after IS NOT NULL AND purge_after <= ?", now)
+				WhereOr("trashed_at IS NOT NULL AND purge_after IS NOT NULL AND purge_after <= ?", now).
+				WhereOr("file_hash LIKE ? AND processing_status IN (?, ?, ?) AND created_at <= ?", "pending:%", "uploading", "processing", "failed", now.Add(-AbandonedUploadAge))
 		}).
 		Order("id ASC").
 		Limit(lifecycleBatchSize)
@@ -524,6 +527,9 @@ func partitionLifecycleBatch(
 }
 
 func shouldPurgeLifecycleMedia(item models.MediaAttachment, snapshot *protectionSnapshot, now time.Time) bool {
+	if strings.HasPrefix(item.FileHash, "pending:") && (item.ProcessingStatus == "uploading" || item.ProcessingStatus == "processing" || item.ProcessingStatus == "failed") && !item.CreatedAt.After(now.Add(-AbandonedUploadAge)) {
+		return !snapshot.isReferenced(item.ID)
+	}
 	return !item.TrashedAt.IsZero() &&
 		!item.PurgeAfter.IsZero() &&
 		!item.PurgeAfter.After(now) &&

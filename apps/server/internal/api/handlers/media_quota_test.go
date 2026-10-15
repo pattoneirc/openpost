@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -224,4 +227,120 @@ func TestUploadMediaVerifiesPublicURLAfterPersistingRecord(t *testing.T) {
 	require.NoError(t, srv.db.NewSelect().Model(&media).Scan(t.Context()))
 	require.True(t, media.PublicURLReady)
 	require.Equal(t, http.StatusOK, media.PublicURLStatus)
+}
+
+// Both requests pass the preliminary stored-byte check before either persists.
+// Admission must still leave exactly one upload when only one fits.
+type synchronizedMediaQuota struct {
+	entitlements.Service
+	arrived   chan struct{}
+	release   chan struct{}
+	remaining atomic.Int32
+}
+
+func (q *synchronizedMediaQuota) Check(ctx context.Context, req entitlements.Request) (entitlements.Decision, error) {
+	decision, err := q.Service.Check(ctx, req)
+	if req.Limit == entitlements.LimitMediaBytesStored && q.remaining.Add(-1) >= 0 {
+		q.arrived <- struct{}{}
+		select {
+		case <-q.release:
+		case <-ctx.Done():
+			return decision, ctx.Err()
+		}
+	}
+	return decision, err
+}
+func TestUploadMediaConcurrentAdmissionHonorsByteLimits(t *testing.T) {
+	for _, limit := range []entitlements.LimitKey{entitlements.LimitMediaBytesStored, entitlements.LimitMediaBytesUploadedMonthly} {
+		t.Run(string(limit), func(t *testing.T) {
+			quota := &synchronizedMediaQuota{Service: entitlements.NewStaticService(entitlements.PlanSnapshot{Limits: map[entitlements.LimitKey]int64{limit: 4}}), arrived: make(chan struct{}, 2), release: make(chan struct{})}
+			quota.remaining.Store(2)
+			srv := newMediaQuotaTestServer(t, quota)
+			srv.db.SetMaxOpenConns(1)
+			responses := make(chan *httptest.ResponseRecorder, 2)
+			go func() { responses <- srv.upload(t, "first.txt", []byte("1234")) }()
+			go func() { responses <- srv.upload(t, "second.txt", []byte("5678")) }()
+			<-quota.arrived
+			<-quota.arrived
+			close(quota.release)
+			successful := 0
+			for range 2 {
+				if (<-responses).Code == http.StatusOK {
+					successful++
+				}
+			}
+			require.Equal(t, 1, successful)
+			var stored int64
+			require.NoError(t, srv.db.NewSelect().Model((*models.MediaAttachment)(nil)).ColumnExpr("COALESCE(SUM(size),0)").Scan(t.Context(), &stored))
+			require.Equal(t, int64(4), stored)
+			current, err := srv.usage.CurrentMonthly(t.Context(), "ws-1", entitlements.LimitMediaBytesUploadedMonthly, time.Now())
+			require.NoError(t, err)
+			require.Equal(t, int64(4), current)
+		})
+	}
+}
+
+type countedUploadReader struct {
+	reader io.Reader
+	read   int64
+}
+
+func (r *countedUploadReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += int64(n)
+	return n, err
+}
+
+type repeatedUploadBytes struct{ remaining int64 }
+
+func (r *repeatedUploadBytes) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	n := int(min(int64(len(p)), r.remaining))
+	for i := range p[:n] {
+		p[i] = 'x'
+	}
+	r.remaining -= int64(n)
+	return n, nil
+}
+func TestLegacyUploadRejectsOverAllowanceBeforeSpoolingFullBody(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		declared, authorized bool
+	}{{"declared", true, true}, {"streamed", false, true}, {"no authorized workspace", false, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newMediaQuotaTestServer(t, entitlements.NewStaticService(entitlements.PlanSnapshot{Limits: map[entitlements.LimitKey]int64{entitlements.LimitMediaBytesStored: 4}}))
+			if !tc.authorized {
+				_, err := srv.db.NewDelete().Model((*models.WorkspaceMember)(nil)).Where("user_id = ?", "user-1").Exec(t.Context())
+				require.NoError(t, err)
+			}
+			prefix := "--bounded\r\nContent-Disposition: form-data; name=\"file\"; filename=\"huge.mp4\"\r\nContent-Type: video/mp4\r\n\r\n"
+			suffix := "\r\n--bounded\r\nContent-Disposition: form-data; name=\"workspace_id\"\r\n\r\nws-1\r\n--bounded--\r\n"
+			body := &countedUploadReader{reader: io.MultiReader(strings.NewReader(prefix), &repeatedUploadBytes{remaining: 100 * 1024 * 1024}, strings.NewReader(suffix))}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/media/upload", body)
+			if tc.declared {
+				req.ContentLength = int64(len(prefix)+len(suffix)) + 100*1024*1024
+			} else {
+				req.ContentLength = -1
+			}
+			req.Header.Set("Content-Type", "multipart/form-data; boundary=bounded")
+			req.Header.Set("Authorization", "Bearer web-token")
+			resp := httptest.NewRecorder()
+			srv.echo.ServeHTTP(resp, req)
+			if tc.authorized {
+				require.Equal(t, http.StatusRequestEntityTooLarge, resp.Code)
+			} else {
+				require.Equal(t, http.StatusForbidden, resp.Code)
+			}
+			if tc.declared || !tc.authorized {
+				require.Zero(t, body.read)
+			} else {
+				require.LessOrEqual(t, body.read, MaxBufferedMediaUploadBytes+512*1024+1)
+			}
+			count, err := srv.db.NewSelect().Model((*models.MediaAttachment)(nil)).Count(t.Context())
+			require.NoError(t, err)
+			require.Zero(t, count)
+		})
+	}
 }

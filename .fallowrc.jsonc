@@ -55,7 +55,11 @@
       "entryPoints": ["scripts/**/*.{js,mjs,ts}"],
       "entryPointRole": "support",
       "toolingDependencies": [
+        "@iconify-json/heroicons",
         "@iconify-json/lucide",
+        "@iconify-json/ph",
+        "@iconify-json/tabler",
+        "@iconify/utils",
         "@napi-rs/canvas",
         "js-yaml",
         "parse5",

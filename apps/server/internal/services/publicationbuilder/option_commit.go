@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -141,13 +142,20 @@ func (application *Application) SaveOption(ctx context.Context, userID, buildID,
 	if err != nil {
 		return Build{}, err
 	}
-	if build.State != BuildStateReady || build.Result == nil || build.Result.SelectedOptionID != "" || build.Revision != revision {
+	if build.State != BuildStateReady || build.Result == nil || build.Result.SelectedOptionID != "" {
 		return Build{}, ErrBuildNotReady
 	}
 	index := slices.IndexFunc(build.Result.Options, func(option PostOption) bool { return option.ID == optionID })
 	if index < 0 {
 		return Build{}, ErrInvalidOption
 	}
+	if build.Revision != revision {
+		if build.Revision == revision+1 && optionEditsMatch(build.Result.Options[index], edits) {
+			return build, nil
+		}
+		return Build{}, ErrBuildNotReady
+	}
+
 	edited := build.Result.Options[index].Result()
 	if err := applyOptionEdits(&edited, optionValidationInput(build), edits); err != nil {
 		return Build{}, errors.Join(ErrInvalidOption, err)
@@ -282,4 +290,19 @@ func (application *Application) loadOptionRequest(ctx context.Context, userID, b
 		return BuildRecord{}, persistedBuildRequest{}, ErrBuildNotReady
 	}
 	return record, request, nil
+}
+
+// An exact replay after a lost response is a read, never a stale overwrite.
+func optionEditsMatch(option PostOption, edits []OptionEdit) bool {
+	for _, edit := range edits {
+		index := slices.IndexFunc(option.Destinations, func(plan DestinationPlan) bool { return plan.AccountID == edit.AccountID })
+		if index < 0 {
+			return false
+		}
+		plan := option.Destinations[index]
+		if !reflect.DeepEqual(plan.Segments, edit.Segments) || (edit.Document != nil && !reflect.DeepEqual(plan.Media.Document, edit.Document)) {
+			return false
+		}
+	}
+	return true
 }

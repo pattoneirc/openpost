@@ -117,21 +117,25 @@ type ListPublicationsInput struct {
 }
 
 type PublicationResponse struct {
-	ID                   string                       `json:"id"`
-	WorkspaceID          string                       `json:"workspace_id"`
-	CreatedByID          string                       `json:"created_by"`
-	Title                string                       `json:"title"`
-	Intent               string                       `json:"intent"`
-	CreationPreset       string                       `json:"creation_preset"`
-	CreationSource       string                       `json:"creation_source" enum:"web,api,sdk,mcp,cli,autopost,unknown" doc:"Low-cardinality channel that created the Publication"`
-	SocialSetID          string                       `json:"social_set_id,omitempty"`
-	ContentProfile       string                       `json:"content_profile"`
-	SourceText           string                       `json:"source_text"`
-	SourceURL            string                       `json:"source_url,omitempty"`
-	Goal                 string                       `json:"goal,omitempty"`
-	Audience             string                       `json:"audience,omitempty"`
-	Status               string                       `json:"status"`
-	Revision             int                          `json:"revision"`
+	ID             string `json:"id"`
+	WorkspaceID    string `json:"workspace_id"`
+	CreatedByID    string `json:"created_by"`
+	Title          string `json:"title"`
+	Intent         string `json:"intent"`
+	CreationPreset string `json:"creation_preset"`
+	CreationSource string `json:"creation_source" enum:"web,api,sdk,mcp,cli,autopost,unknown" doc:"Low-cardinality channel that created the Publication"`
+	SocialSetID    string `json:"social_set_id,omitempty"`
+	ContentProfile string `json:"content_profile"`
+	SourceText     string `json:"source_text"`
+	SourceURL      string `json:"source_url,omitempty"`
+	Goal           string `json:"goal,omitempty"`
+	Audience       string `json:"audience,omitempty"`
+	Status         string `json:"status"`
+	Revision       int    `json:"revision"`
+	ReviewID       string `json:"review_id,omitempty"`
+	ReviewEpoch    int    `json:"review_epoch,omitempty"`
+	ReviewState    string `json:"review_state,omitempty" enum:"pending,approved,changes_requested,needs_review"`
+
 	ScheduledAt          string                       `json:"scheduled_at,omitempty"`
 	ActualRunAt          string                       `json:"actual_run_at,omitempty"`
 	FailureDismissedAt   string                       `json:"failure_dismissed_at,omitempty"`

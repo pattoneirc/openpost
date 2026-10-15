@@ -90,6 +90,8 @@ func TestWorkflowHTTPPreviewAndLiveDraftApproval(t *testing.T) {
 	var post models.Publication
 	require.NoError(t, db.NewSelect().Model(&post).Where("id = ?", publicationID).Scan(t.Context()))
 	require.Equal(t, "A real native draft", post.SourceText)
+	_, err = db.NewUpdate().Model((*models.WorkspaceMember)(nil)).Set("role = ?", models.WorkspaceRoleClient).Where("workspace_id = ? AND user_id = ?", "ws", "user").Exec(t.Context())
+	require.NoError(t, err)
 	_, err = db.NewUpdate().Model((*models.Publication)(nil)).Set("revision = revision + 1, source_text = ?", "Edited after review").Where("id = ?", post.ID).Exec(t.Context())
 	require.NoError(t, err)
 	conflict := request(http.MethodPost, "/workflow-runs/"+live.ID+"/approve?workspace_id=ws", map[string]any{"expected_revision": live.Revision, "publication_revision": post.Revision}, http.StatusConflict)

@@ -193,10 +193,8 @@ assert.match(notFound, /<meta name="robots" content="noindex" \/>/);
 assert.ok(notFound.includes(`<h1>${marketingErrorRecovery.title}</h1>`));
 assert.ok(notFound.includes(marketingErrorRecovery.description));
 assert.ok(notFound.includes(marketingErrorRecovery.primary.label));
-for (const route of marketingErrorRecovery.routes) {
-	assert.ok(notFound.includes(`href="${route.href}"`));
-	assert.ok(notFound.includes(route.label));
-}
+assert.ok(notFound.includes(`href="${marketingErrorRecovery.help.href}"`));
+assert.ok(notFound.includes(`src="${marketingErrorRecovery.illustration}"`));
 assert.doesNotMatch(
 	notFound,
 	/(?:href|src)="\.\/_app\//,

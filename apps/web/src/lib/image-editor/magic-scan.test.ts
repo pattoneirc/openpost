@@ -12,6 +12,29 @@ function image(width: number, height: number): Uint8ClampedArray {
 }
 
 describe('OpenPost Image Editor cancellable magic pixel scan', () => {
+	it.each([true, false])(
+		'rejects an already-cancelled small scan, contiguous=%s',
+		async (contiguous) => {
+			const scanner = new ImageEditorMagicScan();
+			const controller = new AbortController();
+			controller.abort();
+			await expect(
+				scanner.scan(
+					{
+						width: 1,
+						height: 1,
+						data: new Uint8ClampedArray(4),
+						point: { x: 0, y: 0 },
+						tolerance: 0,
+						contiguous
+					},
+					{ signal: controller.signal }
+				)
+			).rejects.toMatchObject({ name: 'AbortError' });
+			scanner.dispose();
+		}
+	);
+
 	it('treats alpha as part of the match and preserves contiguous semantics', async () => {
 		const data = image(6, 4);
 		const transparent = await scanMagicPixels({
@@ -74,6 +97,27 @@ describe('OpenPost Image Editor cancellable magic pixel scan', () => {
 			contiguous: false
 		});
 		expect(Array.from(mask)).toEqual([1, 1, 0, 1]);
+	});
+
+	it('follows branching four-connected spans without crossing separate regions', async () => {
+		const rows = ['AABBAA', 'BAABBA', 'BBABBA', 'BAAABA', 'BBBBBA'];
+		const data = new Uint8ClampedArray(
+			rows
+				.join('')
+				.split('')
+				.flatMap((pixel) => (pixel === 'A' ? [230, 0, 0, 255] : [0, 0, 0, 255]))
+		);
+		const mask = await scanMagicPixels({
+			width: 6,
+			height: 5,
+			data,
+			point: { x: 0, y: 0 },
+			tolerance: 0,
+			contiguous: true
+		});
+		expect(Array.from(mask)).toEqual([
+			1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0
+		]);
 	});
 
 	it('rejects unsafe image dimensions before allocating a worker scan', async () => {

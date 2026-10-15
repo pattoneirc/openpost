@@ -225,6 +225,10 @@ it('reorders from the rendered thumbnail without importing it and commits one hi
 		const first = screen.getByRole('button', { name: /Page 1: First/ });
 		const third = screen.getByRole('button', { name: /Page 3: Third/ });
 		await expect.poll(() => third.element().querySelector('img')).not.toBeNull();
+		const thumbnail = third.element().querySelector('img')!;
+		// The element exists before its blob image has decoded. Start the native
+		// drag only once the rendered thumbnail has its final image dimensions.
+		await thumbnail.decode();
 		const source = third.element();
 		let dragOwner: EventTarget | null = null;
 		source.addEventListener(
@@ -234,7 +238,7 @@ it('reorders from the rendered thumbnail without importing it and commits one hi
 			},
 			{ once: true }
 		);
-		await userEvent.dragAndDrop(source.querySelector('img')!, first);
+		await userEvent.dragAndDrop(thumbnail, first);
 		await expect.element(screen.getByRole('button', { name: /Page 1: Third/ })).toHaveFocus();
 		await Promise.all(
 			screen.container
@@ -497,4 +501,32 @@ it('ungroups selected nested groups into the surviving ancestor and preserves it
 	} finally {
 		await deleteGuestImageEditorDesign(stored.id);
 	}
+});
+
+it('resolves group destinations when opening a layer menu and follows changed locks', async () => {
+	const editor = setup();
+	const screen = await render(Fixture, { editor });
+	const other = screen.getByRole('treeitem', { name: /Other, shape/ });
+	await other.click({ button: 'right' });
+	const move = screen.getByRole('menuitem', { name: 'Move into group', exact: true });
+	await expect.element(move).toBeVisible();
+	editor.updateLayer('Group', { locked: true });
+	await expect.element(move).not.toBeInTheDocument();
+	editor.updateLayer('Group', { locked: false });
+	await expect.element(move).toBeVisible();
+	await userEvent.hover(move);
+	await screen.getByRole('menuitem', { name: 'Move into Group', exact: true }).click();
+	expect(editor.activePage?.layers.find((layer) => layer.id === 'Other')?.parent_id).toBe('Group');
+	editor.undo();
+	editor.updateLayer('Group', { locked: true });
+	await other.click({ button: 'right' });
+	await expect
+		.element(screen.getByRole('menuitem', { name: 'Rename layer', exact: true }))
+		.toBeVisible();
+	await expect.element(move).not.toBeInTheDocument();
+	await userEvent.keyboard('{Escape}');
+	editor.updateLayer('Group', { locked: false });
+	await other.click({ button: 'right' });
+	await expect.element(move).toBeVisible();
+	await userEvent.keyboard('{Escape}');
 });

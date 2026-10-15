@@ -1466,6 +1466,22 @@ export const docsPageCatalog = Object.freeze([
     }
   },
   {
+    "page": "self-hosting/umbrelos.mdx",
+    "title": "Install on umbrelOS",
+    "description": "Run OpenPost on umbrelOS through Portainer, check the local installation, and set up public access before connecting social accounts.",
+    "route": "/self-hosting/umbrelos",
+    "agentRepresentation": {
+      "membership": "ordinary"
+    },
+    "agentDiscovery": {
+      "membership": "unlisted"
+    },
+    "agentCorpus": {
+      "membership": "included",
+      "section": "self-hosting"
+    }
+  },
+  {
     "page": "self-hosting/zimaos.mdx",
     "title": "Install OpenPost on ZimaOS with Docker Compose",
     "description": "Import OpenPost as a ZimaOS custom app, set your device IP and secrets, then check readiness before connecting social accounts.",

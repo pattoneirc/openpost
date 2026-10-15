@@ -9,6 +9,7 @@ import (
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/platform"
 	"github.com/openpost/backend/internal/services/lifecycle"
+	"github.com/openpost/backend/internal/services/publicationauth"
 )
 
 // firstCommentSettingsForSegments resolves the follow-up comment settings for a
@@ -63,7 +64,11 @@ func (s *Service) publishFirstCommentBestEffort(
 		"provider_key":       providerKey,
 		"parent_external_id": externalID,
 	})
-	commentID, err := poster.PostFirstComment(ctx, token, accountID, externalID, message)
+	var commentID string
+	err := publicationauth.RequireReview(ctx, s.db, publication.ID)
+	if err == nil {
+		commentID, err = poster.PostFirstComment(ctx, token, accountID, externalID, message)
+	}
 	if err != nil {
 		log.Printf("[Publisher] first comment for rendition %s failed: %v", rendition.ID, err)
 		s.recordPublicationLifecycleEvent(ctx, publication.WorkspaceID, publication.ID, rendition.ID, lifecycle.EventModerationActionFailed, lifecycle.StatusFailed, "first comment publish failed", map[string]any{

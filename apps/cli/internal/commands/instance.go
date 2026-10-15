@@ -570,6 +570,8 @@ func tailRedactedLogFile(path string, limit int) ([]string, error) {
 }
 
 var diagnosticRedactionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(--token(?:=|\s+))[^\s]+`),
+	regexp.MustCompile(`()(op_cli_[A-Za-z0-9_-]+)`),
 	regexp.MustCompile(`(?i)(authorization:\s*bearer\s+)[^\s]+`),
 	regexp.MustCompile(`(?i)("?(?:access_token|refresh_token|client_secret|jwt_secret|encryption_key)"?\s*[:=]\s*"?)[^"\s,]+`),
 	regexp.MustCompile(`(?i)((?:token|secret|password|api[_-]?key|client[_-]?secret|jwt[_-]?secret|encryption[_-]?key)\s*=\s*)[^\s]+`),

@@ -4,6 +4,7 @@ import { createNewProject } from './project';
 import type { QuickCutSource } from './types';
 import {
 	quickCutCloudDocument,
+	listQuickCutCloudProjects,
 	quickCutProjectFromCloudDocument,
 	loadQuickCutCloudProject,
 	quickCutCloudRepository,
@@ -51,6 +52,27 @@ function remote(document: QuickCutCloudDocument): CloudVideoProject<QuickCutClou
 }
 
 describe('Quick Cut cloud projects', () => {
+	it('lists only Quick Cut summaries without needing authored documents', async () => {
+		const metadata = {
+			id: 'quick',
+			workspaceId: 'workspace-1',
+			name: 'Quick Cut',
+			headRevision: 1,
+			syncStatus: 'synced' as const,
+			attentionReason: '',
+			trashedAt: '',
+			updatedAt: '2026-10-13T20:00:00Z'
+		};
+		const summaries = [
+			{ ...metadata, schemaFamily: 'quick-cut' },
+			{ ...metadata, id: 'video', schemaFamily: 'openpost' },
+			{ ...metadata, id: 'legacy', schemaFamily: '' }
+		];
+		const result = await listQuickCutCloudProjects({ listSummaries: async () => summaries });
+		expect(result.map((project) => project.id)).toEqual(['quick']);
+		expect(result[0]).not.toHaveProperty('document');
+	});
+
 	it('constructs the concrete cloud repository used by the route', () => {
 		expect(quickCutCloudRepository('workspace-1').workspaceId).toBe('workspace-1');
 	});
@@ -135,7 +157,7 @@ describe('Quick Cut cloud projects', () => {
 		const download = vi.fn().mockResolvedValue(new Blob(['video'], { type: 'video/mp4' }));
 		const repository = {
 			workspaceId: 'workspace-1',
-			list: vi.fn(),
+			listSummaries: vi.fn(),
 			get: vi.fn().mockResolvedValue(cloudProject),
 			createWithId: vi.fn(),
 			save: vi.fn(),
@@ -161,7 +183,7 @@ describe('Quick Cut cloud projects', () => {
 		const cloudProject = remote(quickCutCloudDocument(project));
 		const repository = {
 			workspaceId: 'workspace-1',
-			list: vi.fn(),
+			listSummaries: vi.fn(),
 			get: vi.fn().mockResolvedValue(cloudProject),
 			createWithId: vi.fn(),
 			save: vi.fn(),

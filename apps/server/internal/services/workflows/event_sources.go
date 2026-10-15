@@ -58,6 +58,7 @@ func (s *Service) failedItems(ctx context.Context, workspaceID string, accounts 
 		query = query.Where("rendition.social_account_id IN (?)", bun.List(accounts))
 	}
 	if record != nil {
+		query = query.Where("publication.creation_source <> ?", "autopost")
 		query = query.Where("NOT EXISTS (SELECT 1 FROM workflow_events AS event WHERE event.workflow_id = ? AND event.source_fingerprint = ? AND event.event_key = failure.id)", record.ID, record.SourceFingerprint)
 	}
 	if err := query.Scan(ctx, &rows); err != nil {

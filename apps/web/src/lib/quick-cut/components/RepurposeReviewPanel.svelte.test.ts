@@ -1,9 +1,10 @@
+import '../../../routes/layout.css';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { userEvent } from 'vitest/browser';
 import RepurposePanel from './RepurposePanel.svelte';
 import type { prepareRepurposePreview } from '../repurpose-preview';
-import type { RepurposeReviewContext } from '../repurpose-review.svelte';
+import { createRepurposeReview, type RepurposeReviewContext } from '../repurpose-review.svelte';
 
 const api = vi.hoisted(() => ({
 	request: vi.fn(),
@@ -21,10 +22,14 @@ vi.mock('$lib/query/repurpose', () => ({
 }));
 // Project storage has its own real OPFS and route coverage; this boundary observes explicit admission.
 // oxlint-disable-next-line anti-slop/no-module-mocking
-vi.mock('../repurpose-projects', () => ({ createRepurposeProjects: api.create }));
+vi.mock('../repurpose-projects', () => ({
+	createRepurposeProjects: api.create
+}));
 // Control a late media completion without adding a test-only injection prop to the product.
 // oxlint-disable-next-line anti-slop/no-module-mocking
-vi.mock('../repurpose-preview', () => ({ prepareRepurposePreview: api.preview }));
+vi.mock('../repurpose-preview', () => ({
+	prepareRepurposePreview: api.preview
+}));
 
 function context(): RepurposeReviewContext {
 	return {
@@ -35,6 +40,7 @@ function context(): RepurposeReviewContext {
 		source: {
 			id: 'source',
 			name: 'launch.mp4',
+			file: new File(['media'], 'launch.mp4'),
 			size: 10,
 			mimeType: 'video/mp4',
 			duration: 20,
@@ -183,7 +189,9 @@ test('a late AI receipt cannot populate a different workspace', async () => {
 	});
 	await screen.getByRole('button', { name: 'Find clips', exact: true }).click();
 	await expect.poll(() => api.request.mock.calls.length).toBe(1);
-	await screen.rerender({ context: { ...current, workspaceId: 'another-workspace' } });
+	await screen.rerender({
+		context: { ...current, workspaceId: 'another-workspace' }
+	});
 	finish(ready(api.request.mock.calls[0]![0]));
 	await expect
 		.element(screen.getByRole('button', { name: 'Find clips', exact: true }))
@@ -337,7 +345,12 @@ test('reopening retains completed clip links and only creates remaining candidat
 		.element(reopened.getByRole('textbox', { name: 'Start', exact: true }))
 		.toHaveValue('00:00.00');
 	await expect
-		.element(reopened.getByRole('checkbox', { name: 'Include The example', exact: true }))
+		.element(
+			reopened.getByRole('checkbox', {
+				name: 'Include The example',
+				exact: true
+			})
+		)
 		.not.toBeChecked();
 	await reopened.getByRole('checkbox', { name: 'Include The example', exact: true }).click();
 	await reopened.getByRole('button', { name: 'Create clips (1)', exact: true }).click();
@@ -365,4 +378,50 @@ test('changing bounds cancels the old preview and disposes a late prepared resul
 	finish({ url: 'blob:expired-preview', dispose });
 	await expect.poll(() => dispose.mock.calls.length).toBe(1);
 	await expect.element(screen.getByLabelText('Preview Useful lesson')).not.toBeInTheDocument();
+});
+
+test('rejects new AI requests for a disconnected source without dispatching', async () => {
+	const current = context();
+	delete current.source.file;
+	const review = createRepurposeReview(() => current);
+	await review.find('launch');
+	expect(api.request).not.toHaveBeenCalled();
+	expect(review.error).toBe('The source file is unavailable. Reconnect it and try again.');
+});
+
+test('restores a saved review offline while disabling new search and clip creation', async () => {
+	const current = context();
+	const review = createRepurposeReview(() => current);
+	await review.find('launch');
+	api.read.mockResolvedValue(ready(api.request.mock.calls[0]![0]));
+	delete current.source.file;
+	await review.createSelected();
+	const screen = await render(RepurposePanel, {
+		props: { context: current, onsave: vi.fn(), onback: vi.fn() }
+	});
+	await expect
+		.element(screen.getByRole('button', { name: 'Useful lesson', exact: true }))
+		.toBeVisible();
+	await expect
+		.element(screen.getByRole('button', { name: 'Find again', exact: true }))
+		.toBeDisabled();
+	await expect
+		.element(screen.getByRole('button', { name: 'Create clips (2)', exact: true }))
+		.toBeDisabled();
+	expect(api.request).toHaveBeenCalledTimes(1);
+	expect(api.create).not.toHaveBeenCalled();
+});
+
+test('rejects retrying a saved AI request after its source disconnects', async () => {
+	const current = context();
+	api.request.mockImplementation(async (request) => ({
+		...ready(request, []),
+		state: 'failed'
+	}));
+	const review = createRepurposeReview(() => current);
+	await review.find('launch');
+	delete current.source.file;
+	await review.retry();
+	expect(api.change).not.toHaveBeenCalled();
+	expect(review.error).toBe('The source file is unavailable. Reconnect it and try again.');
 });

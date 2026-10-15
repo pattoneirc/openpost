@@ -70,6 +70,26 @@ export async function uploadBinaryMedia(
   const upload = sessionBodyResult.upload;
   if (!upload?.url) throw new Error("OpenPost did not return an upload target.");
 
+  const completePath =
+    sessionBodyResult.complete_url ||
+    `/media/upload-session/${encodeURIComponent(sessionBodyResult.media_id)}/complete`;
+  const completeUrl = completePath.startsWith("http")
+    ? completePath
+    : openPostApiUrl(input.baseUrl, completePath.replace(/^\/api\/v1/, ""));
+  const parsedCompleteUrl = new URL(completeUrl);
+  const apiOrigin = new URL(openPostApiUrl(input.baseUrl, "/")).origin;
+  if (
+    parsedCompleteUrl.origin !== apiOrigin ||
+    parsedCompleteUrl.username ||
+    parsedCompleteUrl.password ||
+    !parsedCompleteUrl.pathname.startsWith("/api/v1/media/upload-session/") ||
+    !parsedCompleteUrl.pathname.endsWith("/complete") ||
+    parsedCompleteUrl.search ||
+    parsedCompleteUrl.hash
+  ) {
+    throw new Error("OpenPost returned an invalid upload completion URL.");
+  }
+
   const uploadOptions: IHttpRequestOptions = {
     method: (upload.method || "PUT") as IHttpRequestOptions["method"],
     url: upload.url,
@@ -81,12 +101,6 @@ export async function uploadBinaryMedia(
   };
   await context.helpers.httpRequest(uploadOptions);
 
-  const completePath =
-    sessionBodyResult.complete_url ||
-    `/media/upload-session/${encodeURIComponent(sessionBodyResult.media_id)}/complete`;
-  const completeUrl = completePath.startsWith("http")
-    ? completePath
-    : openPostApiUrl(input.baseUrl, completePath.replace(/^\/api\/v1/, ""));
   const complete = (await openPostApiRequest(
     context,
     {

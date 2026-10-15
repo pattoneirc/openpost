@@ -10,6 +10,8 @@ import { timelineStore } from '../timeline/stores/timeline-store.svelte';
 import { mediaPool } from '../media/pool.svelte';
 import { readMixerMasterLevels } from '../audio/audio-mixer';
 import { previewPlaybackSettings } from '../preview/playback-settings.svelte';
+import { toggleTrackMute } from '../timeline/actions/tracks';
+import { updateTransition } from '../timeline/actions/transitions.svelte';
 import { updateItemProperties } from '../timeline/actions/items';
 import { commandHistory } from '../timeline/commands/command-store.svelte';
 import videoFixtureUrl from '../../../../../../tests/app/fixtures/product-screenshots/study-sos-demo.mp4?url';
@@ -153,5 +155,100 @@ it.each(
 		previewPlaybackSettings.setVolume(previousVolume);
 		previewPlaybackSettings.setMuted(previousMuted);
 		vi.unstubAllGlobals();
+	}
+});
+
+it('refreshes audible clip windows after transition, timing, mute, and media readiness changes', async () => {
+	const project = createBlankProject('Audio window edits');
+	project.timeline!.items = ['left', 'right'].map((id, index) => ({
+		id,
+		type: 'audio',
+		trackId: 'track-audio',
+		label: id,
+		linkedGroupId: id,
+		mediaId: 'music',
+		from: index * 60,
+		durationInFrames: 60,
+		sourceStart: 30,
+		sourceEnd: 90,
+		sourceDuration: 300,
+		sourceFps: 30
+	}));
+	project.timeline!.items.push(
+		...project.timeline!.items.map((item) => ({
+			...item,
+			id: `visual-${item.id}`,
+			type: 'video' as const,
+			mediaId: 'visual',
+			trackId: 'track-video-main',
+			audioDetached: true
+		}))
+	);
+	project.timeline!.transitions = [
+		{
+			id: 'fade',
+			fromItemId: 'visual-left',
+			toItemId: 'visual-right',
+			type: 'crossfade',
+			durationInFrames: 20
+		}
+	];
+	mediaPool.loadAll([
+		{
+			id: 'music',
+			storageType: 'cloud',
+			remoteUrl: fixtureUrl,
+			fileName: 'music.wav',
+			fileSize: 1,
+			mimeType: 'audio/wav',
+			duration: 10,
+			width: 0,
+			height: 0,
+			fps: 0,
+			codec: 'pcm',
+			bitrate: 0,
+			audioCodec: 'pcm',
+			hasAudio: true,
+			tags: []
+		}
+	]);
+	editorSession.project = project;
+	sequenceStore.load(project.timeline!, project.metadata);
+	editorSession.stopPlayback();
+	editorSession.clock.seek(55);
+	const screen = await render(PreviewPlayer, { onedit: () => {} });
+	const audioCount = () => screen.container.querySelectorAll('audio').length;
+	try {
+		// The incoming clip starts at frame 60, with a ten-frame transition handle.
+		await expect.poll(audioCount).toBe(2);
+		updateTransition('fade', { durationInFrames: 4 });
+		await expect.poll(audioCount).toBe(1);
+		editorSession.clock.seek(59);
+		await expect.poll(audioCount).toBe(2);
+		toggleTrackMute('track-audio');
+		await expect.poll(audioCount).toBe(0);
+		toggleTrackMute('track-audio');
+		await expect.poll(audioCount).toBe(2);
+		mediaPool.setStatus('music', 'importing');
+		await expect.poll(audioCount).toBe(0);
+		mediaPool.setStatus('music', 'ready');
+		await expect.poll(audioCount).toBe(2);
+		// Removing the incoming source handle takes it out of this pre-roll frame.
+		updateItemProperties('right', { sourceStart: 0, sourceEnd: 60 });
+		await expect.poll(audioCount).toBe(1);
+		editorSession.clock.seek(60);
+		await expect.poll(audioCount).toBe(2);
+		editorSession.clock.seek(62);
+		await expect.poll(audioCount).toBe(1);
+		updateItemProperties('right', { from: 90 });
+		await expect.poll(audioCount).toBe(0);
+	} finally {
+		editorSession.stopPlayback();
+		await screen.unmount();
+		mediaPool.clear();
+		sequenceStore.reset();
+		timelineStore.__resetForTesting();
+		commandHistory.clearHistory();
+		editorSession.project = null;
 	}
 });

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newFakePieFed(_ *testing.T) *httptest.Server {
+func newFakePieFed(t *testing.T) *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/alpha/user/login", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"jwt":"piefed-jwt"}`))
@@ -104,7 +104,7 @@ func newFakePieFed(_ *testing.T) *httptest.Server {
 		}
 		_, _ = w.Write([]byte(`{"posts":[` + own + `,{"post":{"id":201,"user_id":8,"title":"Someone else's post","ap_id":"https://piefed.social/post/201","published":"2026-09-02T10:00:00Z"}}],"next_page":"2"}`))
 	})
-	return httptest.NewServer(mux)
+	return newProviderTestServer(t, mux)
 }
 
 func TestPieFedLoginAndProfile(t *testing.T) {
@@ -154,7 +154,7 @@ func TestPieFedCommunitySearch(t *testing.T) {
 func TestPieFedCommentsIncludeNestedReplies(t *testing.T) {
 	// /post/replies lists top-level comments only; each reply is nested under
 	// the comment it answers.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"comments":[` +
 			`{"comment":{"id":21,"post_id":200,"body":"Nice","published":"2026-09-01T10:00:00.000000Z","ap_id":"https://piefed.social/comment/21","path":"0.21","deleted":false,"removed":false},"creator":{"id":8,"user_name":"viewer"},"replies":[` +
 			`{"comment":{"id":22,"post_id":200,"body":"Thanks","published":"2026-09-01T11:00:00.000000Z","ap_id":"https://home.example/comment/22","path":"0.21.22","deleted":false,"removed":false},"creator":{"id":6,"user_name":"rodrigo"},"replies":[` +
@@ -199,7 +199,7 @@ func TestPieFedComments(t *testing.T) {
 func TestPieFedDeleteReplyMarksItDeleted(t *testing.T) {
 	var path string
 	var payload map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path = r.URL.Path
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 		_, _ = w.Write([]byte(`{"comment_view":{}}`))
@@ -216,7 +216,7 @@ func TestPieFedDeleteReplyMarksItDeleted(t *testing.T) {
 func TestPieFedCommentsReadTheAccountVote(t *testing.T) {
 	// Every PieFed comment view carries my_vote for the authenticated
 	// account: 1 for an upvote, -1 for a downvote, 0 for no vote.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"comments":[` +
 			`{"comment":{"id":21,"post_id":200,"body":"Nice","published":"2026-09-01T10:00:00.000000Z","ap_id":"https://piefed.social/comment/21","path":"0.21","deleted":false,"removed":false},"creator":{"id":8,"user_name":"viewer"},"counts":{"upvotes":3},"my_vote":0,"replies":[]},` +
 			`{"comment":{"id":22,"post_id":200,"body":"Agreed","published":"2026-09-01T11:00:00.000000Z","ap_id":"https://piefed.social/comment/22","path":"0.22","deleted":false,"removed":false},"creator":{"id":9,"user_name":"reader"},"counts":{"upvotes":1},"my_vote":1,"replies":[]},` +
@@ -251,7 +251,7 @@ func TestPieFedCommentsReadTheAccountVote(t *testing.T) {
 func TestPieFedCommentsMissingVoteStaysUnknown(t *testing.T) {
 	// A reply without my_vote carries no vote information. It must not be
 	// reported as a known no-vote, or stored like state would be clobbered.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"comments":[` +
 			`{"comment":{"id":21,"post_id":200,"body":"Nice","published":"2026-09-01T10:00:00.000000Z","ap_id":"https://piefed.social/comment/21","path":"0.21","deleted":false,"removed":false},"creator":{"id":8,"user_name":"viewer"},"replies":[]}` +
 			`],"next_page":null}`))
@@ -271,7 +271,7 @@ func TestPieFedCommentsMissingVoteStaysUnknown(t *testing.T) {
 func TestPieFedCommentsSkipRemovedReplies(t *testing.T) {
 	// PieFed blanks the body of a deleted reply. It reports deleted when the
 	// author deleted it and removed (with deleted false) when a moderator did.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"comments":[` +
 			`{"comment":{"id":21,"post_id":200,"body":"Nice","published":"2026-09-01T10:00:00.000000Z","ap_id":"https://piefed.social/comment/21","path":"0.21","deleted":false,"removed":false},"creator":{"id":8,"user_name":"viewer"},"replies":[]},` +
 			`{"comment":{"id":25,"post_id":200,"body":"","published":"2026-09-01T11:00:00.000000Z","ap_id":"https://piefed.social/comment/25","path":"0.25","deleted":false,"removed":true},"creator":{"id":9,"user_name":"spammer"},"replies":[]},` +

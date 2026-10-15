@@ -26,6 +26,7 @@ import {
   useAccounts,
   useSocialSets,
   useWorkspaceId,
+  useWorkspaceCapabilities,
   prefetchPublicationEditor,
 } from "@/lib/queries";
 import { captureApiRequestIdentity, apiRequestIdentityIsCurrent } from "@/lib/api/client";
@@ -41,6 +42,13 @@ import { useNativeTheme } from "@/theme";
 
 export default function IdeateScreen() {
   const workspaceId = useWorkspaceId();
+  const workspace = useWorkspaceCapabilities();
+  if (!workspace?.can_edit)
+    return (
+      <Screen>
+        <BodyText>This Workspace is read-only for your role.</BodyText>
+      </Screen>
+    );
   return workspaceId ? (
     <IdeateWorkspace key={workspaceId} workspaceId={workspaceId} />
   ) : (

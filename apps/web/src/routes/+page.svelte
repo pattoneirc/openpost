@@ -1,9 +1,16 @@
 <script lang="ts">
+	import { workspaceCtx } from '$lib/stores/workspace.svelte';
+	import { goto } from '$app/navigation';
+	import { resolveAppPath } from '$lib/app-path';
 	import ComposeShell from '$lib/components/compose-shell.svelte';
 	import InlineNotice from '$lib/components/inline-notice.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let handoffSelected = $state(false);
+	$effect(() => {
+		if (workspaceCtx.currentWorkspace && !workspaceCtx.currentWorkspace.can_edit)
+			void goto(resolveAppPath('/publications'), { replaceState: true });
+	});
 </script>
 
 <svelte:head>
@@ -20,5 +27,7 @@
 			/>
 		</div>
 	{/if}
-	<ComposeShell onHandoffSelected={() => (handoffSelected = true)} />
+	{#if workspaceCtx.currentWorkspace?.can_edit}<ComposeShell
+			onHandoffSelected={() => (handoffSelected = true)}
+		/>{/if}
 </div>

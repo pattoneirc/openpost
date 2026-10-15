@@ -19,6 +19,8 @@ var engine []byte
 
 var cache = wazero.NewCompilationCache()
 
+var guests = make(chan struct{}, 4)
+
 const maxBytes = 256 * 1024
 const memoryPages = 1024 // 64 MiB, including the engine, stack and JS heap.
 const setupTimeout = 30 * time.Second
@@ -29,6 +31,13 @@ func runtimeConfig() wazero.RuntimeConfig {
 }
 
 func Evaluate(ctx context.Context, code string, input any) (any, error) {
+	select {
+	case guests <- struct{}{}:
+		defer func() { <-guests }()
+	default:
+		return nil, errors.New("JavaScript engine is busy; try again later")
+	}
+
 	data, err := json.Marshal(input)
 	if err != nil || len(data) > maxBytes || len(code) > 20000 {
 		return nil, errors.New("JavaScript input is too large")

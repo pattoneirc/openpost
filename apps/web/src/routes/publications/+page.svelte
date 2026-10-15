@@ -1,4 +1,6 @@
 <script lang="ts">
+	import BatchScheduleDialog from '$lib/components/batch-schedule-dialog.svelte';
+	import { Checkbox } from '$lib/components/ui/checkbox';
 	import PublicationViewSwitch from '$lib/components/publication-view-switch.svelte';
 	import CopyButton from '$lib/components/copy-button.svelte';
 	import { goto } from '$app/navigation';
@@ -74,6 +76,15 @@
 		last_error?: string;
 	};
 
+	let selecting = $state(false);
+	let selectedIds = $state<string[]>([]);
+	$effect(() => {
+		void [currentWorkspaceID, activeTab];
+		untrack(() => {
+			selectedIds = [];
+			selecting = false;
+		});
+	});
 	let accounts = $state.raw<SocialAccount[]>([]);
 	let retryingDestination = $state('');
 	let successMessage = $state('');
@@ -785,6 +796,16 @@
 				]}
 				<article class="group p-3 transition-colors hover:bg-muted/30 sm:p-4">
 					<div class="flex items-start gap-3 sm:gap-4">
+						{#if selecting && activeTab === 'drafts'}<Checkbox
+								aria-label={m.batch_select_post()}
+								checked={selectedIds.includes(post.publication_id)}
+								onCheckedChange={(checked) => {
+									selectedIds = checked
+										? [...selectedIds, post.publication_id]
+										: selectedIds.filter((id) => id !== post.publication_id);
+								}}
+								disabled={!selectedIds.includes(post.publication_id) && selectedIds.length >= 20}
+							/>{/if}
 						<div
 							class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border bg-muted/50"
 						>
@@ -935,7 +956,9 @@
 <Tabs value={activeTab} onValueChange={selectActivityTab} class="min-w-0 flex-1">
 	<PageContainer
 		title={m.activity_title()}
-		headerActionLayout="inline"
+		headerActionLayout={activeTab === 'drafts' && workspaceCtx.currentWorkspace?.can_edit
+			? 'responsive'
+			: 'inline'}
 		themeIconRole="publications"
 		loading={initialLoading}
 		loadingLayout="list"
@@ -978,10 +1001,26 @@
 			</div>
 		{/snippet}
 		{#snippet actions()}
-			<Button variant="focal" size="sm" onclick={() => goto(resolveAppPath('/'))}>
-				<ThemeIcon role="add" class="mr-1.5 size-3.5" />
-				{m.activity_new_post()}
-			</Button>
+			{#if workspaceCtx.currentWorkspace?.can_edit}
+				{#if activeTab === 'drafts'}
+					<Button
+						variant="ghost"
+						size="sm"
+						onclick={() => {
+							selecting = !selecting;
+							selectedIds = [];
+						}}>{selecting ? m.common_cancel() : m.batch_select()}</Button
+					>
+					{#if selecting}<BatchScheduleDialog
+							workspaceId={currentWorkspaceID}
+							publicationIds={selectedIds}
+						/>{/if}
+				{/if}
+				<Button variant="focal" size="sm" onclick={() => goto(resolveAppPath('/'))}>
+					<ThemeIcon role="add" class="mr-1.5 size-3.5" />
+					{m.activity_new_post()}
+				</Button>
+			{/if}
 		{/snippet}
 
 		{#if visibleError}

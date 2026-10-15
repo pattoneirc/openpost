@@ -1,7 +1,8 @@
+import { NativeText as Text } from "@/components/native-text";
 import * as WebBrowser from "expo-web-browser";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet } from "react-native";
 
 import {
   BodyText,

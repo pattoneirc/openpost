@@ -61,110 +61,174 @@ export function applyColorEffectsToPixels(
 	pixels: Uint8ClampedArray,
 	effects: readonly EditorColorRenderEffect[]
 ): void {
+	let lookup: Uint8Array | null = null;
 	for (const effect of effects) {
-		const curveLut = effect.effectId === 'gpu-curves' ? buildCurvesLut(effect.params) : null;
-		for (let index = 0; index < pixels.length; index += 4) {
-			let red = (pixels[index] ?? 0) / 255;
-			let green = (pixels[index + 1] ?? 0) / 255;
-			let blue = (pixels[index + 2] ?? 0) / 255;
-
-			switch (effect.effectId) {
-				case 'gpu-brightness': {
-					const amount = numberParam(effect, 'amount', 0);
-					red += amount;
-					green += amount;
-					blue += amount;
-					break;
-				}
-				case 'gpu-exposure': {
-					const multiplier = 2 ** numberParam(effect, 'exposure', 0);
-					const offset = numberParam(effect, 'offset', 0);
-					const gamma = Math.max(0.05, numberParam(effect, 'gamma', 1));
-					red = Math.max(0, red * multiplier + offset) ** (1 / gamma);
-					green = Math.max(0, green * multiplier + offset) ** (1 / gamma);
-					blue = Math.max(0, blue * multiplier + offset) ** (1 / gamma);
-					break;
-				}
-				case 'gpu-contrast': {
-					const amount = numberParam(effect, 'amount', 1);
-					red = (red - 0.5) * amount + 0.5;
-					green = (green - 0.5) * amount + 0.5;
-					blue = (blue - 0.5) * amount + 0.5;
-					break;
-				}
-				case 'gpu-saturation': {
-					[red, green, blue] = mixSaturation(red, green, blue, numberParam(effect, 'amount', 1));
-					break;
-				}
-				case 'gpu-vibrance': {
-					const maximum = Math.max(red, green, blue);
-					const minimum = Math.min(red, green, blue);
-					const saturation = (maximum - minimum) / (maximum + 0.001);
-					[red, green, blue] = mixSaturation(
-						red,
-						green,
-						blue,
-						1 + numberParam(effect, 'amount', 0) * (1 - saturation)
-					);
-					break;
-				}
-				case 'gpu-hue-shift':
-					[red, green, blue] = shiftHue(red, green, blue, numberParam(effect, 'shift', 0));
-					break;
-				case 'gpu-temperature': {
-					const temperature = numberParam(effect, 'temperature', 0);
-					const tint = numberParam(effect, 'tint', 0);
-					red += temperature * 0.1 + tint * 0.05;
-					green -= tint * 0.1;
-					blue += -temperature * 0.1 + tint * 0.05;
-					break;
-				}
-				case 'gpu-curves': {
-					red = curveLut![quantize(red) * 4]! / 255;
-					green = curveLut![quantize(green) * 4 + 1]! / 255;
-					blue = curveLut![quantize(blue) * 4 + 2]! / 255;
-					break;
-				}
-				case 'gpu-color-wheels': {
-					const luma = luma601(red, green, blue);
-					const shadowMask = 1 - smoothstep(0, 0.5, luma);
-					const highlightMask = smoothstep(0.5, 1, luma);
-
-					const masks = {
-						shadows: shadowMask,
-						midtones: 1 - shadowMask - highlightMask,
-						highlights: highlightMask,
-						offset: 1
-					};
-					for (const [band, mask] of Object.entries(masks)) {
-						const amount = numberParam(effect, `${band}Amount`, 0);
-						if (amount < 0.001) continue;
-						const tint = hsvToRgb(numberParam(effect, `${band}Hue`, 0) / 360, 1, 1);
-						red *= 1 + (tint[0] - 1) * amount * mask;
-						green *= 1 + (tint[1] - 1) * amount * mask;
-						blue *= 1 + (tint[2] - 1) * amount * mask;
-					}
-					const lift = numberParam(effect, 'lift', 0) + numberParam(effect, 'offset', 0);
-					const gain = numberParam(effect, 'gain', 1);
-					const gamma = Math.max(0.05, numberParam(effect, 'gamma', 1));
-					red = Math.max(0, (red + lift) * gain) ** (1 / gamma);
-					green = Math.max(0, (green + lift) * gain) ** (1 / gamma);
-					blue = Math.max(0, (blue + lift) * gain) ** (1 / gamma);
-					const adjustment =
-						(numberParam(effect, 'shadows', 0) / 100) * shadowMask +
-						(numberParam(effect, 'highlights', 0) / 100) * highlightMask;
-					red += adjustment;
-					green += adjustment;
-					blue += adjustment;
-					break;
-				}
+		const transform = prepareColorTransform(effect);
+		if (!transform) continue;
+		if (CHANNEL_EFFECTS.has(effect.effectId)) {
+			// Each channel starts as a byte and is quantized after every effect.
+			// Compose those exact byte mappings before touching the full image.
+			const previous = lookup;
+			lookup = new Uint8Array(256 * 4);
+			for (let value = 0; value < 256; value++) {
+				const index = value * 4;
+				const [red, green, blue] = transform(
+					(previous ? previous[index] : value) / 255,
+					(previous ? previous[index + 1] : value) / 255,
+					(previous ? previous[index + 2] : value) / 255
+				);
+				lookup[index] = quantize(red);
+				lookup[index + 1] = quantize(green);
+				lookup[index + 2] = quantize(blue);
 			}
-
+			continue;
+		}
+		if (lookup) applyChannelLookup(pixels, lookup);
+		lookup = null;
+		for (let index = 0; index < pixels.length; index += 4) {
+			const [red, green, blue] = transform(
+				pixels[index] / 255,
+				pixels[index + 1] / 255,
+				pixels[index + 2] / 255
+			);
 			pixels[index] = quantize(red);
 			pixels[index + 1] = quantize(green);
 			pixels[index + 2] = quantize(blue);
 		}
 	}
+	if (lookup) applyChannelLookup(pixels, lookup);
+}
+
+const CHANNEL_EFFECTS = new Set([
+	'gpu-brightness',
+	'gpu-exposure',
+	'gpu-contrast',
+	'gpu-temperature',
+	'gpu-curves'
+]);
+
+type ColorTransform = (
+	red: number,
+	green: number,
+	blue: number
+) => readonly [number, number, number];
+
+function applyChannelLookup(pixels: Uint8ClampedArray, lookup: Uint8Array): void {
+	for (let index = 0; index < pixels.length; index += 4) {
+		pixels[index] = lookup[pixels[index] * 4];
+		pixels[index + 1] = lookup[pixels[index + 1] * 4 + 1];
+		pixels[index + 2] = lookup[pixels[index + 2] * 4 + 2];
+	}
+}
+
+function prepareColorTransform(effect: EditorColorRenderEffect): ColorTransform | null {
+	switch (effect.effectId) {
+		case 'gpu-brightness': {
+			const amount = numberParam(effect, 'amount', 0);
+			return (red, green, blue) => [red + amount, green + amount, blue + amount];
+		}
+		case 'gpu-exposure': {
+			const multiplier = 2 ** numberParam(effect, 'exposure', 0);
+			const offset = numberParam(effect, 'offset', 0);
+			const exponent = 1 / Math.max(0.05, numberParam(effect, 'gamma', 1));
+			return (red, green, blue) => [
+				Math.max(0, red * multiplier + offset) ** exponent,
+				Math.max(0, green * multiplier + offset) ** exponent,
+				Math.max(0, blue * multiplier + offset) ** exponent
+			];
+		}
+		case 'gpu-contrast': {
+			const amount = numberParam(effect, 'amount', 1);
+			return (red, green, blue) => [
+				(red - 0.5) * amount + 0.5,
+				(green - 0.5) * amount + 0.5,
+				(blue - 0.5) * amount + 0.5
+			];
+		}
+		case 'gpu-saturation': {
+			const amount = numberParam(effect, 'amount', 1);
+			return (red, green, blue) => mixSaturation(red, green, blue, amount);
+		}
+		case 'gpu-vibrance': {
+			const amount = numberParam(effect, 'amount', 0);
+			return (red, green, blue) => {
+				const maximum = Math.max(red, green, blue);
+				const minimum = Math.min(red, green, blue);
+				const saturation = (maximum - minimum) / (maximum + 0.001);
+				return mixSaturation(red, green, blue, 1 + amount * (1 - saturation));
+			};
+		}
+		case 'gpu-hue-shift': {
+			const shift = numberParam(effect, 'shift', 0);
+			return (red, green, blue) => shiftHue(red, green, blue, shift);
+		}
+		case 'gpu-temperature': {
+			const temperature = numberParam(effect, 'temperature', 0);
+			const tint = numberParam(effect, 'tint', 0);
+			return (red, green, blue) => [
+				red + (temperature * 0.1 + tint * 0.05),
+				green - tint * 0.1,
+				blue + (-temperature * 0.1 + tint * 0.05)
+			];
+		}
+		case 'gpu-curves': {
+			const lookup = buildCurvesLut(effect.params);
+			return (red, green, blue) => [
+				lookup[quantize(red) * 4] / 255,
+				lookup[quantize(green) * 4 + 1] / 255,
+				lookup[quantize(blue) * 4 + 2] / 255
+			];
+		}
+		case 'gpu-color-wheels':
+			return prepareColorWheels(effect);
+		default:
+			return null;
+	}
+}
+
+function prepareColorWheels(effect: EditorColorRenderEffect): ColorTransform {
+	const bands = (['shadows', 'midtones', 'highlights', 'offset'] as const).flatMap((band) => {
+		const amount = numberParam(effect, `${band}Amount`, 0);
+		if (amount < 0.001) return [];
+		const tint = hsvToRgb(numberParam(effect, `${band}Hue`, 0) / 360, 1, 1);
+		return [
+			{
+				band,
+				red: (tint[0] - 1) * amount,
+				green: (tint[1] - 1) * amount,
+				blue: (tint[2] - 1) * amount
+			}
+		];
+	});
+	const lift = numberParam(effect, 'lift', 0) + numberParam(effect, 'offset', 0);
+	const gain = numberParam(effect, 'gain', 1);
+	const exponent = 1 / Math.max(0.05, numberParam(effect, 'gamma', 1));
+	const shadows = numberParam(effect, 'shadows', 0) / 100;
+	const highlights = numberParam(effect, 'highlights', 0) / 100;
+	return (red, green, blue) => {
+		const luma = luma601(red, green, blue);
+		const shadowMask = 1 - smoothstep(0, 0.5, luma);
+		const highlightMask = smoothstep(0.5, 1, luma);
+		for (const tint of bands) {
+			const mask =
+				tint.band === 'shadows'
+					? shadowMask
+					: tint.band === 'midtones'
+						? 1 - shadowMask - highlightMask
+						: tint.band === 'highlights'
+							? highlightMask
+							: 1;
+			red *= 1 + tint.red * mask;
+			green *= 1 + tint.green * mask;
+			blue *= 1 + tint.blue * mask;
+		}
+		const adjustment = shadows * shadowMask + highlights * highlightMask;
+		return [
+			Math.max(0, (red + lift) * gain) ** exponent + adjustment,
+			Math.max(0, (green + lift) * gain) ** exponent + adjustment,
+			Math.max(0, (blue + lift) * gain) ** exponent + adjustment
+		];
+	};
 }
 
 function luma601(red: number, green: number, blue: number): number {

@@ -351,3 +351,5 @@ func decisionOutput(ok bool) *CLIAuthDecisionOutput {
 		OK bool `json:"ok"`
 	}{OK: ok}}
 }
+
+func (h *CLIAuthHandler) SetRateLimiter(limiter *ratelimit.Limiter) { h.limiter = limiter }

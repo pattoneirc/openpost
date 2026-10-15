@@ -98,3 +98,46 @@ describe("selected automation contract generator", () => {
     );
   });
 });
+
+test("check reports stale output without overwriting authored changes", async () => {
+  const { mkdtemp, mkdir, copyFile, readFile, writeFile, symlink, rm } =
+    await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const path = await import("node:path");
+  const { pathToFileURL, fileURLToPath } = await import("node:url");
+  const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const fixtureRoot = await mkdtemp(path.join(tmpdir(), "selected-contract-test-"));
+  try {
+    await mkdir(path.join(fixtureRoot, "scripts"));
+    const fixtureScript = path.join(
+      fixtureRoot,
+      "scripts/generate-selected-automation-contract.mjs",
+    );
+    await copyFile(
+      path.join(sourceRoot, "scripts/generate-selected-automation-contract.mjs"),
+      fixtureScript,
+    );
+    await symlink(
+      path.join(sourceRoot, "node_modules"),
+      path.join(fixtureRoot, "node_modules"),
+      "dir",
+    );
+    const generator = await import(pathToFileURL(fixtureScript).href);
+    const contract = generator.buildSelectedContract(
+      { info: { version: "fixture" }, paths: {} },
+      [],
+    );
+    await generator.writeSelectedContract(contract);
+    const output = path.join(
+      fixtureRoot,
+      "packages/n8n-nodes-openpost/generated/selectedContract.ts",
+    );
+    const authored = (await readFile(output, "utf8")) + "\n// Concurrent authored change\n";
+    await writeFile(output, authored);
+    const stale = await generator.checkGeneratedContract(contract);
+    expect(stale).toContain("packages/n8n-nodes-openpost/generated/selectedContract.ts");
+    expect(await readFile(output, "utf8")).toBe(authored);
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});

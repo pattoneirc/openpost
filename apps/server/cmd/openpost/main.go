@@ -214,6 +214,9 @@ func main() {
 	}
 	readiness := apiroutes.NewReadiness()
 	e := echo.New()
+	e.Pre(apimiddleware.TrustedProxyMiddleware(cfg.TrustedProxyCIDRs))
+	e.Server.ReadHeaderTimeout = 15 * time.Second
+	e.Server.IdleTimeout = 60 * time.Second
 	e.Use(echo.WrapMiddleware(telemetryRecorder.WrapHTTP))
 	e.Use(middleware.RequestID())
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
@@ -477,10 +480,11 @@ func main() {
 		}
 	}
 	providers, providerEntries, err := platform.BuildAdapterRegistry(providerAppConfigs, platform.RegistryOptions{
-		DisableLinkedInThreadReplies: cfg.DisableLinkedInThreadReplies,
-		EnableLinkedInOrganizations:  cfg.EnableLinkedInOrganizations,
-		EnableLinkedInMemberReads:    cfg.EnableLinkedInMemberReads,
-		DisableTikTokDisplayAPI:      cfg.DisableTikTokDisplayAPI,
+		DisableLinkedInThreadReplies:  cfg.DisableLinkedInThreadReplies,
+		EnableLinkedInOrganizations:   cfg.EnableLinkedInOrganizations,
+		EnableLinkedInMemberReads:     cfg.EnableLinkedInMemberReads,
+		EnableLinkedInMemberAnalytics: cfg.EnableLinkedInMemberAnalytics,
+		DisableTikTokDisplayAPI:       cfg.DisableTikTokDisplayAPI,
 	})
 	if err != nil {
 		fatalfWithDiagnostics(diagnosticsReporter, "failed to build provider app registry: %v", err)
@@ -744,6 +748,7 @@ func main() {
 	workflowService := workflows.NewService(db, nil, tokenEncryptor)
 	workflowService.SetTelemetry(telemetryRecorder)
 	workflowService.SetAI(contentGenerator, cfg.TextGenerationModel)
+	workflowService.SetAILimits(cfg.WorkflowsAIEnabled, cfg.WorkflowsAIMonthlyCalls)
 	workflowService.SetDecisionAI(decisionGenerator, cfg.WorkflowDecisionModel)
 	var worker *queue.BackgroundWorker
 	var discordPresenceService *discordpresence.Service

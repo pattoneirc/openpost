@@ -26,7 +26,11 @@ type workflowActions struct {
 func (a workflowActions) Execute(ctx context.Context, input workflows.EffectRequest) (workflows.EffectResult, error) {
 	ctx = workspaceaccess.WithStoredAuthority(ctx, input.Authority)
 	ctx = publicationauth.WithActor(ctx, publicationauth.Actor{Origin: publicationauth.OriginWorker, UserID: input.Authority.UserID})
-	decision, err := workspaceaccess.NewAuthorizer(a.publications.db).AuthorizeStored(ctx, input.Authority, workspaceaccess.LevelAdminister)
+	level := workspaceaccess.LevelAdminister
+	if input.Kind == workflows.KindApproval {
+		level = workspaceaccess.LevelApprove
+	}
+	decision, err := workspaceaccess.NewAuthorizer(a.publications.db).AuthorizeStored(ctx, input.Authority, level)
 	if err != nil || !decision.Allowed {
 		return workflows.EffectResult{}, workflows.ErrAccess
 	}

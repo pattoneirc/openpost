@@ -304,7 +304,7 @@ func TestInstanceDiagnosticsIncludesRedactedContextAndLogTail(t *testing.T) {
 	for i := 1; i <= 105; i++ {
 		_, _ = fmt.Fprintf(&logs, "line %03d\n", i)
 	}
-	logs.WriteString(`Authorization: Bearer supersecret OPENPOST_JWT_SECRET=abc access_token=tok`)
+	logs.WriteString(`Authorization: Bearer supersecret OPENPOST_JWT_SECRET=abc access_token=tok op_cli_sensitive --token flag-secret`)
 
 	logPath := t.TempDir() + "/openpost.log"
 	if err := os.WriteFile(logPath, []byte(logs.String()), 0o600); err != nil {
@@ -339,7 +339,7 @@ func TestInstanceDiagnosticsIncludesRedactedContextAndLogTail(t *testing.T) {
 		t.Fatalf("redacted_log_tail length = %#v, want 100", got["redacted_log_tail"])
 	}
 	joinedTail := fmt.Sprint(tail)
-	for _, secret := range []string{"supersecret", "OPENPOST_JWT_SECRET=abc", "access_token=tok"} {
+	for _, secret := range []string{"supersecret", "OPENPOST_JWT_SECRET=abc", "access_token=tok", "op_cli_sensitive", "flag-secret"} {
 		if strings.Contains(joinedTail, secret) {
 			t.Fatalf("redacted log tail leaked %q: %s", secret, joinedTail)
 		}

@@ -77,6 +77,9 @@ type WorkflowOutput struct{ Body workflows.Workflow }
 type WorkflowListOutput struct{ Body []workflows.Workflow }
 type WorkflowRunOutput struct{ Body workflows.Run }
 type WorkflowRunsOutput struct{ Body []workflows.Run }
+type WorkflowRunSummariesOutput struct {
+	Body []workflows.WorkflowRunSummary
+}
 type WorkflowSampleOutput struct{ Body []workflows.SourceItem }
 type WorkflowConnectionsOutput struct{ Body []workflows.Connection }
 type WorkflowConnectionOutput struct{ Body workflows.Connection }
@@ -136,6 +139,10 @@ func (h *WorkflowHandler) RegisterRoutes(api huma.API) {
 	huma.Register(api, operation("list-workflow-runs", http.MethodGet, "/workflow-runs", "List the latest 50 workspace workflow runs"), func(ctx context.Context, in *WorkflowListInput) (*WorkflowRunsOutput, error) {
 		items, err := h.service.Runs(ctx, workspaceActor(ctx, middleware.GetUserID(ctx)), in.WorkspaceID, in.WorkflowID)
 		return &WorkflowRunsOutput{Body: items}, workflowHTTPError(err)
+	})
+	huma.Register(api, operation("list-workflow-run-summaries", http.MethodGet, "/workflow-run-summaries", "List the latest 50 workflow runs without source data or step payloads"), func(ctx context.Context, in *WorkflowListInput) (*WorkflowRunSummariesOutput, error) {
+		items, err := h.service.RunSummaries(ctx, workspaceActor(ctx, middleware.GetUserID(ctx)), in.WorkspaceID, in.WorkflowID)
+		return &WorkflowRunSummariesOutput{Body: items}, workflowHTTPError(err)
 	})
 	huma.Register(api, operation("get-workflow-run", http.MethodGet, "/workflow-runs/{id}", "Inspect a workflow run and its step results"), func(ctx context.Context, in *WorkflowPathInput) (*WorkflowRunOutput, error) {
 		item, err := h.service.GetRun(ctx, workspaceActor(ctx, middleware.GetUserID(ctx)), in.WorkspaceID, in.ID)

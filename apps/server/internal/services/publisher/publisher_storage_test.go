@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"net/http"
-	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -120,7 +117,10 @@ func (f *fakePublisherAdapter) Publish(_ context.Context, _, _ string, req *plat
 func TestUploadRenditionMediaToPlatformReadsFromBlobStorage(t *testing.T) {
 	storage := &fakePublisherStorage{body: "stored-media"}
 	adapter := &fakePublisherAdapter{}
-	service := NewService(nil, nil)
+	srv := newPublisherMediaStateTestServer(t, "youtube", &fakePublisherAdapter{})
+	_, err := srv.db.NewInsert().Model(&models.Publication{ID: "storage-post", WorkspaceID: "ws-1"}).Exec(t.Context())
+	require.NoError(t, err)
+	service := srv.service
 	service.SetStorage(storage)
 
 	got, err := service.uploadRenditionMediaToPlatform(
@@ -128,7 +128,7 @@ func TestUploadRenditionMediaToPlatformReadsFromBlobStorage(t *testing.T) {
 		&models.SocialAccount{Platform: "x", AccountID: "acct-1"},
 		adapter,
 		"token",
-		&models.Rendition{Body: "Launch\nDescription", Profile: models.ContentProfileShortText, SettingsJSON: "{}"},
+		&models.Rendition{PublicationID: "storage-post", Body: "Launch\nDescription", Profile: models.ContentProfileShortText, SettingsJSON: "{}"},
 		models.MediaAttachment{FilePath: "media/example.png", MimeType: "image/png"},
 	)
 
@@ -149,54 +149,61 @@ func (s *rangedPublisherStorage) OpenRange(_ context.Context, _ string, offset i
 	return io.NopCloser(bytes.NewReader(s.content[offset:])), nil
 }
 
-func TestPeerTubeResumableUploadReadsStoredMedia(t *testing.T) {
+type resumableStorageFixture struct {
+	uploaded  []byte
+	chunkSize int64
+}
+
+func (f *resumableStorageFixture) UploadMediaResumable(_ context.Context, _ string, _ string, req platform.UploadMediaRequest, state platform.ResumableMediaUploadState, checkpoint platform.MediaUploadCheckpoint) (string, error) {
+	for offset := state.UploadedBytes; offset < req.Size; {
+		reader, err := req.OpenReaderAt(offset)
+		if err != nil {
+			return "", err
+		}
+		chunk, err := io.ReadAll(io.LimitReader(reader, min(f.chunkSize, req.Size-offset)))
+		closeErr := reader.Close()
+		if err != nil {
+			return "", err
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+		if len(chunk) == 0 {
+			return "", io.ErrUnexpectedEOF
+		}
+		f.uploaded = append(f.uploaded, chunk...)
+		offset += int64(len(chunk))
+		state.UploadedBytes = offset
+		if err := checkpoint(state); err != nil {
+			return "", err
+		}
+	}
+	return "video-1", nil
+}
+
+func TestResumableUploadReadsStoredMediaAtRequestedOffsets(t *testing.T) {
 	const chunkSize = 8 * 1024 * 1024
 	media := bytes.Repeat([]byte("v"), chunkSize+1)
 	storage := &rangedPublisherStorage{fakePublisherStorage: &fakePublisherStorage{}, content: media}
-	var uploaded []byte
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/video-channels/demos", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"id":3,"name":"demos"}`))
-	})
-	mux.HandleFunc("/api/v1/videos/upload-resumable", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			w.Header().Set("Location", "/api/v1/videos/upload-resumable?upload_id=abc")
-			w.WriteHeader(http.StatusCreated)
-		case http.MethodPut:
-			chunk, err := io.ReadAll(r.Body)
-			if err != nil {
-				http.Error(w, "read upload chunk", http.StatusBadRequest)
-				return
-			}
-			uploaded = append(uploaded, chunk...)
-			if len(uploaded) < len(media) {
-				w.Header().Set("Range", "bytes=0-"+strconv.Itoa(len(uploaded)-1))
-				w.WriteHeader(308)
-				return
-			}
-			_, _ = w.Write([]byte(`{"video":{"uuid":"video-1"}}`))
-		default:
-			w.WriteHeader(http.StatusMethodNotAllowed)
-		}
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
+	uploader := &resumableStorageFixture{chunkSize: chunkSize}
 
-	service := NewService(nil, nil)
+	srv := newPublisherMediaStateTestServer(t, "youtube", &fakePublisherAdapter{})
+	_, err := srv.db.NewInsert().Model(&models.Publication{ID: "storage-post", WorkspaceID: "ws-1"}).Exec(t.Context())
+	require.NoError(t, err)
+	service := srv.service
 	service.SetStorage(storage)
 	got, err := service.uploadRenditionMediaResumable(
 		context.Background(),
 		&models.SocialAccount{AccountID: "demos"},
-		platform.NewPeerTubeAdapter(server.URL),
+		uploader,
 		"token",
-		&models.Rendition{Title: "Launch demo", SettingsJSON: `{"privacy":"public"}`},
+		&models.Rendition{PublicationID: "storage-post", Title: "Launch demo", SettingsJSON: `{"privacy":"public"}`},
 		models.MediaAttachment{FilePath: "media/video.mp4", OriginalFilename: "video.mp4", MimeType: "video/mp4", Size: int64(len(media))},
 		platform.ResumableMediaUploadState{},
 		func(platform.ResumableMediaUploadState) error { return nil },
 	)
 	require.NoError(t, err)
 	require.Equal(t, "video-1", got)
-	require.Equal(t, media, uploaded)
+	require.Equal(t, media, uploader.uploaded)
 	require.Equal(t, []int64{0, chunkSize}, storage.offsets)
 }

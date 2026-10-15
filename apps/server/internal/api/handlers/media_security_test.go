@@ -20,9 +20,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/services/entitlements"
+	"github.com/openpost/backend/internal/services/medialifecycle"
+	"github.com/openpost/backend/internal/services/sessions"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/image/bmp"
 	"golang.org/x/image/tiff"
@@ -51,6 +54,12 @@ func TestMediaUploadRejectsActiveContent(t *testing.T) {
 					storage.objects[id+".bin"] = []byte(payload.content)
 					response := srv.postJSON(t, "/api/v1/media/upload-session/"+id+"/complete", map[string]any{"workspace_id": "ws-1"})
 					require.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+					require.Empty(t, storage.objects, "rejected direct-upload bytes must be removed")
+					var failed models.MediaAttachment
+					require.NoError(t, srv.db.NewSelect().Model(&failed).Where("id = ?", id).Scan(t.Context()))
+					require.Equal(t, mediaFailedStatus, failed.ProcessingStatus)
+					require.Equal(t, "pending:"+id, failed.FileHash, "cleanup ownership must outlive the signed PUT capability")
+					require.Equal(t, int64(len(payload.content)), failed.Size)
 					return
 				}
 				var body bytes.Buffer
@@ -126,7 +135,11 @@ func TestMediaUploadSessionRejectsActiveDeclarations(t *testing.T) {
 func assertMCPUploadRejected(t *testing.T, content, expected string) {
 	t.Helper()
 	srv := newMCPTestServer(t)
-	srv.handler.auth = mcpScopeAuthenticator{"mcp-token": {UserID: "user-1", Scope: "mcp:full", WorkspaceID: "ws-1", SessionID: "session-1", ClientID: "client-1"}}
+	_, err := srv.db.NewCreateTable().Model((*models.UserSession)(nil)).Exec(t.Context())
+	require.NoError(t, err)
+	session, err := sessions.NewService(srv.db).CreateSession(t.Context(), sessions.CreateInput{UserID: "user-1", ExpiresAt: time.Now().Add(time.Hour)})
+	require.NoError(t, err)
+	srv.handler.auth = mcpScopeAuthenticator{"mcp-token": {UserID: "user-1", Scope: "mcp:full", WorkspaceID: "ws-1", SessionID: session.ID, ClientID: "client-1"}}
 	response := srv.request(t, "mcp-token", map[string]any{"jsonrpc": "2.0", "id": "ticket", "method": "tools/call", "params": map[string]any{"name": mcpToolCreateTicket, "arguments": map[string]any{"workspace_id": "ws-1", "filename": "proof.bin", "mime_type": "application/octet-stream", "size": len(content)}}})
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	var ticket struct {
@@ -344,4 +357,30 @@ func TestMediaUploadSessionDoesNotReuseCorruptReadyImage(t *testing.T) {
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
 	require.False(t, result.Deduped)
 	require.NotEqual(t, "legacy", result.MediaID)
+}
+
+func TestMediaCleanupPurgesAbandonedUploadSessions(t *testing.T) {
+	srv := newMCPTestServer(t)
+	for _, model := range []any{(*models.VideoProjectRevision)(nil), (*models.VideoProjectMutation)(nil), (*models.VideoProjectCheckpoint)(nil), (*models.VideoProjectConflict)(nil)} {
+		_, err := srv.db.NewCreateTable().Model(model).IfNotExists().Exec(t.Context())
+		require.NoError(t, err)
+	}
+	now := time.Now().UTC()
+	rows := []models.MediaAttachment{
+		{ID: "stale", WorkspaceID: "ws-1", FilePath: "stale.mp4", FileHash: "pending:stale", ProcessingStatus: "processing", RetentionClass: "library", CreatedAt: now.Add(-25 * time.Hour)},
+		{ID: "failed", WorkspaceID: "ws-1", FilePath: "failed.mp4", FileHash: "pending:failed", ProcessingStatus: "failed", RetentionClass: "library", CreatedAt: now.Add(-25 * time.Hour)},
+		{ID: "fresh", WorkspaceID: "ws-1", FilePath: "fresh.mp4", FileHash: "pending:fresh", ProcessingStatus: "processing", RetentionClass: "library", CreatedAt: now.Add(-time.Hour)},
+		{ID: "ready", WorkspaceID: "ws-1", FilePath: "ready.mp4", FileHash: "complete", ProcessingStatus: "ready", RetentionClass: "library", CreatedAt: now.Add(-25 * time.Hour)},
+	}
+	_, err := srv.db.NewInsert().Model(&rows).Exec(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, medialifecycle.NewService(srv.db, nil).Sweep(t.Context(), "ws-1", now))
+	var kept []models.MediaAttachment
+	require.NoError(t, srv.db.NewSelect().Model(&kept).Order("id ASC").Scan(t.Context()))
+	require.Len(t, kept, 2)
+	require.Equal(t, "fresh", kept[0].ID)
+	require.Equal(t, "ready", kept[1].ID)
+	var jobs []models.Job
+	require.NoError(t, srv.db.NewSelect().Model(&jobs).Where("type = ?", "storage_delete").Scan(t.Context()))
+	require.NotEmpty(t, jobs, "storage deletion must be durable")
 }

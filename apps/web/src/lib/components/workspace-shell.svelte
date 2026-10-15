@@ -8,6 +8,7 @@
 	import DayPostsModal from './day-posts-modal.svelte';
 	import FeedbackDialog from './feedback-dialog.svelte';
 	import PersonalPreferencesDialog from './personal-preferences-dialog.svelte';
+	import IdeateHost from './post-builder/ideate-host.svelte';
 	import { notificationInbox } from '$lib/stores/notifications.svelte';
 	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -49,5 +50,6 @@
 		<DayPostsModal />
 		<FeedbackDialog />
 		<PersonalPreferencesDialog />
+		<IdeateHost />
 	</Sidebar.Inset>
 </Sidebar.Provider>

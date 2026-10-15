@@ -24,10 +24,14 @@ test("service worker updates wait for every open app window to close", async ({
   const second = await context.newPage();
   await second.goto("/image-editor");
   await second.waitForFunction(() => sessionStorage.getItem("pwa-registration-complete") === "yes");
+  const updateWorkerCreated = context.waitForEvent("serviceworker", (worker) =>
+    worker.url().endsWith("/sw.js?update-test=1"),
+  );
   await page.evaluate(async () => {
     await (await caches.open("openpost-pages-1")).put("/old-page", new Response("legacy"));
     await navigator.serviceWorker.register("/sw.js?update-test=1", { scope: "/" });
   });
+  const updateWorker = await updateWorkerCreated;
   await expect
     .poll(() =>
       page.evaluate(
@@ -46,6 +50,15 @@ test("service worker updates wait for every open app window to close", async ({
     ),
   ).toContain("?update-test=1");
   await second.close();
+  // Closing a page and activating its waiting worker are separate browser tasks.
+  // Observe activation without opening another client that could keep the old worker alive.
+  await expect
+    .poll(() =>
+      updateWorker.evaluate(
+        "({ url: self.registration.active?.scriptURL, state: self.registration.active?.state })",
+      ),
+    )
+    .toEqual({ url: updateWorker.url(), state: "activated" });
   const reopened = await context.newPage();
   await reopened.goto("/manifest.webmanifest");
   await expect

@@ -32,6 +32,7 @@ const serviceIcons: Record<string, string> = {
   dokploy: docsPath("/assets/logos/dokploy.svg"),
   nixos: docsPath("/assets/logos/nixos.svg"),
   portainer: docsPath("/assets/logos/portainer.svg"),
+  umbrelos: docsPath("/assets/logos/umbrelos.png"),
   zimaos: docsPath("/assets/logos/zimaos.png"),
 };
 

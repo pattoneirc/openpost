@@ -569,3 +569,26 @@ func assertPublicationStateParity(t *testing.T, srv *mcpTestServer, restID, mcpI
 	require.JSONEq(t, restPublication.MetadataJSON, mcpPublication.MetadataJSON)
 	require.JSONEq(t, restPublication.ReleasePlanJSON, mcpPublication.ReleasePlanJSON)
 }
+
+func TestSchedulingRechecksQuotaInsideQueueTransaction(t *testing.T) {
+	srv := newMCPTestServer(t)
+	createIdempotencyRecordTable(t, srv.db)
+	handler := srv.handler.publicationHandler()
+	handler.entitlement = entitlements.NewStaticService(entitlements.PlanSnapshot{Limits: map[entitlements.LimitKey]int64{entitlements.LimitScheduledPostsMonthly: 1}})
+	scheduledAt := time.Now().UTC().Add(time.Hour)
+	publication, err := handler.publicationApplication().Create(t.Context(), "user-1", CreatePublicationBody{WorkspaceID: "ws-1", ContentProfile: models.ContentProfileShortText, SourceText: "Last available scheduled post", ScheduledAt: &scheduledAt, SocialAccountIDs: []string{"account-1"}})
+	require.NoError(t, err)
+	handler.beforeQueueTransaction = func(ctx context.Context) error {
+		_, err := handler.usage.IncrementMonthly(ctx, "ws-1", entitlements.LimitScheduledPostsMonthly, 1, scheduledAt)
+		return err
+	}
+	result, _, err := handler.publicationApplicationForTesting().ScheduleIdempotent(t.Context(), "user-1", publication.ID, 1, providerreadiness.ExecutionIntentProduction, idempotency.Request{PrincipalID: "token:quota", WorkspaceID: "ws-1", OperationID: "schedule-publication", Key: "last-slot", ExpiresAt: time.Now().Add(time.Hour)})
+	require.Error(t, err)
+	require.Empty(t, result.JobID)
+	count, err := srv.db.NewSelect().Model((*models.Job)(nil)).Where("scope_id = ?", publication.ID).Count(t.Context())
+	require.NoError(t, err)
+	require.Zero(t, count)
+	value, err := handler.usage.CurrentMonthly(t.Context(), "ws-1", entitlements.LimitScheduledPostsMonthly, scheduledAt)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), value)
+}

@@ -1,3 +1,4 @@
+import { NativeText as Text } from "@/components/native-text";
 import { Redirect, router, Stack } from "expo-router";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import {
@@ -5,7 +6,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
   useWindowDimensions,
   View,
 } from "react-native";

@@ -39,6 +39,7 @@
 		).length
 	);
 	const locked = $derived(review.busy || review.creating);
+	const mediaMissing = $derived(!context.source.file && !context.source.handle);
 	const activeCreated = $derived(review.created.some((item) => item.candidateId === active?.id));
 	function disposePreview() {
 		previewRequest?.abort();
@@ -104,8 +105,11 @@
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col gap-4 p-3 sm:p-4">
+	{#if mediaMissing}<p role="status" class="text-sm text-muted-foreground">
+			{m.repurpose_source_missing()}
+		</p>{/if}
 	<div class="flex flex-wrap items-center gap-2">
-		<Button disabled={locked} onclick={() => review.find(topic)}
+		<Button disabled={locked || mediaMissing} onclick={() => review.find(topic)}
 			>{review.result ? m.repurpose_find_again() : m.repurpose_find()}</Button
 		>
 		{#if review.busy}<span class="text-sm text-muted-foreground" role="status"
@@ -135,7 +139,7 @@
 	{#if review.error}<p role="alert" class="text-sm text-destructive">{review.error}</p>{/if}
 	{#if review.result?.state === 'failed' || review.result?.state === 'cancelled'}<Button
 			variant="outline"
-			disabled={locked}
+			disabled={locked || mediaMissing}
 			onclick={() => review.retry()}>{m.common_retry()}</Button
 		>{/if}
 	{#if review.result?.state === 'cancelled'}<p role="status" class="text-sm text-muted-foreground">
@@ -284,7 +288,7 @@
 				{/each}
 				<Button
 					class="w-full"
-					disabled={locked || !pendingCount}
+					disabled={locked || mediaMissing || !pendingCount}
 					onclick={() => review.createSelected()}
 					>{review.creating
 						? m.repurpose_creating()

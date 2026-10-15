@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/openpost/backend/internal/api/middleware"
@@ -14,9 +16,13 @@ import (
 	"github.com/openpost/backend/internal/services/mediastore"
 	"github.com/openpost/backend/internal/services/publicationcards"
 	"github.com/openpost/backend/internal/services/publicationsource"
+	"github.com/openpost/backend/internal/services/ratelimit"
 	"github.com/openpost/backend/internal/textcards"
 	"github.com/uptrace/bun"
 )
+
+// Shared by REST and MCP, including handlers constructed for individual calls.
+var textCardPreviewLimiter = ratelimit.New()
 
 func (h *PublicationHandler) SetTextCardStorage(storage mediastore.BlobStorage) {
 	if storage != nil {
@@ -48,7 +54,7 @@ type PreviewTextCardOutput struct {
 }
 
 func (h *PublicationHandler) previewTextCard(api huma.API) {
-	huma.Register(api, huma.Operation{OperationID: "preview-text-card", Method: http.MethodPost, Path: "/publications/preview-text-card", Summary: "Preview text as publishing images", Tags: []string{tagPublications}, MaxBodyBytes: 32 * 1024, Middlewares: huma.Middlewares{middleware.AuthMiddleware(api, h.auth)}, Errors: []int{400, 403, 404, 503}}, h.renderTextCardPreview)
+	huma.Register(api, huma.Operation{OperationID: "preview-text-card", Method: http.MethodPost, Path: "/publications/preview-text-card", Summary: "Preview text as publishing images", Tags: []string{tagPublications}, MaxBodyBytes: 32 * 1024, Middlewares: huma.Middlewares{middleware.AuthMiddleware(api, h.auth)}, Errors: []int{400, 403, 404, 429, 503}}, h.renderTextCardPreview)
 }
 
 func (h *PublicationHandler) renderTextCardPreview(ctx context.Context, input *PreviewTextCardInput) (*PreviewTextCardOutput, error) {
@@ -79,7 +85,13 @@ func (h *PublicationHandler) previewTextCardForUser(ctx context.Context, userID 
 	if h.textCards == nil {
 		return nil, huma.Error503ServiceUnavailable("Text card rendering is unavailable")
 	}
+	if !textCardPreviewLimiter.Allow("text-card-preview:"+userID, 30, time.Minute) {
+		return nil, huma.Error429TooManyRequests("Text card previews are rate limited; try again shortly")
+	}
 	images, err := h.textCards.Preview(ctx, account, input.Body.Text, input.Body.OutputProfile, style, input.Body.AttachmentCount)
+	if errors.Is(err, publicationcards.ErrRenderBusy) {
+		return nil, huma.Error429TooManyRequests("Text card rendering is busy; try again shortly")
+	}
 	if err != nil {
 		return nil, huma.Error400BadRequest(err.Error())
 	}
@@ -309,6 +321,9 @@ func (h *PublicationHandler) refreshTextCardRendition(ctx context.Context, db bu
 		var overrides map[string]any
 		_ = json.Unmarshal([]byte(segment.SettingsJSON), &overrides)
 		if err := h.textCards.RefreshSegment(ctx, db, account, rendition, segment, mergePublicationSettings(settings, overrides)); err != nil {
+			if errors.Is(err, publicationcards.ErrRenderBusy) {
+				return huma.Error429TooManyRequests("Text card rendering is busy; try again shortly")
+			}
 			return huma.Error400BadRequest("Could not create the text card: " + err.Error())
 		}
 	}

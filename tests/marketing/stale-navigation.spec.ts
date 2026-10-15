@@ -22,9 +22,7 @@ test("recovers a failed route import during initial hydration", async ({ page })
   await page.goto("/pricing");
   await expect.poll(() => failedImports).toBe(1);
   await expect.poll(() => documents).toBe(2);
-  await expect(
-    page.getByRole("heading", { name: "OpenPost could not load this page." }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Page unavailable" })).toHaveCount(0);
   await expect(page).toHaveURL(/\/pricing\/?$/);
   await dismissTelemetryConsent(page);
   const yearly = page.getByRole("button", { name: /^Yearly/ });
@@ -53,17 +51,13 @@ test("failed route imports preserve their cause and allow recovery @desktop", as
   });
   await page.route("**/_app/immutable/nodes/*.js", (route) => route.abort("failed"));
   await page.getByRole("link", { name: "Pricing", exact: true }).first().click();
-  await expect(
-    page.getByRole("heading", { name: "OpenPost could not load this page." }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Page unavailable" })).toBeVisible();
   expect(exceptions.filter((error) => error.includes("universal"))).toEqual([]);
   expect(
     exceptions.some((error) => error.includes("Failed to fetch dynamically imported module")),
   ).toBe(true);
   await page.unroute("**/_app/immutable/nodes/*.js");
   await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "OpenPost could not load this page." }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Page unavailable" })).toHaveCount(0);
   await debuggerSession.detach();
 });

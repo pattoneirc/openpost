@@ -1,7 +1,6 @@
 import { SizedAccessedMemoryCache } from '$lib/video-editor/media/sized-accessed-memory-cache';
 import type { WaveformData } from '$lib/video-editor/media/waveform-client';
 import type { WaveformWorkerResponse } from '$lib/video-editor/media/waveform-worker';
-import { resolveSourceFile } from './source';
 import type { QuickCutSource } from './types';
 
 interface CacheEntry {
@@ -71,6 +70,7 @@ export async function getQuickCutWaveform(source: QuickCutSource): Promise<Wavef
 }
 
 async function decodeQuickCutWaveform(source: QuickCutSource, key: string): Promise<WaveformData> {
+	const { resolveSourceFile } = await import('./source');
 	const file = await resolveSourceFile(source);
 	const worker = new Worker(new URL('../video-editor/media/waveform-worker.ts', import.meta.url), {
 		type: 'module'

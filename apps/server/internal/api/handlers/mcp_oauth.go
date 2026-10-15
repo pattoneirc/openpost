@@ -313,6 +313,11 @@ func (h *MCPOAuthHandler) revoke(c echo.Context) error {
 	if err := c.Request().ParseForm(); err != nil {
 		return h.oauthError(c, http.StatusBadRequest, "invalid_request", "Invalid form body")
 	}
+	if h.service != nil {
+		if err := h.service.Revoke(c.Request().Context(), c.FormValue("token")); err != nil {
+			return h.oauthError(c, http.StatusInternalServerError, "server_error", "Token revocation failed")
+		}
+	}
 	if h.externalApps != nil {
 		if err := h.externalApps.Revoke(c.Request().Context(), c.FormValue("token")); err != nil {
 			return h.oauthError(c, http.StatusInternalServerError, "server_error", "Token revocation failed")
@@ -368,3 +373,5 @@ func mcpOAuthError(err error) (int, string, string) {
 		return http.StatusInternalServerError, "server_error", "OAuth request failed"
 	}
 }
+
+func (h *MCPOAuthHandler) SetRateLimiter(limiter *ratelimit.Limiter) { h.limiter = limiter }

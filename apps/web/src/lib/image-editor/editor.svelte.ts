@@ -129,7 +129,8 @@ interface PageColorGradeGesture {
 
 function layerIsEffectivelyLocked(
 	layer: ImageEditorLayer,
-	layers: readonly ImageEditorLayer[]
+	layers: readonly ImageEditorLayer[],
+	layerByID?: ReadonlyMap<string, ImageEditorLayer>
 ): boolean {
 	let current: ImageEditorLayer | undefined = layer;
 	const visited = new Set<string>();
@@ -137,7 +138,9 @@ function layerIsEffectivelyLocked(
 		if (current.locked) return true;
 		if (!current.parent_id || visited.has(current.parent_id)) break;
 		visited.add(current.parent_id);
-		current = layers.find((candidate) => candidate.id === current?.parent_id);
+		current = layerByID
+			? layerByID.get(current.parent_id)
+			: layers.find((candidate) => candidate.id === current?.parent_id);
 	}
 	return false;
 }
@@ -150,9 +153,16 @@ function previewImageLayers(
 	let changed = false;
 	const pages = document.pages.map((page) => {
 		let pageChanged = false;
+		let layerByID: Map<string, ImageEditorLayer> | undefined;
 		const layers = page.layers.map((layer) => {
-			if (!layerIDs.has(layer.id) || layerIsEffectivelyLocked(layer, page.layers) || !layer.image)
-				return layer;
+			if (!layerIDs.has(layer.id) || !layer.image) return layer;
+			if (layer.parent_id && !layerByID) {
+				layerByID = new Map();
+				for (const candidate of page.layers) {
+					if (!layerByID.has(candidate.id)) layerByID.set(candidate.id, candidate);
+				}
+			}
+			if (layerIsEffectivelyLocked(layer, page.layers, layerByID)) return layer;
 			pageChanged = true;
 			return update(layer);
 		});

@@ -15,7 +15,16 @@ test("extensions are discoverable and their install pages fit a phone @desktop",
   await expect(extensions.getByRole("link")).toHaveCount(1);
   await extensions.getByRole("link", { name: /YouTube Localizer/ }).click();
   await expect(page.getByRole("heading", { name: "YouTube Localizer", exact: true })).toBeVisible();
-  for (const route of ["/tools/youtube-localizer", "/tools/feed-limiter"]) {
+  for (const [route, storeURL] of [
+    [
+      "/tools/youtube-localizer",
+      "https://chromewebstore.google.com/detail/gblknofeccibdadogbplgcokneofgcdo",
+    ],
+    [
+      "/tools/feed-limiter",
+      "https://chromewebstore.google.com/detail/ckiajdbokbecejpammackpihhojjdbke",
+    ],
+  ]) {
     await page.goto(route);
     await page.evaluate(() => document.fonts.ready);
     await expect(page.locator("figure img").first()).toBeVisible();
@@ -40,9 +49,9 @@ test("extensions are discoverable and their install pages fit a phone @desktop",
         exact: true,
       }),
     ).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: "Install extension", exact: true }),
-    ).toHaveAttribute("href", /github\.com\/getopenpost\/.+#install$/);
+    const install = page.getByRole("link", { name: "Add to Chrome", exact: true });
+    await expect(install).toBeVisible();
+    await expect(install).toHaveAttribute("href", storeURL);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
       390,
     );

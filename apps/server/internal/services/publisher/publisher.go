@@ -246,6 +246,7 @@ func (s *Service) HandlePublishPublicationJob(ctx context.Context, jobPayload st
 			models.RenditionStatusDraft,
 			models.RenditionStatusReady,
 			models.RenditionStatusScheduled,
+			models.RenditionStatusPublishing,
 			models.RenditionStatusFailed,
 		})).
 		Where("(status != ? OR error_retryable = ?)", models.RenditionStatusFailed, true).
@@ -267,6 +268,7 @@ func (s *Service) HandlePublishPublicationJob(ctx context.Context, jobPayload st
 		receiptByRendition[receipts[index].RenditionID] = &receipts[index]
 	}
 	var retryFailure *RetryableError
+	var pendingContinuation *RetryableError
 	var terminalWriteFailure error
 	readinessIntent := publisherReadinessIntent(receipts[0].ExecutionIntent)
 	for i := range renditions {
@@ -300,6 +302,13 @@ func (s *Service) HandlePublishPublicationJob(ctx context.Context, jobPayload st
 				(retryFailure == nil || failure.RetryAfter > retryFailure.Failure.RetryAfter) {
 				retryFailure = &RetryableError{Failure: failure, Provider: rendition.Platform, RenditionID: rendition.ID}
 			}
+			if _, pending := providerwrite.IsPending(err); pending {
+				pendingContinuation = &RetryableError{Failure: failure, Provider: rendition.Platform, RenditionID: rendition.ID}
+				if stateErr := s.persistRenditionOutcome(ctx, rendition.ID, failure); stateErr != nil {
+					return stateErr
+				}
+				continue
+			}
 			log.Printf(
 				"[Publisher] Rendition %s failed (%s, status=%d, code=%s)",
 				rendition.ID,
@@ -310,7 +319,7 @@ func (s *Service) HandlePublishPublicationJob(ctx context.Context, jobPayload st
 			if diagnostic := platform.ProviderErrorDiagnostic(err); diagnostic != "" {
 				log.Printf("[Publisher] Rendition %s provider diagnostics (%s)", rendition.ID, diagnostic)
 			}
-			if dbErr := s.persistRenditionFailure(ctx, rendition.ID, failure); dbErr != nil {
+			if dbErr := s.persistRenditionOutcome(ctx, rendition.ID, failure); dbErr != nil {
 				log.Printf("[Publisher] Failed to mark rendition %s failed: %v", rendition.ID, dbErr)
 			}
 			s.recordPublicationLifecycleEvent(ctx, publication.WorkspaceID, publication.ID, rendition.ID, lifecycle.EventFailed, lifecycle.StatusFailed, "rendition publish failed", map[string]any{
@@ -334,6 +343,14 @@ func (s *Service) HandlePublishPublicationJob(ctx context.Context, jobPayload st
 
 	if err := s.finalizePublication(ctx, publication); err != nil {
 		return err
+	}
+	if pendingContinuation != nil {
+		// A pending provider receipt still needs reconciliation. Keep this job a
+		// continuation even when another destination has a longer retry delay.
+		if retryFailure != nil && retryFailure.Failure.RetryAfter > pendingContinuation.Failure.RetryAfter {
+			pendingContinuation.Failure.RetryAfter = retryFailure.Failure.RetryAfter
+		}
+		return pendingContinuation
 	}
 	if retryFailure != nil {
 		return retryFailure
@@ -428,7 +445,7 @@ func (s *Service) persistTerminalPreflightFailure(
 	return s.finalizePublication(ctx, &publication)
 }
 
-func (s *Service) persistRenditionFailure(
+func (s *Service) persistRenditionOutcome(
 	ctx context.Context,
 	renditionID string,
 	failure Failure,
@@ -443,7 +460,7 @@ func (s *Service) persistRenditionFailure(
 	}
 	query := s.db.NewUpdate().
 		Model((*models.Rendition)(nil)).
-		Set("status = ?", models.RenditionStatusFailed).
+		Set("status = ?", renditionOutcomeStatus(failure)).
 		Set("error_message = ?", failure.Message).
 		Set("error_kind = ?", failure.Kind).
 		Set("error_code = ?", failure.Code).
@@ -459,6 +476,13 @@ func (s *Service) persistRenditionFailure(
 	}
 	_, err := query.Exec(ctx)
 	return err
+}
+
+func renditionOutcomeStatus(failure Failure) string {
+	if failure.Code == "provider_submission_pending" || failure.Code == "tiktok_inbox_delivered" {
+		return models.RenditionStatusPublishing
+	}
+	return models.RenditionStatusFailed
 }
 
 //nolint:gocyclo
@@ -489,9 +513,6 @@ func (s *Service) publishRendition(
 	}
 	provider, providerKey, connectorBacked, err := s.providerForAccount(ctx, publication.WorkspaceID, account)
 	if err != nil {
-		return err
-	}
-	if err := s.checkMonthlyQuota(ctx, publication.WorkspaceID, entitlements.LimitPublishedPostsMonthly); err != nil {
 		return err
 	}
 	token := ""
@@ -607,7 +628,7 @@ func (s *Service) publishRendition(
 	if err := s.completeRendition(ctx, publication, rendition, externalID, externalURL, publishedAt); err != nil {
 		return err
 	}
-	s.recordPublishedPost(ctx, publication.WorkspaceID)
+	s.recordPublishedPost(ctx, publication.WorkspaceID, writeScope.operationID)
 	s.captureRenditionEvent(ctx, telemetry.EventRenditionPublished, publication, rendition, nil, rendition.ID, publishedAt)
 	s.scheduleReposts(ctx, rendition.ID)
 	s.publishFirstCommentBestEffort(ctx, publication, rendition, provider, token, account.AccountID, externalID, settings)
@@ -753,16 +774,13 @@ func (s *Service) publishRenditionSegments(
 			parentExternalID = segment.ExternalID
 			continue
 		}
-		if err := s.checkMonthlyQuota(ctx, publication.WorkspaceID, entitlements.LimitPublishedPostsMonthly); err != nil {
-			return s.failRenditionSegment(ctx, segment, err)
-		}
 
 		segmentSettings := map[string]interface{}{}
 		_ = json.Unmarshal([]byte(segment.SettingsJSON), &segmentSettings)
 		settings := mergePublisherSettings(destinationSettings, segmentSettings)
 		mediaAttachments, mediaAltTexts, mediaSettings, err := s.loadRenditionSegmentMedia(ctx, segment.ID)
 		if err != nil {
-			return s.failRenditionSegment(ctx, segment, err)
+			return s.persistRenditionSegmentOutcome(ctx, segment, err)
 		}
 		requiredMedia := make([]capabilities.MediaItem, 0, len(mediaAttachments))
 		for _, media := range mediaAttachments {
@@ -771,11 +789,11 @@ func (s *Service) publishRenditionSegments(
 			}
 		}
 		if issues := capabilities.ValidateAttachmentRequirement(account.Platform, rendition.OutputProfile, requiredMedia, settings); len(issues) > 0 {
-			return s.failRenditionSegment(ctx, segment, fmt.Errorf("attachment validation: %s", issues[0].Message))
+			return s.persistRenditionSegmentOutcome(ctx, segment, fmt.Errorf("attachment validation: %s", issues[0].Message))
 		}
 		settings = capabilities.NormalizeMediaTextLinkSettings(account.Platform, len(mediaAttachments), settings)
 		if err := s.hydratePublicSettingMediaURLs(ctx, publication.WorkspaceID, account.Platform, settings); err != nil {
-			return s.failRenditionSegment(ctx, segment, err)
+			return s.persistRenditionSegmentOutcome(ctx, segment, err)
 		}
 		platformMediaIDs := make([]string, 0, len(mediaAttachments))
 		mediaItems := make([]platform.MediaItem, 0, len(mediaAttachments))
@@ -791,7 +809,7 @@ func (s *Service) publishRenditionSegments(
 			if !publishesMediaDirectly {
 				mediaID, uploadErr := s.platformMediaIDForRendition(ctx, publication, &uploadRendition, account, provider, token, media)
 				if uploadErr != nil {
-					return s.failRenditionSegment(ctx, segment, fmt.Errorf("media upload failed for %s: %w", media.ID, uploadErr))
+					return s.persistRenditionSegmentOutcome(ctx, segment, fmt.Errorf("media upload failed for %s: %w", media.ID, uploadErr))
 				}
 				platformMediaIDs = append(platformMediaIDs, mediaID)
 			}
@@ -856,7 +874,7 @@ func (s *Service) publishRenditionSegments(
 		if publishErr != nil && isExpiredTokenError(publishErr) {
 			token, err = s.tm.ForceRefreshAccessToken(ctx, account.ID)
 			if err != nil {
-				return s.failRenditionSegment(ctx, segment, fmt.Errorf("%s token refresh failed after expiry: %w", providerKey, err))
+				return s.persistRenditionSegmentOutcome(ctx, segment, fmt.Errorf("%s token refresh failed after expiry: %w", providerKey, err))
 			}
 			publishResult, publishErr = s.publishProviderWithUsage(
 				ctx,
@@ -873,7 +891,7 @@ func (s *Service) publishRenditionSegments(
 			)
 		}
 		if publishErr != nil {
-			return s.failRenditionSegment(ctx, segment, publishErr)
+			return s.persistRenditionSegmentOutcome(ctx, segment, publishErr)
 		}
 
 		externalID := publishResult.ExternalID
@@ -907,7 +925,7 @@ func (s *Service) publishRenditionSegments(
 			rootExternalURL = externalURL
 		}
 		parentExternalID = externalID
-		s.recordPublishedPost(ctx, publication.WorkspaceID)
+		s.recordPublishedPost(ctx, publication.WorkspaceID, writeScope.operationID)
 		s.recordPublicationLifecycleEvent(ctx, publication.WorkspaceID, publication.ID, rendition.ID, lifecycle.EventPublished, lifecycle.StatusSucceeded, "rendition segment published", map[string]any{
 			"platform":     rendition.Platform,
 			"segment_id":   segment.ID,
@@ -972,7 +990,7 @@ func (s *Service) scheduleReposts(ctx context.Context, renditionID string) {
 	}
 }
 
-func (s *Service) failRenditionSegment(ctx context.Context, segment *models.RenditionSegment, failure error) error {
+func (s *Service) persistRenditionSegmentOutcome(ctx context.Context, segment *models.RenditionSegment, failure error) error {
 	if failure == nil {
 		return nil
 	}
@@ -986,7 +1004,7 @@ func (s *Service) failRenditionSegment(ctx context.Context, segment *models.Rend
 		retryAt = time.Now().UTC().Add(delay)
 	}
 	query := s.db.NewUpdate().Model(segment).
-		Set("status = ?", models.RenditionStatusFailed).
+		Set("status = ?", renditionOutcomeStatus(classified)).
 		Set("error_message = ?", classified.Message).
 		Set("error_kind = ?", classified.Kind).
 		Set("error_code = ?", classified.Code).
@@ -1141,33 +1159,29 @@ func (s *Service) publishRenditionReply(
 	return err
 }
 
-func (s *Service) checkMonthlyQuota(ctx context.Context, workspaceID string, limit entitlements.LimitKey) error {
-	if s.quota == nil || s.usage == nil || workspaceID == "" {
-		return nil
-	}
-	current, err := s.usage.CurrentMonthly(ctx, workspaceID, limit, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("loading usage for %s: %w", limit, err)
-	}
-	decision, err := s.quota.Check(ctx, entitlements.Request{
-		WorkspaceID: workspaceID,
-		Limit:       limit,
-		Current:     current,
-		Amount:      1,
-	})
-	if err != nil {
-		return fmt.Errorf("checking quota for %s: %w", limit, err)
-	}
-	if !decision.Allowed {
-		if decision.Reason != "" {
-			return fmt.Errorf("quota exceeded: %s", decision.Reason)
+func (s *Service) recordPublishedPost(ctx context.Context, workspaceID, operationID string) {
+	if s.quota != nil {
+		if _, stored := s.quota.(*entitlements.SubscriptionService); stored {
+			// A plan can change while the provider is processing the original write.
+			exists, err := s.db.NewSelect().Model((*models.MonthlyUsageReservation)(nil)).Where("operation_key = ? AND workspace_id = ? AND state <> ?", operationID, workspaceID, "released").Exists(ctx)
+			if err != nil {
+				log.Printf("[Publisher] Failed to resolve published usage receipt: %v", err)
+				return
+			}
+			if exists {
+				return
+			}
+		} else {
+			policy, err := s.providerUsagePolicy(ctx, s.db, workspaceID, entitlements.LimitPublishedPostsMonthly)
+			if err != nil {
+				log.Printf("[Publisher] Failed to resolve published usage policy: %v", err)
+				return
+			}
+			if !policy.Unlimited {
+				return
+			}
 		}
-		return fmt.Errorf("quota exceeded: %s", limit)
 	}
-	return nil
-}
-
-func (s *Service) recordPublishedPost(ctx context.Context, workspaceID string) {
 	s.recordUsage(ctx, workspaceID, entitlements.LimitPublishedPostsMonthly)
 }
 
@@ -1923,16 +1937,12 @@ func (s *Service) publishProviderWithUsage(
 		if readinessErr := s.requireProviderWriteReadiness(sendCtx, workspaceID, providerName, writeScope, req); readinessErr != nil {
 			return platform.PublishResult{}, readinessErr
 		}
-		if quotaErr := s.checkMonthlyQuota(sendCtx, workspaceID, entitlements.LimitProviderWriteCallsMonthly); quotaErr != nil {
-			return platform.PublishResult{}, quotaErr
-		}
-		reservation, reserveErr := s.reserveProviderPublishCost(sendCtx, workspaceID, providerName, subject, phase, req)
+		reservation, reserveErr := s.reserveProviderDispatch(sendCtx, workspaceID, providerName, subject, phase, writeScope, req)
 		if reserveErr != nil {
 			return platform.PublishResult{}, reserveErr
 		}
 		requestCopy := *req
 		control.BindPublishRequest(&requestCopy)
-		s.recordProviderWriteCall(sendCtx, workspaceID)
 		result, publishErr := s.publishProvider(sendCtx, provider, token, accountID, &requestCopy, media)
 		s.settleProviderPublishCost(sendCtx, reservation, publishErr)
 		return result, publishErr
@@ -1954,22 +1964,24 @@ func (s *Service) publishProviderWithUsage(
 			if readinessErr := s.requireProviderWriteReadiness(resumeCtx, workspaceID, providerName, writeScope, req); readinessErr != nil {
 				return platform.PublishResult{}, readinessErr
 			}
-			if quotaErr := s.checkMonthlyQuota(resumeCtx, workspaceID, entitlements.LimitProviderWriteCallsMonthly); quotaErr != nil {
-				return platform.PublishResult{}, quotaErr
-			}
-			reservation, reserveErr := s.reserveProviderPublishCost(resumeCtx, workspaceID, providerName, subject, phase+"-resume", req)
+			reservation, reserveErr := s.reserveProviderDispatch(resumeCtx, workspaceID, providerName, subject, phase+"-resume", writeScope, req)
 			if reserveErr != nil {
 				return platform.PublishResult{}, reserveErr
 			}
 			requestCopy := *req
 			control.BindPublishRequest(&requestCopy)
-			s.recordProviderWriteCall(resumeCtx, workspaceID)
 			result, resumeErr := resumer.ResumePublish(resumeCtx, token, accountID, &requestCopy, reference)
 			s.settleProviderPublishCost(resumeCtx, reservation, resumeErr)
 			return result, resumeErr
 		}
 	}
-	return providerwrite.New(s.db).Execute(ctx, input, send, reconcile, resume)
+	result, err := providerwrite.New(s.db).Execute(ctx, input, send, reconcile, resume)
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if settleErr := s.settleProviderUsage(settleCtx, workspaceID, writeScope); settleErr != nil {
+		log.Printf("[Publisher] monthly usage settlement failed; reservation retained: %v", settleErr)
+	}
+	return result, err
 }
 
 func (s *Service) requireProviderWriteReadiness(
@@ -1983,6 +1995,12 @@ func (s *Service) requireProviderWriteReadiness(
 			Decision: providerreadiness.UnavailableDecision(providerreadiness.OperationPublishImmediate),
 		}
 	}
+	if writeScope.publicationID != "" {
+		if err := publicationauth.RequireReview(ctx, s.db, writeScope.publicationID); err != nil {
+			return err
+		}
+	}
+
 	var account models.SocialAccount
 	if err := s.db.NewSelect().Model(&account).
 		Where("id = ?", writeScope.socialAccountID).
@@ -2095,6 +2113,9 @@ func (s *Service) uploadRenditionMediaToPlatform(ctx context.Context, account *m
 	if requiresPublicMedia(account.Platform, rendition.Profile) && !usesTikTokFileUpload(account.Platform, settings) {
 		return s.getPublicMediaURL(media), nil
 	}
+	if err := publicationauth.RequireReview(ctx, s.db, rendition.PublicationID); err != nil {
+		return "", err
+	}
 	if uploader, ok := provider.(platform.MetadataMediaUploader); ok {
 		req, closeReaders, err := s.renditionUploadRequest(ctx, rendition, media, settings, true)
 		if err != nil {
@@ -2179,6 +2200,12 @@ func (s *Service) renditionUploadRequest(ctx context.Context, rendition *models.
 		readers = append(readers, captionReader)
 	}
 	req := platform.UploadMediaRequest{
+		BeforeWrite: func(writeCtx context.Context) error {
+			if err := publicationauth.RequireReview(writeCtx, s.db, rendition.PublicationID); err != nil {
+				return &platform.MediaUploadError{RetryClassification: platform.MediaRetrySafeResume, Err: err}
+			}
+			return nil
+		},
 		MimeType:    media.MimeType,
 		Filename:    firstNonEmptyPublisherString(media.OriginalFilename, storageKey),
 		Size:        media.Size,
@@ -2358,10 +2385,14 @@ func (s *Service) finalizePublication(ctx context.Context, publication *models.P
 		return fmt.Errorf("load renditions for publication %s: %w", publication.ID, err)
 	}
 	hasFailed := false
+	hasPublishing := false
 	allPublished := len(renditions) > 0
 	for _, rendition := range renditions {
 		if rendition.Status == models.RenditionStatusFailed {
 			hasFailed = true
+		}
+		if rendition.Status == models.RenditionStatusPublishing {
+			hasPublishing = true
 		}
 		if rendition.Status != models.RenditionStatusPublished {
 			allPublished = false
@@ -2371,6 +2402,8 @@ func (s *Service) finalizePublication(ctx context.Context, publication *models.P
 	switch {
 	case allPublished:
 		status = models.PublicationStatusPublished
+	case hasPublishing:
+		status = models.PublicationStatusPublishing
 	case hasFailed:
 		status = models.PublicationStatusFailed
 	}

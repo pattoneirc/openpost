@@ -245,26 +245,50 @@ export async function saveGuestImageEditorDesign(
 }
 
 export async function listGuestImageEditorDesigns(limit = 12): Promise<LocalImageEditorDesign[]> {
+	if (limit === 0) return [];
 	const db = await openImageEditorDatabase();
-	const records = await new Promise<LocalImageEditorDesign[]>((resolve, reject) => {
-		const request: IDBRequest<LocalImageEditorDesign[]> = db
-			.transaction(GUEST_DESIGN_STORE)
-			.objectStore(GUEST_DESIGN_STORE)
-			.getAll();
-		request.onsuccess = () => resolve(request.result ?? []);
-		request.onerror = () => reject(request.error);
-	});
-	db.close();
-	const result = records
-		.sort((left, right) => right.updated_at.localeCompare(left.updated_at))
-		.slice(0, limit);
-	return result;
+	try {
+		const records = await new Promise<LocalImageEditorDesign[]>((resolve, reject) => {
+			const index = db
+				.transaction(GUEST_DESIGN_STORE)
+				.objectStore(GUEST_DESIGN_STORE)
+				.index('updated_at');
+			const read = (oldestKey?: IDBValidKey) => {
+				const request: IDBRequest<LocalImageEditorDesign[]> = index.getAll(
+					oldestKey === undefined ? undefined : IDBKeyRange.lowerBound(oldestKey)
+				);
+				request.onsuccess = () => resolve(request.result ?? []);
+				request.onerror = () => reject(request.error);
+			};
+			if (!Number.isInteger(limit) || limit < 1 || limit > 0xffffffff) {
+				read();
+				return;
+			}
+			const cursor = index.openKeyCursor(null, 'prev');
+			let advanced = false;
+			cursor.onerror = () => reject(cursor.error);
+			cursor.onsuccess = () => {
+				if (cursor.result && !advanced && limit > 1) {
+					advanced = true;
+					cursor.result.advance(limit - 1);
+					return;
+				}
+				// Include the whole boundary timestamp so tied designs retain primary-key order.
+				read(cursor.result?.key);
+			};
+		});
+		return records
+			.sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+			.slice(0, limit);
+	} finally {
+		db.close();
+	}
 }
 
-export async function warmGuestImageEditorDesignMedia(
+export async function warmGuestImageEditorPreviewMedia(
 	document: ImageEditorDocument
 ): Promise<string[]> {
-	return await warmGuestImageEditorMedia(document);
+	return await warmGuestImageEditorMedia({ ...document, pages: document.pages.slice(0, 1) });
 }
 
 export async function deleteGuestImageEditorDesign(id: string): Promise<void> {

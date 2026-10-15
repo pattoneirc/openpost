@@ -17,7 +17,7 @@ import {
 	videoProjectAssetsQueryOptions,
 	videoProjectConflictsQueryOptions,
 	videoProjectDetailQueryOptions,
-	videoProjectListQueryOptions,
+	videoProjectSummariesQueryOptions,
 	videoProjectQueryKeys,
 	videoProjectRevisionsQueryOptions
 } from '@openpost/query-catalog';
@@ -60,9 +60,6 @@ const pendingVideoProjectMutationSchema = z.object({
 	attempts: z.number()
 });
 const cloudDocumentSchema = z.looseObject({});
-const cloudDocumentFamilySchema = z.looseObject({
-	schemaFamily: z.string().optional()
-});
 type CloudVideoProjectDocument = components['schemas']['VideoProjectResponse']['document'];
 
 export function purgeCloudVideoProjectDeviceData(): void {
@@ -84,9 +81,8 @@ export interface CloudVideoProject<TDocument extends object> {
 	updatedAt: string;
 }
 
-export function cloudVideoProjectFamily(project: CloudVideoProject<object>): string {
-	const result = cloudDocumentFamilySchema.safeParse(project.document);
-	return result.success ? (result.data.schemaFamily ?? '') : '';
+export interface CloudVideoProjectSummary extends Omit<CloudVideoProject<object>, 'document'> {
+	schemaFamily: string;
 }
 
 export interface CloudVideoProjectRevision<TDocument extends object> {
@@ -173,28 +169,25 @@ function deviceId(): string {
 	return created;
 }
 
-function cloudProject<TDocument extends object>(raw: {
-	id: string;
-	workspace_id: string;
-	name: string;
-	head_revision: number;
-	document: CloudVideoProjectDocument;
-	sync_status: CloudVideoProject<TDocument>['syncStatus'];
-	attention_reason?: string;
-	trashed_at?: string;
-	updated_at: string;
-}): CloudVideoProject<TDocument> {
+function cloudProjectMetadata(
+	raw: Omit<components['schemas']['VideoProjectResponse'], 'document'>
+): Omit<CloudVideoProject<object>, 'document'> {
 	return {
 		id: raw.id,
 		workspaceId: raw.workspace_id,
 		name: raw.name,
 		headRevision: raw.head_revision,
-		document: documentFromAPI<TDocument>(raw.document),
 		syncStatus: raw.sync_status,
 		attentionReason: raw.attention_reason ?? '',
 		trashedAt: raw.trashed_at ?? '',
 		updatedAt: raw.updated_at
 	};
+}
+
+function cloudProject<TDocument extends object>(
+	raw: components['schemas']['VideoProjectResponse']
+): CloudVideoProject<TDocument> {
+	return { ...cloudProjectMetadata(raw), document: documentFromAPI<TDocument>(raw.document) };
 }
 
 function documentFromAPI<TDocument extends object>(value: CloudVideoProjectDocument): TDocument {
@@ -236,11 +229,14 @@ export class CloudVideoProjectRepository<TDocument extends object> {
 		]);
 	}
 
-	async list(includeTrash = false): Promise<CloudVideoProject<TDocument>[]> {
+	async listSummaries(includeTrash = false): Promise<CloudVideoProjectSummary[]> {
 		const data = await queryClient.query(
-			videoProjectListQueryOptions(videoProjectQueryAPI, this.workspaceId, includeTrash)
+			videoProjectSummariesQueryOptions(videoProjectQueryAPI, this.workspaceId, includeTrash)
 		);
-		return data.map((project) => cloudProject<TDocument>(project));
+		return data.map((project) => ({
+			...cloudProjectMetadata(project),
+			schemaFamily: project.schema_family
+		}));
 	}
 
 	async get(id: string): Promise<CloudVideoProject<TDocument>> {

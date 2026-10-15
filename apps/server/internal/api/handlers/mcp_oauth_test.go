@@ -372,3 +372,13 @@ func tokenPrefix(t *testing.T, token string) string {
 	require.Len(t, parts, 4)
 	return parts[2]
 }
+
+func TestMCPOAuthRevokeWorksWithoutExternalApplications(t *testing.T) {
+	srv := newMCPOAuthTestServer(t)
+	issued, err := srv.apiTokens.GenerateTokenWithOptions(t.Context(), "user-1", "MCP", apitokens.ScopeMCP, apitokens.GenerateOptions{WorkspaceID: "ws-1", Audience: "https://app.openpost.test/mcp"})
+	require.NoError(t, err)
+	response := srv.form(t, "/oauth/revoke", url.Values{"token": {issued.Token}})
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	_, err = srv.apiTokens.ValidateToken(t.Context(), issued.Token)
+	require.ErrorIs(t, err, apitokens.ErrRevokedToken)
+}

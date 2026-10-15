@@ -120,6 +120,7 @@ var managedSettingDefinitions = []ManagedSettingDefinition{
 
 	{Key: "OPENPOST_DISABLE_LINKEDIN_THREAD_REPLIES", Group: "providers", Label: "Disable LinkedIn thread replies", Description: "Publish only the first segment of LinkedIn threads.", Kind: ManagedSettingBoolean, EnvVars: []string{"OPENPOST_DISABLE_LINKEDIN_THREAD_REPLIES", "LINKEDIN_DISABLE_THREAD_REPLIES"}},
 	{Key: "OPENPOST_LINKEDIN_ORGANIZATIONS_ENABLED", Group: "providers", Label: "LinkedIn organizations", Description: "Allow publishing through LinkedIn organization pages when the app has permission.", Kind: ManagedSettingBoolean, EnvVars: []string{"OPENPOST_LINKEDIN_ORGANIZATIONS_ENABLED"}},
+	{Key: "OPENPOST_LINKEDIN_MEMBER_ANALYTICS_ENABLED", Group: "providers", Label: "LinkedIn member analytics", Description: "Request r_member_profileAnalytics and r_member_postAnalytics with approved Community Management API access. Initial Development Tier access requires a separate app without other products; approved Standard Tier access can be added to an existing Advertising API app.", Kind: ManagedSettingBoolean, EnvVars: []string{"OPENPOST_LINKEDIN_MEMBER_ANALYTICS_ENABLED"}},
 	{Key: "OPENPOST_DISABLE_TIKTOK_DISPLAY_API", Group: "providers", Label: "Disable TikTok Display API scopes", Description: "Request only the TikTok publishing scopes (user.info.basic, video.publish, video.upload) for apps without Display API approval. Usernames, analytics, and public video ID reconciliation stay unavailable.", Kind: ManagedSettingBoolean, EnvVars: []string{"OPENPOST_DISABLE_TIKTOK_DISPLAY_API"}},
 	{Key: "OPENPOST_X_MONTHLY_BUDGET_MICROUSD", Group: "providers", Label: "X monthly API budget", Description: "Hosted X API budget in millionths of a US dollar.", Kind: ManagedSettingInteger, EnvVars: []string{"OPENPOST_X_MONTHLY_BUDGET_MICROUSD"}},
 	{Key: "OPENPOST_X_POST_CREATE_COST_MICROUSD", Group: "providers", Label: "X post API cost", Description: "Estimated cost of an X post request in millionths of a US dollar.", Kind: ManagedSettingInteger, EnvVars: []string{"OPENPOST_X_POST_CREATE_COST_MICROUSD"}},
@@ -274,6 +275,7 @@ var managedSettingBindings = map[string]managedSettingBinding{
 	"OPENPOST_TELEMETRY_ENVIRONMENT":                stringBinding(func(c *Config) *string { return &c.TelemetryEnvironment }),
 	"OPENPOST_DISABLE_LINKEDIN_THREAD_REPLIES":      boolBinding(func(c *Config) *bool { return &c.DisableLinkedInThreadReplies }),
 	"OPENPOST_LINKEDIN_ORGANIZATIONS_ENABLED":       boolBinding(func(c *Config) *bool { return &c.EnableLinkedInOrganizations }),
+	"OPENPOST_LINKEDIN_MEMBER_ANALYTICS_ENABLED":    boolBinding(func(c *Config) *bool { return &c.EnableLinkedInMemberAnalytics }),
 	"OPENPOST_DISABLE_TIKTOK_DISPLAY_API":           boolBinding(func(c *Config) *bool { return &c.DisableTikTokDisplayAPI }),
 	"OPENPOST_X_MONTHLY_BUDGET_MICROUSD":            int64Binding(func(c *Config) *int64 { return &c.XMonthlyBudgetMicrousd }),
 	"OPENPOST_X_POST_CREATE_COST_MICROUSD":          int64Binding(func(c *Config) *int64 { return &c.XPostCreateCostMicrousd }),

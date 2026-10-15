@@ -12,6 +12,7 @@ import type {
 	VectorKeyframeProperty
 } from '$lib/video-editor/project/types';
 import { applyEasing, applyEasingConfig } from './easing';
+import { keyframeSegmentEnd } from './keyframe-search';
 
 export interface PositionPromotion {
 	position: VectorKeyframe[];
@@ -181,17 +182,14 @@ export function interpolateVector(
 	if (frame >= (keyframes[last]?.frame ?? 0)) {
 		return cloneVector(keyframes[last]?.value ?? { x: 0, y: 0 });
 	}
-	for (let index = 1; index <= last; index += 1) {
-		const end = keyframes[index];
-		const start = keyframes[index - 1];
-		if (!start || !end || frame > end.frame) continue;
-		const progress = (frame - start.frame) / Math.max(1, end.frame - start.frame);
-		const eased = start.easingConfig
-			? applyEasingConfig(progress, start.easingConfig)
-			: applyEasing(progress, start.easing);
-		return interpolatePositionSegment(start, end, eased);
-	}
-	return cloneVector(keyframes[last]?.value ?? { x: 0, y: 0 });
+	const index = keyframeSegmentEnd(keyframes, frame);
+	const end = keyframes[index];
+	const start = keyframes[index - 1];
+	const progress = (frame - start.frame) / Math.max(1, end.frame - start.frame);
+	const eased = start.easingConfig
+		? applyEasingConfig(progress, start.easingConfig)
+		: applyEasing(progress, start.easing);
+	return interpolatePositionSegment(start, end, eased);
 }
 
 export function interpolatePosition(
@@ -427,20 +425,17 @@ function interpolateScalarTrack(
 	}
 	const last = track.frames.length - 1;
 	if (frame >= (track.frames[last] ?? 0)) return track.values[last] ?? fallback;
-	for (let index = 1; index <= last; index += 1) {
-		const endFrame = track.frames[index] ?? 0;
-		if (frame > endFrame) continue;
-		const startFrame = track.frames[index - 1] ?? 0;
-		const progress = (frame - startFrame) / Math.max(1, endFrame - startFrame);
-		const config = track.easingConfigs?.[index - 1] ?? undefined;
-		const eased = config
-			? applyEasingConfig(progress, config)
-			: applyEasing(progress, track.easings?.[index - 1] ?? 'linear');
-		const start = track.values[index - 1] ?? fallback;
-		const end = track.values[index] ?? start;
-		return start + eased * (end - start);
-	}
-	return track.values[last] ?? fallback;
+	const index = keyframeSegmentEnd(track.frames, frame);
+	const endFrame = track.frames[index] ?? 0;
+	const startFrame = track.frames[index - 1] ?? 0;
+	const progress = (frame - startFrame) / Math.max(1, endFrame - startFrame);
+	const config = track.easingConfigs?.[index - 1] ?? undefined;
+	const eased = config
+		? applyEasingConfig(progress, config)
+		: applyEasing(progress, track.easings?.[index - 1] ?? 'linear');
+	const start = track.values[index - 1] ?? fallback;
+	const end = track.values[index] ?? start;
+	return start + eased * (end - start);
 }
 
 function segmentStyleAt(

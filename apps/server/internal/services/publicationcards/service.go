@@ -32,6 +32,11 @@ import (
 	_ "golang.org/x/image/webp" // Decode connected-account avatars.
 )
 
+// Rendering includes avatar I/O and image buffers. Share slots across REST,
+// MCP and publication mutation owners so new handlers cannot bypass the bound.
+var renderSlots = make(chan struct{}, 2)
+var ErrRenderBusy = errors.New("text card rendering is busy")
+
 type Service struct {
 	db      *bun.DB
 	storage mediastore.BlobStorage
@@ -83,6 +88,16 @@ func Identity(account models.SocialAccount) textcards.Identity {
 }
 
 func (s *Service) Preview(ctx context.Context, account models.SocialAccount, body, output string, style textcards.Style, attachments int) ([]textcards.Image, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case renderSlots <- struct{}{}:
+		defer func() { <-renderSlots }()
+	default:
+		return nil, ErrRenderBusy
+	}
+
 	avatar := s.avatar(ctx, account.AccountAvatarURL)
 	return textcards.Render(ctx, body, output, style, Identity(account), avatar, attachments)
 }

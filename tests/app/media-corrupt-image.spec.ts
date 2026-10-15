@@ -12,13 +12,14 @@ test("Media upload reports corrupt PNG failure without a ready library asset", a
   await authenticatePage(page, auth.token);
   await page.goto("/media");
   await page.getByRole("button", { name: "Add media", exact: true }).click();
+  const corruptBytes = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    Buffer.from("This signature has no image pixels."),
+  ]);
   await page.locator('input[type="file"]').setInputFiles({
     name: "corrupt.png",
     mimeType: "image/png",
-    buffer: Buffer.concat([
-      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-      Buffer.from("This signature has no image pixels."),
-    ]),
+    buffer: corruptBytes,
   });
   await page.getByRole("button", { name: "Upload 1 file", exact: true }).click();
   await expect(page.getByText("image file could not be decoded", { exact: true })).toBeVisible();
@@ -44,7 +45,17 @@ test("Media upload reports corrupt PNG failure without a ready library asset", a
     headers: { Authorization: `Bearer ${auth.token}` },
   });
   expect(response.ok()).toBe(true);
-  expect((await response.json()).media).toEqual([]);
+  const failedRecords = (await response.json()).media;
+  expect(failedRecords).toHaveLength(1);
+  expect(failedRecords[0]).toMatchObject({
+    processing_status: "failed",
+    size: corruptBytes.byteLength,
+  });
+  expect(
+    failedRecords.filter(
+      (record: { processing_status: string }) => record.processing_status === "ready",
+    ),
+  ).toEqual([]);
   await page.getByRole("button", { name: "Remove corrupt.png", exact: true }).click();
   await page.locator('input[type="file"]').setInputFiles({
     name: "valid.png",
@@ -58,7 +69,17 @@ test("Media upload reports corrupt PNG failure without a ready library asset", a
   const recovered = await request.get(`/api/v1/media?workspace_id=${workspace.id}`, {
     headers: { Authorization: `Bearer ${auth.token}` },
   });
-  const records = (await recovered.json()).media;
+  const allRecords = (await recovered.json()).media;
+  expect(allRecords).toHaveLength(2);
+  expect(
+    allRecords.find((record: { id: string }) => record.id === failedRecords[0].id),
+  ).toMatchObject({
+    processing_status: "failed",
+    size: corruptBytes.byteLength,
+  });
+  const records = allRecords.filter(
+    (record: { processing_status: string }) => record.processing_status === "ready",
+  );
   expect(records).toHaveLength(1);
   expect(records[0].processing_status).toBe("ready");
   expect(records[0].width).toBeGreaterThan(0);

@@ -5,11 +5,13 @@
 	import {
 		repostAutomationQueryOptions,
 		workflowsQueryOptions,
-		workflowRunsQueryOptions,
+		workflowRunSummariesQueryOptions,
+		workflowRunQueryOptions,
 		workspaceAccountsQueryOptions
 	} from '@openpost/query-catalog';
 	import { workflowQueryAPI } from '$lib/query/workflows';
 	import { queryAPI } from '$lib/query/api';
+	import { readQueryErrorMessage } from '$lib/query/error-message';
 	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import { saveWorkflow, deleteWorkflow, type Workflow, type Definition } from '$lib/workflows/api';
 	import { templates, sourceLabel, runStateLabel } from '$lib/workflows/catalog';
@@ -27,16 +29,43 @@
 	let deleting = $state<Workflow | null>(null),
 		deleteOpen = $state(false);
 	const workspaceID = $derived(workspaceCtx.currentWorkspace?.id ?? '');
-	const accountsQuery = createQuery(() => workspaceAccountsQueryOptions(queryAPI, workspaceID));
-	const workflowsQuery = createQuery(() => workflowsQueryOptions(workflowQueryAPI, workspaceID));
-	const repostsQuery = createQuery(() =>
-		repostAutomationQueryOptions(schedulingQueryAPI, workspaceID)
-	);
-	const runsQuery = createQuery(() => workflowRunsQueryOptions(workflowQueryAPI, workspaceID));
 	let tab = $state<'workflows' | 'runs' | 'templates'>('workflows'),
 		selectedRun = $state(''),
+		repostHistoryOpen = $state(false),
 		busy = $state(false),
 		error = $state('');
+	const accountsQuery = createQuery(() => ({
+		...workspaceAccountsQueryOptions(queryAPI, workspaceID),
+		enabled: Boolean(workspaceID && tab === 'runs' && selectedRun)
+	}));
+	const workflowsQuery = createQuery(() => ({
+		...workflowsQueryOptions(workflowQueryAPI, workspaceID),
+		enabled: Boolean(workspaceID && tab !== 'templates')
+	}));
+	const repostsQuery = createQuery(() => ({
+		...repostAutomationQueryOptions(schedulingQueryAPI, workspaceID),
+		enabled: Boolean(workspaceID && tab === 'workflows')
+	}));
+	const runsQuery = createQuery(() => ({
+		...workflowRunSummariesQueryOptions(workflowQueryAPI, workspaceID),
+		enabled: Boolean(workspaceID && tab === 'runs' && !selectedRun)
+	}));
+	// Start the snapshot alongside accounts, before the inspector can mount.
+	const selectedRunQuery = createQuery(() =>
+		workflowRunQueryOptions(workflowQueryAPI, workspaceID, tab === 'runs' ? selectedRun : '')
+	);
+	const visibleQueries = $derived(
+		tab === 'workflows'
+			? [workflowsQuery, repostsQuery]
+			: tab === 'templates'
+				? []
+				: selectedRun
+					? [accountsQuery, ...(selectedRunQuery.data ? [] : [selectedRunQuery])]
+					: [runsQuery]
+	);
+	const loading = $derived(
+		visibleQueries.map((query) => query.isPending && !query.error).some(Boolean)
+	);
 	let runList = $state<HTMLDivElement | null>(null);
 	async function returnToRuns(event: MouseEvent) {
 		const action = event.currentTarget;
@@ -78,11 +107,7 @@
 	title={m.workflows_title()}
 	description={m.workflows_subtitle()}
 	themeIconRole="repeat"
-	loading={[
-		workflowsQuery.isPending && !workflowsQuery.error,
-		repostsQuery.isPending && !repostsQuery.error,
-		accountsQuery.isPending && !accountsQuery.error
-	].some(Boolean)}
+	{loading}
 >
 	{#snippet actions()}<Button
 			disabled={busy || !workspaceID || workspaceCtx.currentWorkspace?.role === 'viewer'}
@@ -102,11 +127,14 @@
 			>
 		</div>{/snippet}
 	<div class="space-y-6">
-		{#if repostsQuery.error}<InlineNotice tone="error" message={String(repostsQuery.error)} />{/if}
-		{#if error || workflowsQuery.error || accountsQuery.error}<InlineNotice
+		{#if error}<InlineNotice tone="error" message={error} />{/if}
+		{#each visibleQueries.filter((query) => query.error) as query}<InlineNotice
 				tone="error"
-				message={error || String(workflowsQuery.error || accountsQuery.error)}
-			/>{/if}
+				message={readQueryErrorMessage(query.error) || m.workflows_load_failed()}
+				>{#snippet actions()}<Button variant="outline" size="sm" onclick={() => query.refetch()}
+						>{m.common_retry()}</Button
+					>{/snippet}</InlineNotice
+			>{/each}
 		{#if tab === 'workflows'}
 			{#if workflowsQuery.data?.length || repostsQuery.data?.policies?.length}<div
 					class="divide-y rounded-lg border bg-card"
@@ -163,7 +191,7 @@
 						</a>
 					{/each}
 				</div>
-			{:else if !workflowsQuery.error}<EmptyState
+			{:else if workflowsQuery.isSuccess && repostsQuery.isSuccess}<EmptyState
 					themeIconRole="repeat"
 					title={m.workflows_no_workflows()}
 					description={m.workflows_no_workflows_help()}
@@ -206,23 +234,24 @@
 		{:else if selectedRun}<Button variant="ghost" onclick={returnToRuns}
 				><ThemeIcon role="arrow-left" class="size-4" />{m.workflows_runs()}</Button
 			>
-			{#if accountsQuery.data}<RunInspector
+			{#if accountsQuery.data && selectedRunQuery.data}<RunInspector
 					{workspaceID}
 					runID={selectedRun}
 					accounts={accountsQuery.data}
 				/>{/if}
 		{:else}
-			<details class="rounded-lg border p-4">
+			<details class="rounded-lg border p-4" bind:open={repostHistoryOpen}>
 				<summary class="min-h-11 cursor-pointer text-sm font-medium">{m.repost_heading()}</summary
-				><RepostHistory {workspaceID} />
+				>{#if repostHistoryOpen}<RepostHistory {workspaceID} />{/if}
 			</details>
-			{#if runsQuery.error}<InlineNotice tone="error" message={String(runsQuery.error)} />{/if}
 			<div
 				bind:this={runList}
 				role="region"
 				tabindex="-1"
 				aria-label={m.workflows_runs()}
-				class="divide-y rounded-lg border bg-card focus-visible:outline-2 focus-visible:outline-ring"
+				class="focus-visible:outline-2 focus-visible:outline-ring {runsQuery.data?.length
+					? 'divide-y rounded-lg border bg-card'
+					: ''}"
 			>
 				{#each runsQuery.data ?? [] as run (run.id)}<button
 						id={`workflow-run-${run.id}`}
@@ -243,7 +272,7 @@
 						><span class="text-sm">{runStateLabel(run.state)}</span></button
 					>{/each}
 			</div>
-			{#if !runsQuery.data?.length && !runsQuery.isPending}<EmptyState
+			{#if !runsQuery.data?.length && runsQuery.isSuccess}<EmptyState
 					themeIconRole="history"
 					title={m.workflows_no_runs()}
 					description={workflowsQuery.data?.some((workflow) => workflow.enabled)

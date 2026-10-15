@@ -266,15 +266,24 @@ export function createRepurposeReview(getContext: () => RepurposeReviewContext) 
 			);
 		});
 	}
+	function mediaAvailable(): boolean {
+		const source = getContext().source;
+		if (source.file || source.handle) return true;
+		error = m.repurpose_source_missing();
+		return false;
+	}
 	async function find(topic: string) {
-		if (busy || creating) return;
+		if (busy || creating || !mediaAvailable()) return;
 		candidates = [];
 		restoredChoices = [];
 		created = [];
 		warning = '';
 		result = null;
 		await run((source, captured) => {
-			const input: RepurposeRequest = { workspace_id: captured.context.workspaceId, source };
+			const input: RepurposeRequest = {
+				workspace_id: captured.context.workspaceId,
+				source
+			};
 			if (topic.trim()) input.topic = topic.trim();
 			return requestRepurposeSuggestions(input, captured.context.actorId, crypto.randomUUID());
 		});
@@ -327,7 +336,7 @@ export function createRepurposeReview(getContext: () => RepurposeReviewContext) 
 	}
 	async function retry() {
 		const value = result;
-		if (!value || busy || creating) return;
+		if (!value || busy || creating || !mediaAvailable()) return;
 		await run((_, captured) =>
 			changeRepurposeSuggestions(
 				captured.context.workspaceId,
@@ -381,7 +390,7 @@ export function createRepurposeReview(getContext: () => RepurposeReviewContext) 
 		if (result) remember(getContext(), result);
 	}
 	async function createSelected() {
-		if (busy || creating || !snapshot) return;
+		if (busy || creating || !snapshot || !mediaAvailable()) return;
 		const captured = capture();
 		const controller = new AbortController();
 		request = controller;

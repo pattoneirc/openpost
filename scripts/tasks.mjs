@@ -65,6 +65,8 @@ const checks = {
     bun("scripts/asset-surfaces.mjs"),
   ]),
   workflows: stage("GitHub Actions workflows", [
+    bunTest("scripts/check-automation-paths.test.mjs"),
+    bun("scripts/check-automation-paths.mjs"),
     go("run", "github.com/rhysd/actionlint/cmd/actionlint@v1.7.12"),
   ]),
   "mcp-registry": stage("MCP registry", [
@@ -162,7 +164,11 @@ const checks = {
     bunTest("scripts/compatibility-surfaces.test.mjs"),
     bun("scripts/compatibility-surfaces.mjs"),
   ]),
-  "ui-consistency": stage("UI consistency", [bun("scripts/check-ui-consistency.mjs")]),
+  "ui-consistency": stage("UI consistency", [
+    bun("scripts/check-ui-consistency.mjs"),
+    bun("scripts/sync-static-ui.mjs", "--check"),
+    commandStep("bun", "scripts/sync-static-404.mjs", "--check", { cwd: "apps/marketing" }),
+  ]),
   "query-migration": stage("Query migration", [
     bunTest("scripts/check-query-migration.test.mjs"),
     bun("scripts/check-query-migration.mjs"),

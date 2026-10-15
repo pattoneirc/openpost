@@ -15,7 +15,7 @@ import (
 	"github.com/uptrace/bun/dialect/sqlitedialect"
 )
 
-func createHandlerTestDB(t *testing.T, modelsToCreate ...interface{}) *bun.DB {
+func createHandlerTestDB(t testing.TB, modelsToCreate ...interface{}) *bun.DB {
 	t.Helper()
 
 	testName := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())

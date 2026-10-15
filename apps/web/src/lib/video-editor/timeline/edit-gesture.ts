@@ -26,7 +26,8 @@ import { scaleItemVectorKeyframes } from './vector-keyframes';
 import {
 	getLinkedItems,
 	getSynchronizedLinkedCounterpartPair,
-	getSynchronizedLinkedItems
+	getSynchronizedLinkedItems,
+	getSynchronizedLinkedSelection
 } from './utils/linked-items';
 import {
 	clampMoveDeltaToTrackGaps,
@@ -183,15 +184,9 @@ export function planLinkedMoveGesture(
 	destination?: { trackId: string; tracks: readonly TimelineTrack[] }
 ): TimelineMove[] {
 	const items = withAnchor(item, allItems);
-	const participantById = new Map<string, TimelineItem>();
 	const anchors = selectedItemIds.includes(item.id) ? selectedItemIds : [item.id];
-	for (const anchorId of anchors) {
-		for (const participant of getSynchronizedLinkedItems(items, anchorId)) {
-			participantById.set(participant.id, participant);
-		}
-	}
-	participantById.set(item.id, item);
-	const participants = [...participantById.values()];
+	const participants = getSynchronizedLinkedSelection(items, anchors);
+	const participantIds = new Set(participants.map((participant) => participant.id));
 	let delta = proposedFrom - item.from;
 	if (destination) {
 		const original = participants.map((participant) => ({
@@ -209,8 +204,7 @@ export function planLinkedMoveGesture(
 		const offset = targetIndex - sourceIndex;
 		const moves: TimelineMove[] = [];
 		for (const participant of participants) delta = Math.max(delta, -participant.from);
-		if (offset === 0)
-			delta = clampMoveDeltaToTrackGaps(items, new Set(participantById.keys()), delta);
+		if (offset === 0) delta = clampMoveDeltaToTrackGaps(items, participantIds, delta);
 		for (const participant of participants) {
 			const source = destination.tracks.find((track) => track.id === participant.trackId);
 			if (!source || source.locked) return original;
@@ -239,7 +233,7 @@ export function planLinkedMoveGesture(
 			return original;
 		return moves;
 	}
-	delta = clampMoveDeltaToTrackGaps(items, new Set(participantById.keys()), delta);
+	delta = clampMoveDeltaToTrackGaps(items, participantIds, delta);
 	return participants.map((participant) => ({
 		id: participant.id,
 		from: participant.from + delta

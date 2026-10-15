@@ -31,6 +31,7 @@ export const assetSurfaceManifest = {
     "brand/apple-touch-icon.png",
   ],
   docs: [
+    "marketing/missing-page.webp",
     "brand/icon.svg",
     "brand/logo.svg",
     "brand/logo-dark.svg",
@@ -60,6 +61,7 @@ export const assetSurfaceManifest = {
     "logos/dokploy.svg",
     "logos/nixos.svg",
     "logos/portainer.svg",
+    "logos/umbrelos.png",
     "logos/zimaos.png",
     "screenshots/integrations/POSTIZ-LICENSE.txt",
     "screenshots/integrations/SOURCES.txt",
@@ -74,6 +76,10 @@ export const assetSurfaceManifest = {
     "screenshots/image-export-detail-dark.webp",
   ],
   marketing: [
+    "marketing/missing-page.webp",
+    "brand/fonts/Geist-Regular.ttf",
+    "brand/fonts/Geist-SemiBold.ttf",
+    "brand/fonts/LICENSE-Geist.txt",
     "logos/comparisons/buffer.svg",
     "logos/comparisons/postiz.svg",
     "logos/comparisons/metricool.webp",

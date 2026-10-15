@@ -2,6 +2,7 @@
 
 import type { KeyframeTrack } from '$lib/video-editor/project/types';
 import { applyEasing, applyEasingConfig } from './easing';
+import { keyframeSegmentEnd } from './keyframe-search';
 
 export const MIN_PACKED_COLOR = 0;
 const MAX_PACKED_RGB = 0xffffff;
@@ -188,22 +189,15 @@ export function interpolateColorTrackToHex(
 	if (frame >= (track.frames[last] ?? 0)) {
 		return keyframeValueToHexColor(track.values[last] ?? baseValue);
 	}
-	for (let index = 1; index <= last; index += 1) {
-		const previousFrame = track.frames[index - 1];
-		const nextFrame = track.frames[index];
-		if (previousFrame === undefined || nextFrame === undefined || frame > nextFrame) continue;
-		const progress = (frame - previousFrame) / Math.max(1, nextFrame - previousFrame);
-		const config = track.easingConfigs?.[index - 1] ?? undefined;
-		const eased = config
-			? applyEasingConfig(progress, config)
-			: applyEasing(progress, track.easings?.[index - 1] ?? 'linear');
-		return keyframeValueToHexColor(
-			interpolateOklch(
-				track.values[index - 1] ?? baseValue,
-				track.values[index] ?? baseValue,
-				eased
-			)
-		);
-	}
-	return baseColor;
+	const index = keyframeSegmentEnd(track.frames, frame);
+	const previousFrame = track.frames[index - 1];
+	const nextFrame = track.frames[index];
+	const progress = (frame - previousFrame) / Math.max(1, nextFrame - previousFrame);
+	const config = track.easingConfigs?.[index - 1] ?? undefined;
+	const eased = config
+		? applyEasingConfig(progress, config)
+		: applyEasing(progress, track.easings?.[index - 1] ?? 'linear');
+	return keyframeValueToHexColor(
+		interpolateOklch(track.values[index - 1] ?? baseValue, track.values[index] ?? baseValue, eased)
+	);
 }

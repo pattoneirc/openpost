@@ -72,7 +72,7 @@ func knownPublicationApplicationError(err error) error {
 	switch {
 	case errors.Is(err, errPublicationNotFound):
 		return publicationservice.NewError(publicationservice.ErrorNotFound, err)
-	case errors.Is(err, errPublicationNotEditable), errors.Is(err, errPublicationNotScheduled),
+	case errors.Is(err, publicationauth.ErrReviewRequired), errors.Is(err, errPublicationNotEditable), errors.Is(err, errPublicationNotScheduled),
 		errors.Is(err, errPublicationAlreadyProcessing):
 		return publicationservice.NewError(publicationservice.ErrorInvalidLifecycleState, err)
 	case errors.Is(err, errPublicationScheduleConflict), errors.Is(err, errPublicationScheduleFuture),
@@ -110,7 +110,7 @@ func categorizePublicationError(err *error) {
 
 var _ publicationservice.Application = publicationApplication{}
 
-func (h *PublicationHandler) publicationApplication() publicationservice.Application {
+func (h *PublicationHandler) publicationApplication() publicationApplication {
 	return h.publicationApplicationForTesting()
 }
 
@@ -505,6 +505,19 @@ func (commands publicationApplication) updateTx(
 	if err := commands.handler.refreshPublicationTextCards(ctx, tx, publication.ID, resolveFormats, publicationTextCardIDs(before.response)...); err != nil {
 		return PublicationResponse{}, err
 	}
+	response, err := commands.handler.loadPublicationRevisionResponseTx(ctx, tx, publication)
+	if err != nil {
+		return PublicationResponse{}, err
+	}
+	changedDomains := publicationservice.ChangedAuthoredDomains(before.authored, response.authored)
+	invalidated, err := commands.handler.invalidatePublicationReviewTx(ctx, tx, publication, changedDomains)
+	if err != nil {
+		return PublicationResponse{}, err
+	}
+	if invalidated {
+		rescheduleQueuedJob = false
+	}
+
 	if rescheduleQueuedJob {
 		runAt, effectiveDelay, err := commands.handler.resolveScheduledPublicationRunAtTx(
 			ctx, tx, publication, prepared.now,
@@ -526,23 +539,11 @@ func (commands publicationApplication) updateTx(
 			return PublicationResponse{}, err
 		}
 	}
-	response, err := commands.handler.loadPublicationRevisionResponseTx(ctx, tx, publication)
+	response, err = commands.handler.loadPublicationRevisionResponseTx(ctx, tx, publication)
 	if err != nil {
 		return PublicationResponse{}, err
 	}
-	changedDomains := publicationservice.ChangedAuthoredDomains(before.authored, response.authored)
-	if err := commands.handler.syncTextPostRevisionsTx(
-		ctx,
-		tx,
-		publication.ID,
-		prepared.input.ExpectedRevision,
-		publication.Revision,
-		changedDomains,
-		userID,
-		prepared.now,
-	); err != nil {
-		return PublicationResponse{}, err
-	}
+
 	if err := drafts.RecordChange(
 		ctx,
 		tx,
@@ -718,16 +719,18 @@ func (commands publicationApplication) Schedule(
 	if err := commands.validateForEnqueue(ctx, userID, publication.ID); err != nil {
 		return publicationEnqueueResult{}, err
 	}
-	metered, err := commands.handler.checkScheduledPublicationQuota(ctx, publication.WorkspaceID, publication.ScheduledAt)
+	err = commands.handler.checkScheduledPublicationQuota(ctx, publication.WorkspaceID, publication.ScheduledAt)
 	if err != nil {
 		return publicationEnqueueResult{}, err
 	}
-	result, err = commands.handler.queueScheduledPublicationExpected(ctx, publication.ID, expectedRevision, intent)
-	if err == nil && metered {
-		if usageErr := commands.handler.recordScheduledPublicationUsage(ctx, publication.WorkspaceID, publication.ScheduledAt); usageErr != nil {
-			return publicationEnqueueResult{}, usageErr
-		}
+	if err := commands.beforeQueueTransaction(ctx); err != nil {
+		return publicationEnqueueResult{}, err
 	}
+	err = commands.handler.db.RunInTx(ctx, &sql.TxOptions{}, func(txCtx context.Context, tx bun.Tx) error {
+		var queueErr error
+		result, queueErr = commands.handler.queueScheduledPublicationTx(txCtx, tx, publication.ID, expectedRevision, intent)
+		return queueErr
+	})
 	if err == nil {
 		commands.handler.captureActivationEvent(ctx, userID, publication.WorkspaceID, result)
 	}
@@ -755,7 +758,7 @@ func (commands publicationApplication) ScheduleIdempotent(
 	if err := commands.validateForEnqueue(ctx, userID, publication.ID); err != nil {
 		return publicationEnqueueResult{}, false, err
 	}
-	metered, err := commands.handler.checkScheduledPublicationQuota(ctx, publication.WorkspaceID, publication.ScheduledAt)
+	err = commands.handler.checkScheduledPublicationQuota(ctx, publication.WorkspaceID, publication.ScheduledAt)
 	if err != nil {
 		return publicationEnqueueResult{}, false, err
 	}
@@ -767,33 +770,12 @@ func (commands publicationApplication) ScheduleIdempotent(
 		commands.handler.db,
 		request,
 		func(txCtx context.Context, tx bun.Tx) (publicationEnqueueResult, error) {
-			return commands.handler.queuePublicationWithRunAtTx(
-				txCtx,
-				tx,
-				publication.ID,
-				expectedRevision,
-				publicationauth.PolicyScheduled,
-				intent,
-				func(current *models.Publication, now time.Time) (time.Time, error) {
-					if current.ScheduledAt.IsZero() {
-						return time.Time{}, errPublicationScheduleRequired
-					}
-					if err := validateFuturePublicationSchedule(current.ScheduledAt, now); err != nil {
-						return time.Time{}, err
-					}
-					return current.ScheduledAt, nil
-				},
-			)
+			return commands.handler.queueScheduledPublicationTx(txCtx, tx, publication.ID, expectedRevision, intent)
 		},
 		func(value publicationEnqueueResult) (string, string) { return publication.ID, value.JobID },
 	)
 	if err != nil {
 		return publicationEnqueueResult{}, false, err
-	}
-	if !result.Replayed && metered {
-		if err := commands.handler.recordScheduledPublicationUsage(ctx, publication.WorkspaceID, publication.ScheduledAt); err != nil {
-			return publicationEnqueueResult{}, false, err
-		}
 	}
 	if !result.Replayed {
 		commands.handler.captureActivationEvent(ctx, userID, publication.WorkspaceID, result.Value)

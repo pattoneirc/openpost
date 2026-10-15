@@ -77,8 +77,6 @@
   </picture>
 </p>
 
-Demos use sample accounts and data. [How to refresh them](./docs/development/readme-demos.md).
-
 ## What you can do
 
 - <img src="./assets/brand/features/accounts.svg" alt="" width="24" height="24" align="top"> **[Connect accounts](https://openpo.st/docs/guides/accounts).** Manage your social connections in one workspace. Each provider keeps its own capabilities and publishing limits.

@@ -511,7 +511,7 @@ func (p *PinterestAdapter) UploadMediaResumable(
 	}
 	state.TotalBytes = req.Size
 
-	session, err := p.ensurePinterestMediaRegistered(ctx, accessToken, &state, checkpoint)
+	session, err := p.ensurePinterestMediaRegistered(ctx, accessToken, req, &state, checkpoint)
 	if err != nil {
 		return "", err
 	}
@@ -528,6 +528,7 @@ func (p *PinterestAdapter) UploadMediaResumable(
 func (p *PinterestAdapter) ensurePinterestMediaRegistered(
 	ctx context.Context,
 	accessToken string,
+	req UploadMediaRequest,
 	state *ResumableMediaUploadState,
 	checkpoint MediaUploadCheckpoint,
 ) (pinterestUploadSession, error) {
@@ -540,6 +541,9 @@ func (p *PinterestAdapter) ensurePinterestMediaRegistered(
 			return pinterestUploadSession{}, &MediaUploadError{RetryClassification: MediaRetryTerminal, Err: errors.New("pinterest media registration returned an invalid id")}
 		}
 		return session, nil
+	}
+	if err := checkUploadWrite(ctx, req); err != nil {
+		return pinterestUploadSession{}, err
 	}
 	registration, err := p.registerPinterestVideo(ctx, accessToken)
 	if err != nil {
@@ -626,6 +630,10 @@ func uploadPinterestVideoIfNeeded(
 	reader, err := req.OpenReaderAt(0)
 	if err != nil {
 		return &MediaUploadError{RetryClassification: MediaRetrySafeResume, Err: fmt.Errorf("opening pinterest video: %w", err)}
+	}
+	if err := checkUploadWrite(ctx, req); err != nil {
+		_ = reader.Close()
+		return err
 	}
 	uploadErr := uploadPinterestVideo(ctx, session, req, reader)
 	_ = reader.Close()

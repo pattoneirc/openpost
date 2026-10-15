@@ -67,6 +67,7 @@
 	import { collectMixEntryDuckWindows } from '$lib/video-editor/audio/audio-ducking';
 	import {
 		resolveAnimatedItemAt,
+		type AnimatedItemMotionContext,
 		resolveAnimatedItemLocalAt,
 		resolvedTransformForItem
 	} from '$lib/video-editor/timeline/animated-properties';
@@ -116,12 +117,8 @@
 		scopeSamples
 	} from '$lib/video-editor/effects/scope-samples.svelte';
 	import { toast } from 'svelte-sonner';
-	import {
-		hasLinkedAudioCompanion,
-		isAudioTransitionParticipantAtFrame
-	} from '$lib/video-editor/audio/transition-crossfade';
-	import { requiresProcessedPreviewAudioForTimeline } from '$lib/video-editor/audio/preview-processing';
-	import { resolveAudioOwner } from '$lib/video-editor/preview/audio-owner';
+	import { hasLinkedAudioCompanion } from '$lib/video-editor/audio/transition-crossfade';
+	import { planPreviewAudioLayers } from '$lib/video-editor/preview/audio-plan';
 	import { sequenceStore } from '$lib/video-editor/sequences/sequence-store.svelte';
 	import { shapeMasksForTrack } from '$lib/video-editor/shapes/masks';
 	import { hasCornerPin } from '$lib/video-editor/preview/corner-pin';
@@ -285,6 +282,26 @@
 		for (const { item } of nearby) activeIds.add(item.id);
 		return orderedItems.filter((item) => activeIds.has(item.id));
 	});
+	const preparedAudioLayers = $derived(
+		planPreviewAudioLayers({
+			items: timelineStore.items,
+			tracks: timelineStore.tracks,
+			transitions: transitionsStore.list,
+			itemById: timelineStore.itemById,
+			fps: editorSession.fps,
+			busAudioEq: timelineStore.busAudioEq,
+			mediaEntry: (mediaId) => mediaPool.entry(mediaId)
+		})
+	);
+	// Keep keyed layer props tied to the item, not a newly prepared window object.
+	const activeAudioItems = $derived(
+		preparedAudioLayers
+			.filter(
+				({ startFrame, endFrame }) =>
+					timelineStore.currentFrame >= startFrame && timelineStore.currentFrame < endFrame
+			)
+			.map(({ item }) => item)
+	);
 	const previewMixPlan = $derived(
 		planNestedMixdown(
 			timelineStore.items,
@@ -301,6 +318,13 @@
 				entry.itemId.includes('/') && mediaPool.get(entry.mediaId)?.audioCodecSupported !== false
 		)
 	);
+	const motionContext: AnimatedItemMotionContext = $derived({
+		fps: timelineStore.fps,
+		frameWidth: canvasWidth,
+		frameHeight: canvasHeight,
+		items: timelineStore.items,
+		itemById: timelineStore.itemById
+	});
 	const trackOrderById = $derived(
 		new Map(timelineStore.tracks.map((track) => [track.id, track.order]))
 	);
@@ -319,49 +343,24 @@
 			activeItems.some((item) => hasCornerPin(item.cornerPin)) ||
 			activeItems.some(
 				(item) =>
-					Math.abs(
-						resolveAnimatedItemAt(item, displayFrame, {
-							fps: timelineStore.fps,
-							frameWidth: canvasWidth,
-							frameHeight: canvasHeight,
-							items: timelineStore.items
-						}).crop?.softness ?? 0
-					) > 0.0001
+					Math.abs(resolveAnimatedItemAt(item, displayFrame, motionContext).crop?.softness ?? 0) >
+					0.0001
 			) ||
 			activeItems.some(
 				(item) =>
 					isNonNormalBlend(item.blendMode) &&
-					(resolveAnimatedItemAt(item, displayFrame, {
-						fps: timelineStore.fps,
-						frameWidth: canvasWidth,
-						frameHeight: canvasHeight,
-						items: timelineStore.items
-					}).transform?.opacity ?? 1) > 0
+					(resolveAnimatedItemAt(item, displayFrame, motionContext).transform?.opacity ?? 1) > 0
 			)
 	);
 	const selectedItem = $derived(
 		selectedItemId ? activeItems.find((item) => item.id === selectedItemId) : undefined
 	);
 	const selectedResolved = $derived(
-		selectedItem
-			? resolveAnimatedItemAt(selectedItem, displayFrame, {
-					fps: timelineStore.fps,
-					frameWidth: canvasWidth,
-					frameHeight: canvasHeight,
-					items: timelineStore.items
-				})
-			: undefined
+		selectedItem ? resolveAnimatedItemAt(selectedItem, displayFrame, motionContext) : undefined
 	);
 	const selectedItems = $derived(activeItems.filter((item) => selectedItemIds.includes(item.id)));
 	const selectedResolvedItems = $derived(
-		selectedItems.map((item) =>
-			resolveAnimatedItemAt(item, displayFrame, {
-				fps: timelineStore.fps,
-				frameWidth: canvasWidth,
-				frameHeight: canvasHeight,
-				items: timelineStore.items
-			})
-		)
+		selectedItems.map((item) => resolveAnimatedItemAt(item, displayFrame, motionContext))
 	);
 	const groupSelectionLocked = $derived(
 		selectedItems.some((item) => isTrackEffectivelyLocked(item.trackId, timelineStore.tracks))
@@ -378,12 +377,7 @@
 			trackName:
 				timelineStore.tracks.find((track) => track.id === item.trackId)?.name ?? item.trackId,
 			transform: resolvedTransformForItem(
-				resolveAnimatedItemAt(item, displayFrame, {
-					fps: timelineStore.fps,
-					frameWidth: canvasWidth,
-					frameHeight: canvasHeight,
-					items: timelineStore.items
-				}),
+				resolveAnimatedItemAt(item, displayFrame, motionContext),
 				canvasWidth,
 				canvasHeight
 			)
@@ -679,12 +673,7 @@
 		}
 		const frame = displayFrame;
 		const resolveVisualItem = (item: TimelineItem, beforeColor: boolean) => {
-			const baseResolved = resolveAnimatedItemAt(item, frame, {
-				fps: timelineStore.fps,
-				frameWidth: canvasWidth,
-				frameHeight: canvasHeight,
-				items: timelineStore.items
-			});
+			const baseResolved = resolveAnimatedItemAt(item, frame, motionContext);
 			const directDraft = item.id === selectedItemId;
 			const resolved = scaleItemForCanvas(
 				{
@@ -1068,12 +1057,7 @@
 		const hasLayers = (item?.motionLayers?.length ?? 0) > 0;
 		const hasModifiers = (item?.motionModifiers?.length ?? 0) > 0;
 		if (!hasParent && !hasLayers && !hasModifiers) return values;
-		const context = {
-			fps: timelineStore.fps,
-			frameWidth: canvasWidth,
-			frameHeight: canvasHeight,
-			items: timelineStore.items
-		};
+		const context = motionContext;
 		const world = resolvedTransformForItem(
 			resolveAnimatedItemAt(item!, frame, context),
 			canvasWidth,
@@ -1152,12 +1136,7 @@
 			const item = timelineStore.itemById.get(itemId);
 			if (!item) return false;
 			const resolved = resolvedTransformForItem(
-				resolveAnimatedItemAt(item, frame, {
-					fps: timelineStore.fps,
-					frameWidth: canvasWidth,
-					frameHeight: canvasHeight,
-					items: timelineStore.items
-				}),
+				resolveAnimatedItemAt(item, frame, motionContext),
 				canvasWidth,
 				canvasHeight
 			);
@@ -1252,12 +1231,7 @@
 		event.preventDefault();
 		if (items.length === 1) {
 			const transform = resolvedTransformForItem(
-				resolveAnimatedItemAt(items[0]!, timelineStore.currentFrame, {
-					fps: timelineStore.fps,
-					frameWidth: canvasWidth,
-					frameHeight: canvasHeight,
-					items: timelineStore.items
-				}),
+				resolveAnimatedItemAt(items[0]!, timelineStore.currentFrame, motionContext),
 				canvasWidth,
 				canvasHeight
 			);
@@ -1276,12 +1250,7 @@
 			items.map((item) => [
 				item.id,
 				resolvedTransformForItem(
-					resolveAnimatedItemAt(item, timelineStore.currentFrame, {
-						fps: timelineStore.fps,
-						frameWidth: canvasWidth,
-						frameHeight: canvasHeight,
-						items: timelineStore.items
-					}),
+					resolveAnimatedItemAt(item, timelineStore.currentFrame, motionContext),
 					canvasWidth,
 					canvasHeight
 				)
@@ -1317,12 +1286,7 @@
 		if (!selectedItemId) return spatial;
 		const item = timelineStore.itemById.get(selectedItemId);
 		if (!item?.transformParent) return spatial;
-		const context = {
-			fps: timelineStore.fps,
-			frameWidth: canvasWidth,
-			frameHeight: canvasHeight,
-			items: timelineStore.items
-		};
+		const context = motionContext;
 		const local = resolvedTransformForItem(
 			resolveAnimatedItemLocalAt(item, frame, context),
 			canvasWidth,
@@ -1625,12 +1589,7 @@
 								<OnCanvasTools
 									item={selectedResolved}
 									motionSourceItem={selectedItem}
-									motionContext={{
-										fps: timelineStore.fps,
-										frameWidth: canvasWidth,
-										frameHeight: canvasHeight,
-										items: timelineStore.items
-									}}
+									{motionContext}
 									{canvasWidth}
 									{canvasHeight}
 									snapItems={activeItems}
@@ -1714,11 +1673,7 @@
 			{/each}
 		</ContextMenu.Content>
 	</ContextMenu.Root>
-	{#each timelineStore.items.filter((item) => {
-		const mediaEntry = item.mediaId ? mediaPool.entry(item.mediaId) : null;
-		const owner = resolveAudioOwner( { item, tracks: timelineStore.tracks, allItems: timelineStore.items, mediaEntry, usesSeparateProxyAudio: false, usesProcessedAudio: requiresProcessedPreviewAudioForTimeline(item, timelineStore.tracks, timelineStore.busAudioEq) } );
-		return (owner === 'processed' || (owner === 'embedded' && item.type === 'audio')) && isAudioTransitionParticipantAtFrame(item, timelineStore.currentFrame, transitionsStore.list, timelineStore.itemById, editorSession.fps);
-	}) as item (item.id)}
+	{#each activeAudioItems as item (item.id)}
 		<PreviewAudioLayer {item} url={urls[item.mediaId ?? '']} duckWindows={previewDuckWindows} />
 	{/each}
 	{#each nestedMixEntries.filter((entry) => timelineStore.currentFrame / editorSession.fps >= entry.whenSeconds && timelineStore.currentFrame / editorSession.fps < entry.whenSeconds + entry.durationSeconds) as entry (entry.itemId)}

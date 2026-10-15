@@ -127,7 +127,7 @@ func newFakePeerTube(t *testing.T) (*httptest.Server, *fakePeerTube) {
 		}
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	})
-	return httptest.NewServer(mux), fake
+	return newProviderTestServer(t, mux), fake
 }
 
 func TestPeerTubeLoginAndChannelSelection(t *testing.T) {
@@ -184,7 +184,7 @@ func TestPeerTubeChannelSelectionReadsEveryChannelPage(t *testing.T) {
 			Data  []peertubeChannel `json:"data"`
 		}{Total: channelCount, Data: channels})
 	})
-	server := httptest.NewServer(mux)
+	server := newProviderTestServer(t, mux)
 	defer server.Close()
 
 	adapter := NewPeerTubeAdapter(server.URL)
@@ -371,7 +371,7 @@ func TestPeerTubeCommentsFetchesTruncatedReplies(t *testing.T) {
 		}
 	})
 
-	server := httptest.NewServer(mux)
+	server := newProviderTestServer(t, mux)
 	defer server.Close()
 
 	comments, err := NewPeerTubeAdapter(server.URL).ListComments(t.Context(), "token", "channel", "video-uuid-1")
@@ -416,7 +416,7 @@ func TestPeerTubeCommentsReadsEveryThreadPage(t *testing.T) {
 			Data  []peertubeComment `json:"data"`
 		}{Total: threadCount, Data: threads})
 	})
-	server := httptest.NewServer(mux)
+	server := newProviderTestServer(t, mux)
 	defer server.Close()
 
 	adapter := NewPeerTubeAdapter(server.URL)
@@ -427,7 +427,7 @@ func TestPeerTubeCommentsReadsEveryThreadPage(t *testing.T) {
 	require.Equal(t, "peertube:video-uuid-1:1", comments[threadCount-1].ID, "the oldest thread is listed")
 
 	for body, want := range map[string]string{"": "listing peertube comments", "not json": "decoding peertube comments"} {
-		failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		failing := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			if body == "" {
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
 				return
@@ -443,7 +443,7 @@ func TestPeerTubeCommentsReadsEveryThreadPage(t *testing.T) {
 func TestPeerTubeCategoryAndLicencePickers(t *testing.T) {
 	// GET /api/v1/videos/categories and /licences answer with a plain
 	// id-to-label object, not a paginated {"data":[...]} envelope.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/videos/categories":
 			_, _ = w.Write([]byte(`{"1":"Music","2":"Films","7":"Gaming","15":"Science & Technology"}`))
@@ -480,7 +480,7 @@ func TestPeerTubeCategoryAndLicencePickers(t *testing.T) {
 func TestPeerTubeCatalogDecodeFailureIsReported(t *testing.T) {
 	// A catalog that is not an id-to-label object is an error, not an
 	// empty picker.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`["Music","Films"]`))
 	}))
 	defer server.Close()
@@ -493,7 +493,7 @@ func TestPeerTubeCatalogDecodeFailureIsReported(t *testing.T) {
 func TestPeerTubeCatalogNullIsReported(t *testing.T) {
 	// A JSON null body decodes without error but leaves the catalog nil;
 	// it is a malformed catalog, not an empty picker.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`null`))
 	}))
 	defer server.Close()
@@ -506,7 +506,7 @@ func TestPeerTubeCatalogNullIsReported(t *testing.T) {
 func TestPeerTubeCatalogNonnumericIDIsReported(t *testing.T) {
 	// Catalog keys are numeric ids. A nonnumeric key must not silently
 	// become id 0, which the upload builder treats as unset.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"1":"Music","invalid":"Gaming"}`))
 	}))
 	defer server.Close()

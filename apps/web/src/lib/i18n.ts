@@ -7,6 +7,7 @@ export const localeLabels = {
 	es: 'Español',
 	fr: 'Français',
 	de: 'Deutsch',
+	it: 'Italiano',
 	pt: 'Português',
 	'pt-BR': 'Português do Brasil',
 	tr: 'Türkçe',
@@ -27,6 +28,8 @@ export function getLocaleTag(locale: Locale = getCurrentLocale()): string {
 			return 'fr-FR';
 		case 'de':
 			return 'de-DE';
+		case 'it':
+			return 'it-IT';
 		case 'pt':
 			return 'pt-PT';
 		case 'pt-BR':

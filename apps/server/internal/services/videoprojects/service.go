@@ -14,6 +14,8 @@ import (
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/services/workspaceaccess"
 	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect"
+	"github.com/uptrace/bun/driver/pgdriver"
 )
 
 const (
@@ -766,20 +768,93 @@ func (s *Service) Get(ctx context.Context, actor workspaceaccess.ActorFacts, wor
 	return project, nil
 }
 
-func (s *Service) List(ctx context.Context, actor workspaceaccess.ActorFacts, workspaceID string, includeTrash bool) ([]models.VideoProject, error) {
+func (s *Service) projectListQuery(ctx context.Context, actor workspaceaccess.ActorFacts, workspaceID string, includeTrash bool) (*bun.SelectQuery, error) {
 	workspaceID = strings.TrimSpace(workspaceID)
 	if err := authorize(ctx, s.db, actor, workspaceID, workspaceaccess.LevelRead); err != nil {
 		return nil, err
 	}
-	projects := []models.VideoProject{}
-	query := s.db.NewSelect().Model(&projects).Where("workspace_id = ?", workspaceID)
+	query := s.db.NewSelect().Where("workspace_id = ?", workspaceID)
 	if !includeTrash {
 		query = query.Where("trashed_at IS NULL")
 	}
-	if err := query.OrderExpr("updated_at DESC, id ASC").Scan(ctx); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	return query.OrderExpr("updated_at DESC, id ASC"), nil
+}
+
+func (s *Service) List(ctx context.Context, actor workspaceaccess.ActorFacts, workspaceID string, includeTrash bool) ([]models.VideoProject, error) {
+	query, err := s.projectListQuery(ctx, actor, workspaceID, includeTrash)
+	if err != nil {
+		return nil, err
+	}
+	projects := []models.VideoProject{}
+	if err := query.Model(&projects).Scan(ctx); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("list video projects: %w", err)
 	}
 	return projects, nil
+}
+
+type ProjectSummary struct {
+	models.VideoProject
+	SchemaFamily string
+}
+
+func (s *Service) ListSummaries(ctx context.Context, actor workspaceaccess.ActorFacts, workspaceID string, includeTrash bool) ([]ProjectSummary, error) {
+	query, err := s.projectListQuery(ctx, actor, workspaceID, includeTrash)
+	if err != nil {
+		return nil, err
+	}
+	// Normally only the family crosses the database connection. The compatibility
+	// fallback below reads full documents when PostgreSQL cannot extract valid JSON.
+	family := "document_json -> '$.schemaFamily'"
+	if s.db.Dialect().Name() == dialect.PG {
+		family = "document_json::json -> 'schemaFamily'"
+	}
+	var rows []struct {
+		models.VideoProject
+		FamilyJSON string
+	}
+	err = query.Model((*models.VideoProject)(nil)).ExcludeColumn("document_json").
+		ColumnExpr(family+" AS family_json").Scan(ctx, &rows)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		var postgresError pgdriver.Error
+		if errors.As(err, &postgresError) {
+			switch postgresError.Field('C') {
+			case "22P05", "22003", "22P02":
+				// PostgreSQL JSON rejects some values accepted by the authored JSON contract,
+				// including escaped NUL and unpaired surrogates.
+				return s.listSummariesFromDocuments(ctx, actor, workspaceID, includeTrash)
+			}
+		}
+		return nil, fmt.Errorf("list video project summaries: %w", err)
+	}
+	summaries := make([]ProjectSummary, 0, len(rows))
+	for i := range rows {
+		summaries = append(summaries, ProjectSummary{VideoProject: rows[i].VideoProject, SchemaFamily: decodeDocumentFamily([]byte(rows[i].FamilyJSON))})
+	}
+	return summaries, nil
+}
+
+func (s *Service) listSummariesFromDocuments(ctx context.Context, actor workspaceaccess.ActorFacts, workspaceID string, includeTrash bool) ([]ProjectSummary, error) {
+	projects, err := s.List(ctx, actor, workspaceID, includeTrash)
+	if err != nil {
+		return nil, err
+	}
+	summaries := make([]ProjectSummary, 0, len(projects))
+	for i := range projects {
+		var header map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(projects[i].DocumentJSON), &header); err != nil {
+			return nil, fmt.Errorf("read video project family: %w", err)
+		}
+		projects[i].DocumentJSON = ""
+		summaries = append(summaries, ProjectSummary{VideoProject: projects[i], SchemaFamily: decodeDocumentFamily(header["schemaFamily"])})
+	}
+	return summaries, nil
+}
+
+func decodeDocumentFamily(raw []byte) string {
+	var family string
+	// Missing, null and non-string families match legacy client classification.
+	_ = json.Unmarshal(raw, &family)
+	return family
 }
 
 func (s *Service) ApplyMutation(ctx context.Context, actor workspaceaccess.ActorFacts, input ApplyMutationInput) (*MutationResult, error) {

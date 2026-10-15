@@ -16,6 +16,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/openpost/backend/internal/netguard"
 )
 
 var httpClient = newDefaultHTTPClient()
@@ -60,7 +62,8 @@ func sanitizeTransportError(err error) *TransportError {
 }
 
 func newDefaultHTTPClient() *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	policy := netguard.URLPolicy{Label: "provider URL", AllowedSchemes: []string{"https", "http"}, AllowCustomPorts: true}
+	transport := netguard.NewTransport(policy)
 	if certFile := strings.TrimSpace(os.Getenv("SSL_CERT_FILE")); certFile != "" {
 		if certPEM, err := os.ReadFile(certFile); err == nil {
 			roots, poolErr := x509.SystemCertPool()
@@ -79,7 +82,23 @@ func newDefaultHTTPClient() *http.Client {
 			}
 		}
 	}
-	return &http.Client{Transport: transport, Timeout: 30 * time.Second}
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: providerRedirectPolicy(policy)}
+}
+
+func providerRedirectPolicy(policy netguard.URLPolicy) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("provider redirect limit exceeded")
+		}
+		if len(via) > 0 {
+			original := via[0]
+			credentialed := len(original.Header) > 0 || original.URL.Query().Get("access_token") != "" || original.URL.User != nil || original.Body != nil
+			if credentialed && (req.URL.Scheme != original.URL.Scheme || req.URL.Host != original.URL.Host) {
+				return fmt.Errorf("credential-bearing provider redirect changed origin")
+			}
+		}
+		return netguard.ValidateURL(req.Context(), req.URL, policy)
+	}
 }
 
 // DoRequest executes an HTTP request and returns the response body.
@@ -114,11 +133,15 @@ func doRequestWithClient(ctx context.Context, client *http.Client, method, url s
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	const maxProviderResponseBytes = 16 * 1024 * 1024
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}
 
+	if len(respBody) > maxProviderResponseBytes {
+		return nil, fmt.Errorf("provider response exceeds %d bytes", maxProviderResponseBytes)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, NewHTTPError(resp.StatusCode, resp.Header, respBody)
 	}

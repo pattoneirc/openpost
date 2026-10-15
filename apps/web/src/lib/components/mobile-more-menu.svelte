@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import { tick } from 'svelte';
+	import { ideate } from '$lib/post-builder/ideate.svelte';
 	import { primaryNavigation } from '$lib/app-navigation';
 	import { goto } from '$app/navigation';
 	import { resolveAppPath } from '$lib/app-path';
@@ -49,11 +51,15 @@
 {:else if section === 'profile'}
 	<AccountPreferencesMenu {onNavigate} />
 {:else}
-	{#each destinations as item (item.id)}
+	{#each destinations.filter((item) => item.id !== 'ideate' || workspaceCtx.currentWorkspace?.can_edit) as item (item.id)}
 		<DropdownMenu.Item
 			class="min-h-11 gap-3"
 			onclick={() => {
 				onNavigate();
+				if (item.id === 'ideate') {
+					ideate.show();
+					return;
+				}
 				goto(resolveAppPath(item.href));
 			}}
 			><ThemeIcon

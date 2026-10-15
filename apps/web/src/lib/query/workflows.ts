@@ -1,8 +1,8 @@
-import type { WorkflowQueryAPI } from '@openpost/query-catalog';
+import type { WorkflowQueryAPI, WorkflowRunSummaryQueryAPI } from '@openpost/query-catalog';
 import { client } from '$lib/api/client';
 import { queryGET } from './transport';
 import { m } from '$lib/paraglide/messages';
-export const workflowQueryAPI: WorkflowQueryAPI = {
+export const workflowQueryAPI: WorkflowQueryAPI & WorkflowRunSummaryQueryAPI = {
 	async list(ws, signal) {
 		const { data } = await queryGET({
 			signal,
@@ -30,6 +30,18 @@ export const workflowQueryAPI: WorkflowQueryAPI = {
 			fallback: m.workflows_load_failed(),
 			request: (signal) =>
 				client.GET('/workflow-runs', {
+					params: { query: { workspace_id: ws, workflow_id: id } },
+					signal
+				})
+		});
+		return data ?? [];
+	},
+	async runSummaries(ws, id, signal) {
+		const { data } = await queryGET({
+			signal,
+			fallback: m.workflows_load_failed(),
+			request: (signal) =>
+				client.GET('/workflow-run-summaries', {
 					params: { query: { workspace_id: ws, workflow_id: id } },
 					signal
 				})

@@ -117,6 +117,26 @@ func (s *Service) executeEffect(ctx context.Context, record runRecord, authority
 	if !active {
 		return EffectResult{}, errors.New("run cancelled before the next action")
 	}
+	if step.Kind == KindSchedule {
+		var results []StepResult
+		if err := json.Unmarshal([]byte(record.ResultsJSON), &results); err != nil {
+			return EffectResult{}, err
+		}
+		matched := false
+		for _, result := range results {
+			if result.Kind != KindApproval || result.State != StateSucceeded || result.Output["approved_by"] == nil {
+				continue
+			}
+			sameRevision, err := equalValues(inputs["revision"], result.Output["revision"])
+			if err == nil && sameRevision && inputs["publication_id"] == result.Output["publication_id"] {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return EffectResult{}, errors.New("schedule requires approval of this publication and revision in this run")
+		}
+	}
 	return s.actions.Execute(ctx, EffectRequest{Kind: step.Kind, Inputs: inputs, Authority: authority, RunID: record.ID, StepID: step.ID, ExpiresAt: record.CreatedAt.Add(MaxRunAge + 24*time.Hour)})
 }
 

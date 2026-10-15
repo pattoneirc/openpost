@@ -2307,6 +2307,168 @@
 				"required": ["workspace_id", "ids"],
 				"type": "object"
 			},
+			"BatchScheduleConfirmInputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": ["https://example.com/api/v1/schemas/BatchScheduleConfirmInputBody.json"],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"batch_id": {
+						"maxLength": 100,
+						"minLength": 1,
+						"type": "string"
+					},
+					"items": {
+						"items": {
+							"$ref": "#/components/schemas/BatchScheduleItem"
+						},
+						"maxItems": 20,
+						"minItems": 1,
+						"type": ["array", "null"]
+					},
+					"workspace_id": {
+						"minLength": 1,
+						"type": "string"
+					}
+				},
+				"required": ["workspace_id", "batch_id", "items"],
+				"type": "object"
+			},
+			"BatchScheduleItem": {
+				"additionalProperties": false,
+				"properties": {
+					"error": {
+						"type": "string"
+					},
+					"expected_revision": {
+						"format": "int64",
+						"type": "integer"
+					},
+					"preserved": {
+						"type": "boolean"
+					},
+					"publication_id": {
+						"type": "string"
+					},
+					"scheduled_at": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					}
+				},
+				"required": ["publication_id", "expected_revision", "preserved"],
+				"type": "object"
+			},
+			"BatchScheduleOutcome": {
+				"additionalProperties": false,
+				"properties": {
+					"error": {
+						"type": "string"
+					},
+					"publication_id": {
+						"type": "string"
+					},
+					"state": {
+						"enum": ["scheduled", "failed"],
+						"type": "string"
+					}
+				},
+				"required": ["publication_id", "state"],
+				"type": "object"
+			},
+			"BatchSchedulePreviewInputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": ["https://example.com/api/v1/schemas/BatchSchedulePreviewInputBody.json"],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"end_date": {
+						"format": "date",
+						"type": "string"
+					},
+					"hour": {
+						"format": "int64",
+						"maximum": 23,
+						"minimum": 0,
+						"type": "integer"
+					},
+					"interval_days": {
+						"format": "int64",
+						"maximum": 30,
+						"minimum": 1,
+						"type": "integer"
+					},
+					"minute": {
+						"format": "int64",
+						"maximum": 59,
+						"minimum": 0,
+						"type": "integer"
+					},
+					"publication_ids": {
+						"items": {
+							"type": "string"
+						},
+						"maxItems": 20,
+						"minItems": 1,
+						"type": ["array", "null"],
+						"uniqueItems": true
+					},
+					"start_date": {
+						"format": "date",
+						"type": "string"
+					},
+					"use_slots": {
+						"type": "boolean"
+					},
+					"workspace_id": {
+						"minLength": 1,
+						"type": "string"
+					}
+				},
+				"required": [
+					"workspace_id",
+					"publication_ids",
+					"start_date",
+					"end_date",
+					"hour",
+					"minute",
+					"interval_days",
+					"use_slots"
+				],
+				"type": "object"
+			},
+			"BatchSchedulePreviewOutputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": ["https://example.com/api/v1/schemas/BatchSchedulePreviewOutputBody.json"],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"items": {
+						"items": {
+							"$ref": "#/components/schemas/BatchScheduleItem"
+						},
+						"type": ["array", "null"]
+					},
+					"timezone": {
+						"type": "string"
+					}
+				},
+				"required": ["timezone", "items"],
+				"type": "object"
+			},
 			"BeginEmailChangeInputBody": {
 				"additionalProperties": false,
 				"properties": {
@@ -2744,6 +2906,9 @@
 						"format": "int64",
 						"type": "integer"
 					},
+					"series_origin": {
+						"$ref": "#/components/schemas/SeriesOrigin"
+					},
 					"social_set_id": {
 						"type": "string"
 					},
@@ -2814,6 +2979,12 @@
 						"format": "int64",
 						"type": "integer"
 					},
+					"series_count": {
+						"format": "int64",
+						"maximum": 3,
+						"minimum": 0,
+						"type": "integer"
+					},
 					"sources": {
 						"items": {
 							"$ref": "#/components/schemas/SourceMaterial"
@@ -2854,6 +3025,12 @@
 					},
 					"selected_option_id": {
 						"type": "string"
+					},
+					"series": {
+						"items": {
+							"$ref": "#/components/schemas/SeriesConcept"
+						},
+						"type": ["array", "null"]
 					},
 					"skipped": {
 						"items": {
@@ -5186,6 +5363,13 @@
 						"format": "int64",
 						"type": "integer"
 					},
+					"series_count": {
+						"description": "Plan up to three complementary posts before generating selected drafts",
+						"format": "int64",
+						"maximum": 3,
+						"minimum": 0,
+						"type": "integer"
+					},
 					"social_set_id": {
 						"description": "Optional Social Set candidate snapshot",
 						"type": "string"
@@ -5496,7 +5680,7 @@
 					},
 					"role": {
 						"description": "Workspace role to grant",
-						"enum": ["admin", "editor", "viewer"],
+						"enum": ["admin", "editor", "client", "viewer"],
 						"type": "string"
 					}
 				},
@@ -16171,6 +16355,17 @@
 					"repost_override": {
 						"$ref": "#/components/schemas/Override"
 					},
+					"review_epoch": {
+						"format": "int64",
+						"type": "integer"
+					},
+					"review_id": {
+						"type": "string"
+					},
+					"review_state": {
+						"enum": ["pending", "approved", "changes_requested", "needs_review"],
+						"type": "string"
+					},
 					"revision": {
 						"format": "int64",
 						"type": "integer"
@@ -16227,6 +16422,133 @@
 					"segments",
 					"media",
 					"repost_override"
+				],
+				"type": "object"
+			},
+			"PublicationReviewDecisionInputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": [
+							"https://example.com/api/v1/schemas/PublicationReviewDecisionInputBody.json"
+						],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"decision": {
+						"enum": ["approved", "changes_requested"],
+						"type": "string"
+					},
+					"expected_epoch": {
+						"format": "int64",
+						"minimum": 1,
+						"type": "integer"
+					},
+					"feedback": {
+						"maxLength": 4000,
+						"type": "string"
+					}
+				},
+				"required": ["expected_epoch", "decision", "feedback"],
+				"type": "object"
+			},
+			"PublicationReviewInputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": ["https://example.com/api/v1/schemas/PublicationReviewInputBody.json"],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"expected_revision": {
+						"format": "int64",
+						"minimum": 1,
+						"type": "integer"
+					},
+					"note": {
+						"maxLength": 4000,
+						"type": "string"
+					},
+					"reviewer_id": {
+						"minLength": 1,
+						"type": "string"
+					}
+				},
+				"required": ["expected_revision", "reviewer_id", "note"],
+				"type": "object"
+			},
+			"PublicationReviewResponse": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": ["https://example.com/api/v1/schemas/PublicationReviewResponse.json"],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"created_at": {
+						"format": "date-time",
+						"type": "string"
+					},
+					"current": {
+						"type": "boolean"
+					},
+					"decided_at": {
+						"format": "date-time",
+						"type": "string"
+					},
+					"decision": {
+						"type": "string"
+					},
+					"epoch": {
+						"format": "int64",
+						"type": "integer"
+					},
+					"feedback": {
+						"type": "string"
+					},
+					"id": {
+						"type": "string"
+					},
+					"includes_schedule": {
+						"type": "boolean"
+					},
+					"note": {
+						"type": "string"
+					},
+					"publication_id": {
+						"type": "string"
+					},
+					"requested_by": {
+						"type": "string"
+					},
+					"reviewer_id": {
+						"type": "string"
+					},
+					"snapshot": {
+						"$ref": "#/components/schemas/PublicationResponse"
+					},
+					"workspace_id": {
+						"type": "string"
+					}
+				},
+				"required": [
+					"snapshot",
+					"current",
+					"id",
+					"publication_id",
+					"workspace_id",
+					"requested_by",
+					"reviewer_id",
+					"epoch",
+					"includes_schedule",
+					"note",
+					"created_at"
 				],
 				"type": "object"
 			},
@@ -16302,6 +16624,37 @@
 					}
 				},
 				"required": ["id", "position", "body", "title", "description", "settings", "media"],
+				"type": "object"
+			},
+			"PublicationSeriesConceptInputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": [
+							"https://example.com/api/v1/schemas/PublicationSeriesConceptInputBody.json"
+						],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"brief": {
+						"maxLength": 1500,
+						"minLength": 1,
+						"type": "string"
+					},
+					"expected_revision": {
+						"format": "int64",
+						"minimum": 1,
+						"type": "integer"
+					},
+					"title": {
+						"maxLength": 200,
+						"minLength": 1,
+						"type": "string"
+					}
+				},
+				"required": ["expected_revision", "title", "brief"],
 				"type": "object"
 			},
 			"PublicationUpdateBody": {
@@ -20130,6 +20483,58 @@
 				"required": ["workspace_id", "message"],
 				"type": "object"
 			},
+			"SeriesConcept": {
+				"additionalProperties": false,
+				"properties": {
+					"brief": {
+						"maxLength": 1500,
+						"type": "string"
+					},
+					"child_build_id": {
+						"type": "string"
+					},
+					"evidence": {
+						"maxLength": 1000,
+						"type": "string"
+					},
+					"id": {
+						"type": "string"
+					},
+					"revision": {
+						"format": "int64",
+						"type": "integer"
+					},
+					"source_refs": {
+						"items": {
+							"type": "string"
+						},
+						"type": ["array", "null"]
+					},
+					"title": {
+						"maxLength": 200,
+						"type": "string"
+					}
+				},
+				"required": ["id", "revision", "title", "brief", "evidence", "source_refs"],
+				"type": "object"
+			},
+			"SeriesOrigin": {
+				"additionalProperties": false,
+				"properties": {
+					"build_id": {
+						"type": "string"
+					},
+					"item_id": {
+						"type": "string"
+					},
+					"item_revision": {
+						"format": "int64",
+						"type": "integer"
+					}
+				},
+				"required": ["build_id", "item_id", "item_revision"],
+				"type": "object"
+			},
 			"SeriesPoint": {
 				"additionalProperties": false,
 				"properties": {
@@ -20842,6 +21247,27 @@
 					}
 				},
 				"required": ["device_code", "user_code", "verification_url", "expires_in", "interval"],
+				"type": "object"
+			},
+			"StartPublicationSeriesConceptInputBody": {
+				"additionalProperties": false,
+				"properties": {
+					"$schema": {
+						"description": "A URL to the JSON Schema for this object.",
+						"examples": [
+							"https://example.com/api/v1/schemas/StartPublicationSeriesConceptInputBody.json"
+						],
+						"format": "uri",
+						"readOnly": true,
+						"type": "string"
+					},
+					"expected_revision": {
+						"format": "int64",
+						"minimum": 1,
+						"type": "integer"
+					}
+				},
+				"required": ["expected_revision"],
 				"type": "object"
 			},
 			"StartWorkspaceCompositionInputBody": {
@@ -23787,7 +24213,7 @@
 					},
 					"role": {
 						"description": "Replacement workspace role",
-						"enum": ["admin", "editor", "viewer"],
+						"enum": ["admin", "editor", "client", "viewer"],
 						"type": "string"
 					},
 					"status": {
@@ -24545,11 +24971,11 @@
 					}
 				},
 				"required": [
+					"document",
 					"id",
 					"workspace_id",
 					"name",
 					"head_revision",
-					"document",
 					"sync_status",
 					"created_by_user_id",
 					"updated_by_user_id",
@@ -24624,6 +25050,69 @@
 					"created_at",
 					"checkpoint_names",
 					"checkpoints"
+				],
+				"type": "object"
+			},
+			"VideoProjectSummaryResponse": {
+				"additionalProperties": false,
+				"properties": {
+					"attention_reason": {
+						"type": "string"
+					},
+					"created_at": {
+						"type": "string"
+					},
+					"created_by_user_id": {
+						"type": "string"
+					},
+					"head_revision": {
+						"format": "int64",
+						"type": "integer"
+					},
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"preview_object_key": {
+						"type": "string"
+					},
+					"retention_expires_at": {
+						"type": "string"
+					},
+					"schema_family": {
+						"description": "Editor document family; empty for legacy projects without a string family",
+						"type": "string"
+					},
+					"sync_status": {
+						"enum": ["pending", "uploading", "saving", "synced", "needs_attention"],
+						"type": "string"
+					},
+					"trashed_at": {
+						"type": "string"
+					},
+					"updated_at": {
+						"type": "string"
+					},
+					"updated_by_user_id": {
+						"type": "string"
+					},
+					"workspace_id": {
+						"type": "string"
+					}
+				},
+				"required": [
+					"schema_family",
+					"id",
+					"workspace_id",
+					"name",
+					"head_revision",
+					"sync_status",
+					"created_by_user_id",
+					"updated_by_user_id",
+					"created_at",
+					"updated_at"
 				],
 				"type": "object"
 			},
@@ -25101,6 +25590,79 @@
 				],
 				"type": "object"
 			},
+			"WorkflowRunSummary": {
+				"additionalProperties": false,
+				"properties": {
+					"created_at": {
+						"format": "date-time",
+						"type": "string"
+					},
+					"current_step_id": {
+						"type": "string"
+					},
+					"definition": {
+						"$ref": "#/components/schemas/WorkflowDefinition"
+					},
+					"error": {
+						"type": "string"
+					},
+					"id": {
+						"type": "string"
+					},
+					"mode": {
+						"type": "string"
+					},
+					"revision": {
+						"format": "int64",
+						"type": "integer"
+					},
+					"state": {
+						"type": "string"
+					},
+					"steps": {
+						"items": {
+							"$ref": "#/components/schemas/WorkflowStepSummary"
+						},
+						"type": ["array", "null"]
+					},
+					"updated_at": {
+						"format": "date-time",
+						"type": "string"
+					},
+					"wake_at": {
+						"format": "date-time",
+						"type": "string"
+					},
+					"workflow_id": {
+						"type": "string"
+					},
+					"workflow_name": {
+						"type": "string"
+					},
+					"workflow_revision": {
+						"format": "int64",
+						"type": "integer"
+					},
+					"workspace_id": {
+						"type": "string"
+					}
+				},
+				"required": [
+					"id",
+					"workflow_id",
+					"workspace_id",
+					"workflow_name",
+					"workflow_revision",
+					"mode",
+					"state",
+					"revision",
+					"definition",
+					"steps",
+					"created_at",
+					"updated_at"
+				],
+				"type": "object"
+			},
 			"WorkflowSaveRequest": {
 				"additionalProperties": false,
 				"properties": {
@@ -25344,6 +25906,19 @@
 					}
 				},
 				"required": ["step_id", "kind", "name", "state", "inputs", "output", "started_at"],
+				"type": "object"
+			},
+			"WorkflowStepSummary": {
+				"additionalProperties": false,
+				"properties": {
+					"state": {
+						"type": "string"
+					},
+					"step_id": {
+						"type": "string"
+					}
+				},
+				"required": ["step_id", "state"],
 				"type": "object"
 			},
 			"WorkflowValue": {
@@ -25603,7 +26178,7 @@
 					},
 					"role": {
 						"description": "Workspace role",
-						"enum": ["admin", "editor", "viewer"],
+						"enum": ["admin", "editor", "client", "viewer"],
 						"type": "string"
 					},
 					"status": {
@@ -25629,8 +26204,20 @@
 					"avatar_url": {
 						"type": "string"
 					},
+					"can_approve": {
+						"description": "Whether the current user can decide an assigned publication review",
+						"type": "boolean"
+					},
+					"can_connect": {
+						"description": "Whether the current user can connect or reconnect social accounts",
+						"type": "boolean"
+					},
 					"can_edit": {
 						"description": "Whether the current user can change workspace content",
+						"type": "boolean"
+					},
+					"client_reviews_enabled": {
+						"description": "Whether this deployment accepts new client review requests",
 						"type": "boolean"
 					},
 					"color": {
@@ -25653,7 +26240,7 @@
 					},
 					"role": {
 						"description": "Current user's workspace role",
-						"enum": ["admin", "editor", "viewer"],
+						"enum": ["admin", "editor", "client", "viewer"],
 						"type": "string"
 					},
 					"sso_authenticated": {
@@ -25687,6 +26274,8 @@
 					"created_at",
 					"role",
 					"can_edit",
+					"can_connect",
+					"can_approve",
 					"sso_required",
 					"sso_authenticated",
 					"sso_identity_linked"
@@ -31345,6 +31934,16 @@
 						},
 						"description": "Unprocessable Entity"
 					},
+					"429": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Too Many Requests"
+					},
 					"500": {
 						"content": {
 							"application/problem+json": {
@@ -31414,6 +32013,16 @@
 							}
 						},
 						"description": "Unprocessable Entity"
+					},
+					"429": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Too Many Requests"
 					},
 					"500": {
 						"content": {
@@ -31491,6 +32100,16 @@
 							}
 						},
 						"description": "Unprocessable Entity"
+					},
+					"429": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Too Many Requests"
 					},
 					"500": {
 						"content": {
@@ -31655,6 +32274,16 @@
 							}
 						},
 						"description": "Unprocessable Entity"
+					},
+					"429": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Too Many Requests"
 					},
 					"500": {
 						"content": {
@@ -49018,6 +49647,120 @@
 				"tags": ["Publication Builds"]
 			}
 		},
+		"/publication-builds/{id}/series/{item_id}": {
+			"put": {
+				"operationId": "update-series-concept",
+				"parameters": [
+					{
+						"in": "path",
+						"name": "id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"in": "path",
+						"name": "item_id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PublicationSeriesConceptInputBody"
+							}
+						}
+					},
+					"required": true
+				},
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Build"
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"default": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Error"
+					}
+				},
+				"summary": "Edit a series concept before generating its post",
+				"tags": ["Publication Builds"]
+			}
+		},
+		"/publication-builds/{id}/series/{item_id}/generate": {
+			"post": {
+				"operationId": "generate-series-post",
+				"parameters": [
+					{
+						"in": "path",
+						"name": "id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"in": "path",
+						"name": "item_id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/StartPublicationSeriesConceptInputBody"
+							}
+						}
+					},
+					"required": true
+				},
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Build"
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"default": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Error"
+					}
+				},
+				"summary": "Generate one explicitly selected series post",
+				"tags": ["Publication Builds"]
+			}
+		},
 		"/publication-opportunities/discover": {
 			"post": {
 				"description": "Returns tailored idea cards with selectable angles and platform treatments. It never drafts or publishes a post.",
@@ -49460,6 +50203,87 @@
 				}
 			}
 		},
+		"/publications/batch-schedule/confirm": {
+			"post": {
+				"operationId": "confirm-batch-schedule",
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/BatchScheduleConfirmInputBody"
+							}
+						}
+					},
+					"required": true
+				},
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"items": {
+										"$ref": "#/components/schemas/BatchScheduleOutcome"
+									},
+									"type": ["array", "null"]
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"default": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Error"
+					}
+				},
+				"summary": "Schedule selected dates with independently replayable post receipts",
+				"tags": ["Publications"]
+			}
+		},
+		"/publications/batch-schedule/preview": {
+			"post": {
+				"operationId": "preview-batch-schedule",
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/BatchSchedulePreviewInputBody"
+							}
+						}
+					},
+					"required": true
+				},
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BatchSchedulePreviewOutputBody"
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"default": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Error"
+					}
+				},
+				"summary": "Preview exact dates for selected drafts without queuing them",
+				"tags": ["Publications"]
+			}
+		},
 		"/publications/preview-text-card": {
 			"post": {
 				"operationId": "preview-text-card",
@@ -49530,6 +50354,16 @@
 							}
 						},
 						"description": "Unprocessable Entity"
+					},
+					"429": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Too Many Requests"
 					},
 					"500": {
 						"content": {
@@ -50795,6 +51629,232 @@
 						}
 					]
 				}
+			}
+		},
+		"/publications/{id}/reviews": {
+			"get": {
+				"operationId": "list-publication-reviews",
+				"parameters": [
+					{
+						"in": "path",
+						"name": "id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"items": {
+										"$ref": "#/components/schemas/PublicationReviewResponse"
+									},
+									"type": ["array", "null"]
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"default": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Error"
+					}
+				},
+				"summary": "Read the last 50 review requests and submitted versions",
+				"tags": ["Publications"]
+			},
+			"post": {
+				"operationId": "request-publication-review",
+				"parameters": [
+					{
+						"in": "path",
+						"name": "id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PublicationReviewInputBody"
+							}
+						}
+					},
+					"required": true
+				},
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PublicationReviewResponse"
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"403": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Forbidden"
+					},
+					"404": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Not Found"
+					},
+					"409": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Conflict"
+					},
+					"422": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Unprocessable Entity"
+					},
+					"500": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Internal Server Error"
+					}
+				},
+				"summary": "Send this version to a client for required approval",
+				"tags": ["Publications"]
+			}
+		},
+		"/publications/{id}/reviews/{review_id}": {
+			"put": {
+				"operationId": "decide-publication-review",
+				"parameters": [
+					{
+						"in": "path",
+						"name": "id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"in": "path",
+						"name": "review_id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PublicationReviewDecisionInputBody"
+							}
+						}
+					},
+					"required": true
+				},
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PublicationReviewResponse"
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"403": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Forbidden"
+					},
+					"404": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Not Found"
+					},
+					"409": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Conflict"
+					},
+					"422": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Unprocessable Entity"
+					},
+					"500": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Internal Server Error"
+					}
+				},
+				"summary": "Approve a submitted version or request changes",
+				"tags": ["Publications"]
 			}
 		},
 		"/publications/{id}/schedule": {
@@ -55714,6 +56774,82 @@
 				"tags": ["System"]
 			}
 		},
+		"/video-project-summaries": {
+			"get": {
+				"description": "Project metadata for browsing, without the authored editing documents. Load a project by ID when opening it.",
+				"operationId": "list-video-project-summaries",
+				"parameters": [
+					{
+						"description": "Workspace ID",
+						"explode": false,
+						"in": "query",
+						"name": "workspace_id",
+						"required": true,
+						"schema": {
+							"description": "Workspace ID",
+							"type": "string"
+						}
+					},
+					{
+						"description": "Include projects in Trash",
+						"explode": false,
+						"in": "query",
+						"name": "include_trash",
+						"schema": {
+							"description": "Include projects in Trash",
+							"type": "boolean"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"items": {
+										"$ref": "#/components/schemas/VideoProjectSummaryResponse"
+									},
+									"type": ["array", "null"]
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"403": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Forbidden"
+					},
+					"422": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Unprocessable Entity"
+					},
+					"500": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Internal Server Error"
+					}
+				},
+				"summary": "List Cloud Video Project summaries",
+				"tags": ["Video Projects"]
+			}
+		},
 		"/video-projects": {
 			"get": {
 				"operationId": "list-video-projects",
@@ -58542,6 +59678,124 @@
 					"exposure": "disabled",
 					"idempotency": "none",
 					"retry": "never"
+				}
+			}
+		},
+		"/workflow-run-summaries": {
+			"get": {
+				"operationId": "list-workflow-run-summaries",
+				"parameters": [
+					{
+						"explode": false,
+						"in": "query",
+						"name": "workspace_id",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"explode": false,
+						"in": "query",
+						"name": "workflow_id",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"content": {
+							"application/json": {
+								"schema": {
+									"items": {
+										"$ref": "#/components/schemas/WorkflowRunSummary"
+									},
+									"type": ["array", "null"]
+								}
+							}
+						},
+						"description": "OK"
+					},
+					"400": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Bad Request"
+					},
+					"403": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Forbidden"
+					},
+					"404": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Not Found"
+					},
+					"409": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Conflict"
+					},
+					"422": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Unprocessable Entity"
+					},
+					"500": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Internal Server Error"
+					},
+					"503": {
+						"content": {
+							"application/problem+json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorModel"
+								}
+							}
+						},
+						"description": "Service Unavailable"
+					}
+				},
+				"summary": "List the latest 50 workflow runs without source data or step payloads",
+				"tags": ["Workflows"],
+				"x-openpost-automation": {
+					"access": "read",
+					"effect": "query",
+					"exposure": "disabled",
+					"idempotency": "none",
+					"retry": "transient"
 				}
 			}
 		},
@@ -61672,7 +62926,7 @@
 						"schema": {
 							"default": "all",
 							"description": "Filter by role",
-							"enum": ["all", "admin", "editor", "viewer"],
+							"enum": ["all", "admin", "editor", "client", "viewer"],
 							"type": "string"
 						}
 					},

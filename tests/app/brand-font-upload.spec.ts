@@ -14,6 +14,9 @@ test("invalid brand fonts explain the file problem and allow a valid upload afte
   const auth = await registerUser(request, `font-upload-${randomUUID()}@example.com`);
   const workspace = await createWorkspace(request, auth.token, "Font upload recovery");
   await authenticatePage(page, auth.token);
+  // Playwright enables chooser interception asynchronously when the listener is added.
+  // Arm it before navigation so the keyboard shortcut cannot overtake that setup.
+  const chooseFont = page.waitForEvent("filechooser");
   await page.goto(`/settings?tab=brand&workspace=${workspace.id}`);
   await page.getByText("Add a custom font", { exact: true }).click();
   await page.getByRole("textbox", { name: "Family name", exact: true }).fill("Recovery Geist");
@@ -33,7 +36,6 @@ test("invalid brand fonts explain the file problem and allow a valid upload afte
   expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("font-upload-keyboard-focus.png") });
   const invalid = { name: "broken.ttf", mimeType: "font/ttf", buffer: Buffer.from("not a font") };
-  const chooseFont = page.waitForEvent("filechooser");
   await page.keyboard.press("Space");
   await (await chooseFont).setFiles(invalid);
   const alert = page.getByRole("alert").filter({ hasText: /font|network/i });

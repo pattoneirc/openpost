@@ -7,7 +7,7 @@ import {
   createCapturedVideoProjectDocument,
   type ProjectAssetPreparation,
 } from "@openpost/video-project";
-import { videoProjectListQueryOptions, videoProjectQueryKeys } from "@openpost/query-catalog";
+import { videoProjectSummariesQueryOptions, videoProjectQueryKeys } from "@openpost/query-catalog";
 
 import { api, errorMessage } from "./api/client";
 import { mobileQueryAPI } from "./query-api";
@@ -75,7 +75,7 @@ async function writeQueue(queue: PendingCapture[]): Promise<void> {
 }
 
 export async function listMobileVideoProjects(workspaceId: string): Promise<MobileVideoProject[]> {
-  return queryClient.fetchQuery(videoProjectListQueryOptions(mobileQueryAPI, workspaceId));
+  return queryClient.fetchQuery(videoProjectSummariesQueryOptions(mobileQueryAPI, workspaceId));
 }
 
 export async function queueVideoCapture(

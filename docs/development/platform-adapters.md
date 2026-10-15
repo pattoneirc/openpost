@@ -27,6 +27,18 @@ Publishing uses the base `platform.Adapter`. Other features use optional interfa
 
 Keep these interfaces separate. A network can support publishing without supporting every read or moderation action.
 
+## Asynchronous publication and recovery
+
+Upload completion, processing readiness, and publication confirmation are separate provider states. Follow the endpoint's protocol when deciding which state permits the next write. Facebook Reels and video Stories finish the upload before processing begins; Instagram and Threads containers process before publication.
+
+Checkpoint provider-issued receipts through `PublishRequest` and the durable `services/providerwrite` owner. Implement `PublishResumer` for resumable compound writes or `PublishRequestReconciler` and `PublishReconciler` for read-only confirmation. Check provider-confirmed publication before replaying a finalization step from an older checkpoint. A finish acknowledgement or completed upload alone never proves publication.
+
+Automatic publication reconciliation ends 24 hours after the original send, using the persisted `sending_started_at` or the legacy attempt's `created_at`. Polls and worker restarts do not extend that window. TikTok inbox delivery waits for the user and has a 30-day window, matching native-import identity deferral. Provider-owned schedules are exempt from the processing window. Expired outcomes require manual resolution, retain their provider receipts, and never authorize a new upload or publication automatically.
+
+Pending publication checks keep posts and variants in `publishing`; they do not emit failure or retry lifecycle events. Confirmed failures and exhausted reconciliation produce actionable errors.
+
+YouTube upload finalization retains the uploaded video ID while publication waits for `processingStatus=succeeded` or `uploadStatus=processed`. Private and unlisted choices remain valid; an accepted future `publish_at` remains a provider schedule. X media processing makes at most three additional status reads per invocation, within one minute and the stored media expiry, then yields for durable reconciliation without repeating the upload or `FINALIZE`.
+
 ## Provider app configuration
 
 Provider app credentials are normalized into `platform.AppConfig` before startup builds the adapter registry. Self-hosted installs can use legacy env vars or `OPENPOST_PROVIDER_APPS`; hosted/operator-managed installs can store encrypted rows in `provider_apps`.

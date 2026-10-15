@@ -39,6 +39,7 @@ import (
 	"github.com/openpost/backend/internal/services/mediasigner"
 	"github.com/openpost/backend/internal/services/mediastore"
 	"github.com/openpost/backend/internal/services/publicurl"
+	"github.com/openpost/backend/internal/services/themes"
 	"github.com/openpost/backend/internal/services/usage"
 	"github.com/openpost/backend/internal/services/videoprocessing"
 	"github.com/openpost/backend/internal/services/videoprojects"
@@ -1477,6 +1478,9 @@ func (h *MediaHandler) reserveNewMediaUploadSession(ctx context.Context, actor w
 		Deduped:     false,
 	}
 	persist := func(persistCtx context.Context, db bun.IDB) error {
+		if err := h.serializeMediaAdmission(persistCtx, db, *media, "", false); err != nil {
+			return mediaAdmissionHTTPError(err, "failed to reserve media upload")
+		}
 		if _, err := db.NewInsert().Model(media).Exec(persistCtx); err != nil {
 			return huma.Error500InternalServerError("failed to reserve media upload")
 		}
@@ -1506,7 +1510,11 @@ func (h *MediaHandler) reserveNewMediaUploadSession(ctx context.Context, actor w
 	if err := h.db.RunInTx(ctx, &sql.TxOptions{}, func(txCtx context.Context, tx bun.Tx) error {
 		return persist(txCtx, tx)
 	}); err != nil {
-		return nil, err
+		var statusError huma.StatusError
+		if errors.As(err, &statusError) {
+			return nil, err
+		}
+		return nil, mediaAdmissionHTTPError(err, "failed to reserve media upload")
 	}
 	return &CreateMediaUploadSessionOutput{Body: response}, nil
 }
@@ -1717,8 +1725,13 @@ func (h *MediaHandler) completeDirectMediaUpload(ctx context.Context, userID, wo
 
 	inspection, err := h.inspectDirectMediaUpload(ctx, media)
 	if err != nil {
+		var validation huma.StatusError
+		if errors.As(err, &validation) && validation.GetStatus() == http.StatusBadRequest {
+			h.discardInvalidDirectUpload(ctx, &media)
+		}
 		return result, err
 	}
+
 	if err := h.checkDirectUploadQuota(ctx, workspaceID, media, inspection.Size); err != nil {
 		return result, err
 	}
@@ -1728,15 +1741,12 @@ func (h *MediaHandler) completeDirectMediaUpload(ctx context.Context, userID, wo
 		validationContent = inspection.Prefix
 	}
 	if err := validateMediaAssetContent(media.AssetKind, media.OriginalFilename, media.MimeType, validationContent); err != nil {
-		h.markMediaUploadFailed(ctx, media.ID)
+		h.discardInvalidDirectUpload(ctx, &media)
 		return result, huma.Error400BadRequest(err.Error())
 	}
 
 	if err := validateMediaImageContent(detectedMediaMimeType(inspection.Prefix, media.MimeType), validationContent); err != nil {
-		h.markMediaUploadFailed(ctx, media.ID)
-		if cleanupErr := h.rollbackMediaRecord(ctx, &media); cleanupErr != nil {
-			log.Printf("failed to roll back invalid image upload %s: %v", media.ID, cleanupErr)
-		}
+		h.discardInvalidDirectUpload(ctx, &media)
 		return result, huma.Error400BadRequest(err.Error())
 	}
 
@@ -1755,6 +1765,38 @@ func (h *MediaHandler) completeDirectMediaUpload(ctx context.Context, userID, wo
 		return result, err
 	}
 	return h.completeProjectAssetUpload(ctx, workspaceID, media, fileHash)
+}
+
+// Retain the failed reservation until the lifecycle sweep, which runs after
+// every issued upload capability has expired. A late PUT then still has a
+// durable object key and remains included in stored-byte accounting.
+func (h *MediaHandler) discardInvalidDirectUpload(ctx context.Context, media *models.MediaAttachment) {
+	if err := h.retirePendingDirectUpload(ctx, media); err != nil {
+		log.Printf("failed to invalidate direct upload %s: %v", media.ID, err)
+	}
+}
+
+func (h *MediaHandler) retirePendingDirectUpload(ctx context.Context, media *models.MediaAttachment) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mediaUploadCleanupTimeout)
+	defer cancel()
+	result, err := h.db.NewUpdate().Model((*models.MediaAttachment)(nil)).Set("processing_status = ?", mediaFailedStatus).
+		Where("id = ? AND workspace_id = ? AND file_hash LIKE ? AND processing_status IN (?, ?)", media.ID, media.WorkspaceID, "pending:%", mediaProcessingStatus, mediaUploadingStatus).Exec(cleanupCtx)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return nil
+	}
+	// Immediate cleanup is best effort. The retained tombstone causes another
+	// durable deletion after the capability lifetime, including any later PUT.
+	if err := h.deleteMediaFiles(cleanupCtx, media); err != nil {
+		log.Printf("failed to remove retired direct upload %s: %v", media.ID, err)
+	}
+	return nil
 }
 
 func (h *MediaHandler) checkDirectUploadQuota(ctx context.Context, workspaceID string, media models.MediaAttachment, size int64) error {
@@ -1781,7 +1823,7 @@ func (h *MediaHandler) deduplicateDirectMediaUpload(ctx context.Context, workspa
 	if err := h.transferMediaTagAssignments(ctx, media.ID, existing.ID); err != nil {
 		return MediaUploadResult{}, false, err
 	}
-	if err := h.rollbackMediaRecord(ctx, &media); err != nil {
+	if err := h.retirePendingDirectUpload(ctx, &media); err != nil {
 		return MediaUploadResult{}, false, huma.Error500InternalServerError("failed to deduplicate media upload")
 	}
 	return mediaUploadResultFromAttachment(existing, true), true, nil
@@ -1791,11 +1833,6 @@ func (h *MediaHandler) completeProjectAssetUpload(ctx context.Context, workspace
 	var result MediaUploadResult
 	if err := h.completeProjectAssetForMedia(ctx, workspaceID, media.ID, fileHash); err != nil {
 		return result, err
-	}
-	if !isInternalMediaAssetKind(media.AssetKind) {
-		if _, err := h.usage.IncrementMonthly(ctx, workspaceID, entitlements.LimitMediaBytesUploadedMonthly, media.Size, time.Now().UTC()); err != nil {
-			return result, huma.Error500InternalServerError("failed to record media upload usage")
-		}
 	}
 
 	return mediaUploadResultFromAttachment(media, false), nil
@@ -1824,8 +1861,8 @@ func (h *MediaHandler) resolveDirectUploadDeduplication(
 	if err := h.transferMediaTagAssignments(ctx, media.ID, existing.ID); err != nil {
 		return MediaUploadResult{}, false
 	}
-	if rollbackErr := h.rollbackMediaRecord(ctx, &media); rollbackErr != nil {
-		log.Printf("failed to roll back deduplicated direct upload %s: %v", media.ID, rollbackErr)
+	if rollbackErr := h.retirePendingDirectUpload(ctx, &media); rollbackErr != nil {
+		log.Printf("failed to retire deduplicated direct upload %s: %v", media.ID, rollbackErr)
 		return MediaUploadResult{}, false
 	}
 	return mediaUploadResultFromAttachment(existing, true), true
@@ -1873,25 +1910,21 @@ func (h *MediaHandler) inspectDirectMediaUpload(ctx context.Context, media model
 	var inspection mediaUploadInspection
 	sizeLimit := mediaUploadSizeLimit(media.AssetKind, media.OriginalFilename, media.MimeType)
 	if media.Size <= 0 {
-		h.markMediaUploadFailed(ctx, media.ID)
 		return inspection, huma.Error400BadRequest("uploaded media object is empty")
 	}
 	if media.Size > sizeLimit {
-		h.markMediaUploadFailed(ctx, media.ID)
 		return inspection, huma.Error400BadRequest(mediaUploadSizeError(sizeLimit))
 	}
 
 	file, err := h.storage.Open(ctx, filepath.Base(media.FilePath))
 	if err != nil {
-		h.markMediaUploadFailed(ctx, media.ID)
-		return inspection, huma.Error400BadRequest("uploaded media object was not found")
+		return inspection, huma.Error500InternalServerError("failed to access uploaded media")
 	}
 	defer file.Close()
 
 	if media.Size <= MaxBufferedMediaUploadBytes {
 		content, readErr := io.ReadAll(io.LimitReader(file, sizeLimit+1))
 		if readErr != nil {
-			h.markMediaUploadFailed(ctx, media.ID)
 			return inspection, huma.Error500InternalServerError("failed to read uploaded media")
 		}
 		inspection.Content = content
@@ -1907,7 +1940,6 @@ func (h *MediaHandler) inspectDirectMediaUpload(ctx context.Context, media model
 		prefix := make([]byte, 512)
 		prefixBytes, readErr := io.ReadFull(file, prefix)
 		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
-			h.markMediaUploadFailed(ctx, media.ID)
 			return inspection, huma.Error500InternalServerError("failed to read uploaded media")
 		}
 		prefix = prefix[:prefixBytes]
@@ -1915,7 +1947,6 @@ func (h *MediaHandler) inspectDirectMediaUpload(ctx context.Context, media model
 		_, _ = hasher.Write(prefix)
 		remainingBytes, copyErr := io.Copy(hasher, io.LimitReader(file, sizeLimit-int64(prefixBytes)+1))
 		if copyErr != nil {
-			h.markMediaUploadFailed(ctx, media.ID)
 			return inspection, huma.Error500InternalServerError("failed to read uploaded media")
 		}
 		inspection.Prefix = prefix
@@ -1923,15 +1954,12 @@ func (h *MediaHandler) inspectDirectMediaUpload(ctx context.Context, media model
 		inspection.FileHash = hex.EncodeToString(hasher.Sum(nil))
 	}
 	if inspection.Size > sizeLimit {
-		h.markMediaUploadFailed(ctx, media.ID)
 		return mediaUploadInspection{}, huma.Error400BadRequest(mediaUploadSizeError(sizeLimit))
 	}
 	if inspection.Size == 0 {
-		h.markMediaUploadFailed(ctx, media.ID)
 		return mediaUploadInspection{}, huma.Error400BadRequest("uploaded media object is empty")
 	}
 	if media.Size != inspection.Size {
-		h.markMediaUploadFailed(ctx, media.ID)
 		return mediaUploadInspection{}, huma.Error400BadRequest("uploaded media size does not match upload session")
 	}
 	return inspection, nil
@@ -1987,14 +2015,38 @@ func (h *MediaHandler) finalizeDirectMediaUploadRecord(ctx context.Context, medi
 		media.AnalysisError = ""
 	}
 	h.applyPublicURLVerification(ctx, &media)
-	if _, err := h.db.NewUpdate().
-		Model(&media).
-		Column("mime_type", "processing_status", "processing_progress", "size", "file_hash", "width", "height", "duration_ms", "frame_rate", "thumbnails", "dominant_type", "aspect_ratio", "analysis_status", "analysis_error", "thumbnail_object_key", "public_url_ready", "public_url_checked_at", "public_url_status", "public_url_error").
-		Where("id = ?", media.ID).
-		Exec(ctx); err != nil {
-		h.markMediaUploadFailed(ctx, media.ID)
-		return media, huma.Error500InternalServerError("failed to finalize media record")
+	err = h.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		// Take the same workspace lock as reservation and insert before the CAS.
+		if _, err := tx.NewUpdate().Model((*models.Workspace)(nil)).Set("name = name").Where("id = ?", media.WorkspaceID).Exec(ctx); err != nil {
+			return err
+		}
+		res, err := tx.NewUpdate().
+			Model(&media).
+			Column("mime_type", "processing_status", "processing_progress", "size", "file_hash", "width", "height", "duration_ms", "frame_rate", "thumbnails", "dominant_type", "aspect_ratio", "analysis_status", "analysis_error", "thumbnail_object_key", "public_url_ready", "public_url_checked_at", "public_url_status", "public_url_error").
+			Where("id = ? AND workspace_id = ? AND file_hash LIKE ? AND processing_status IN (?, ?)", media.ID, media.WorkspaceID, "pending:%", mediaProcessingStatus, mediaUploadingStatus).
+			Exec(ctx)
+		if err != nil {
+			return err
+		}
+		changed, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed == 0 {
+			if err := tx.NewSelect().Model(&media).Where("id = ? AND workspace_id = ?", media.ID, media.WorkspaceID).Scan(ctx); err != nil {
+				return err
+			}
+			if !directMediaUploadFinalized(media) {
+				return huma.Error400BadRequest("media upload session is no longer pending")
+			}
+			return nil
+		}
+		return h.serializeMediaAdmission(ctx, tx, media, media.ID, true)
+	})
+	if err != nil {
+		return media, mediaAdmissionHTTPError(err, "failed to finalize media upload")
 	}
+
 	if mediaanalysis.IsTimeBased(mimeType) && h.video != nil {
 		h.enqueueVideoAnalysis(ctx, media.ID)
 	}
@@ -2199,6 +2251,10 @@ func validateBrandFontAsset(filename, declaredMimeType string, content []byte) e
 		}) {
 		return fmt.Errorf("brand font MIME type does not match the %s file", formatName)
 	}
+	if err := themes.ValidateFontContent(content, strings.TrimPrefix(extension, ".")); err != nil {
+		return fmt.Errorf("brand font content is not a valid %s file: %w", formatName, err)
+	}
+
 	return nil
 }
 
@@ -2299,7 +2355,7 @@ func (h *MediaHandler) markMediaUploadFailed(ctx context.Context, mediaID string
 	_, _ = h.db.NewUpdate().
 		Model((*models.MediaAttachment)(nil)).
 		Set("processing_status = ?", mediaFailedStatus).
-		Where("id = ?", mediaID).
+		Where("id = ? AND file_hash LIKE ?", mediaID, "pending:%").
 		Exec(ctx)
 }
 
@@ -2572,9 +2628,9 @@ func (h *MediaHandler) mediaUsageSummary(ctx context.Context, workspaceID, media
 }
 
 type mediaPublicationUsageRow struct {
-	MediaID       string `bun:"media_id"`
-	PublicationID string `bun:"publication_id"`
-	Status        string `bun:"status"`
+	MediaID string `bun:"media_id"`
+	Status  string `bun:"status"`
+	Count   int    `bun:"usage_count"`
 }
 
 type mediaOrganizationRow struct {
@@ -2614,9 +2670,11 @@ func (h *MediaHandler) mediaUsageSummaries(ctx context.Context, workspaceID stri
 	if len(mediaIDs) == 0 {
 		return summaries, nil
 	}
+	// Count distinct posts in SQL without transferring every reference. Group by
+	// stored status so the existing Unicode-aware status normalization still applies.
 	var publicationRows []mediaPublicationUsageRow
 	err := h.db.NewRaw(`
-		SELECT DISTINCT reference.media_id, publication.id AS publication_id, publication.status
+		SELECT reference.media_id, publication.status, COUNT(*) AS usage_count
 		FROM (
 			SELECT asset.media_id, asset.publication_id
 			FROM publication_assets asset
@@ -2639,7 +2697,8 @@ func (h *MediaHandler) mediaUsageSummaries(ctx context.Context, workspaceID stri
 			WHERE segment_media.media_id IN (?)
 		) AS reference
 		JOIN publications publication ON publication.id = reference.publication_id
-		WHERE publication.workspace_id = ?`,
+		WHERE publication.workspace_id = ?
+		GROUP BY reference.media_id, publication.status`,
 		bun.List(mediaIDs), bun.List(mediaIDs), bun.List(mediaIDs), bun.List(mediaIDs), workspaceID,
 	).Scan(ctx, &publicationRows)
 	if err != nil {
@@ -2647,9 +2706,9 @@ func (h *MediaHandler) mediaUsageSummaries(ctx context.Context, workspaceID stri
 	}
 	for _, row := range publicationRows {
 		summary := summaries[row.MediaID]
-		summary.Total++
+		summary.Total += row.Count
 		if mediaUsageStatusBlocks(row.Status) {
-			summary.Blocking++
+			summary.Blocking += row.Count
 		}
 		summaries[row.MediaID] = summary
 	}
@@ -3213,8 +3272,84 @@ func (h *MediaHandler) uploadMediaSessionContent(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// Multipart fields may follow the file. Bound parsing before FormValue can
+// spool it, using the largest allowance the credential can legitimately use.
+// Internal previews retain their existing buffered-media ceiling.
+func (h *MediaHandler) boundLegacyUploadBody(c echo.Context, userID string, batch bool) error {
+	ctx := c.Request().Context()
+	var workspaceIDs []string
+	if err := h.db.NewSelect().Model((*models.WorkspaceMember)(nil)).Column("workspace_id").Where("user_id = ? AND status = ? AND role IN (?)", userID, models.WorkspaceMemberStatusActive, bun.List([]string{models.WorkspaceRoleAdmin, models.WorkspaceRoleEditor})).Scan(ctx, &workspaceIDs); err != nil {
+		return err
+	}
+	maximum := MaxMediaUploadBytes
+	if batch {
+		maximum = MaxBufferedMediaUploadBytes * 10
+	}
+	allowance := int64(0)
+	hasAllowedWorkspace := false
+	for _, workspaceID := range workspaceIDs {
+		allowed, err := h.userCanEditWorkspace(ctx, workspaceID, userID)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			continue
+		}
+		hasAllowedWorkspace = true
+		remaining := maximum
+		for _, metric := range []entitlements.LimitKey{entitlements.LimitMediaBytesStored, entitlements.LimitMediaBytesUploadedMonthly} {
+			var current int64
+			if metric == entitlements.LimitMediaBytesStored {
+				current, err = medialifecycle.StoredBytes(ctx, h.db, workspaceID, "")
+			} else {
+				current, err = h.usage.CurrentMonthly(ctx, workspaceID, metric, time.Now().UTC())
+			}
+			if err != nil {
+				return err
+			}
+			decision, err := h.quota.Check(ctx, entitlements.Request{WorkspaceID: workspaceID, Limit: metric, Current: current, Amount: 1})
+			if err != nil {
+				return err
+			}
+			if !decision.Unlimited {
+				remaining = min(remaining, max(int64(0), decision.Limit-current))
+			}
+		}
+		allowance = max(allowance, remaining)
+	}
+	if !hasAllowedWorkspace {
+		return huma.Error403Forbidden(errWorkspaceAccessDenied)
+	}
+	allowance = max(allowance, MaxBufferedMediaUploadBytes)
+	// Bound metadata and multipart framing too, independently of the media limit.
+	const envelopeBytes = 512 * 1024
+	capBytes := min(maximum, allowance) + envelopeBytes
+	if c.Request().ContentLength > capBytes {
+		return huma.NewError(http.StatusRequestEntityTooLarge, "upload exceeds available media capacity")
+	}
+	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, capBytes)
+	err := c.Request().ParseMultipartForm(envelopeBytes)
+	var sizeErr *http.MaxBytesError
+	if errors.As(err, &sizeErr) {
+		return huma.NewError(http.StatusRequestEntityTooLarge, "upload exceeds available media capacity")
+	}
+	return err
+}
+
 func (h *MediaHandler) uploadMedia(c echo.Context) error {
 	userID := c.Get(string(middleware.UserIDKey)).(string)
+	defer func() {
+		if form := c.Request().MultipartForm; form != nil {
+			_ = form.RemoveAll()
+		}
+	}()
+	if err := h.boundLegacyUploadBody(c, userID, false); err != nil {
+		status := http.StatusBadRequest
+		if typed, ok := err.(huma.StatusError); ok {
+			status = typed.GetStatus()
+		}
+		return c.JSON(status, map[string]string{fieldError: "upload exceeds available media capacity or has invalid multipart data"})
+	}
 
 	workspaceID := c.FormValue("workspace_id")
 	if workspaceID == "" {
@@ -3257,6 +3392,18 @@ func (h *MediaHandler) uploadMedia(c echo.Context) error {
 
 func (h *MediaHandler) batchUploadMedia(c echo.Context) error {
 	userID := c.Get(string(middleware.UserIDKey)).(string)
+	defer func() {
+		if form := c.Request().MultipartForm; form != nil {
+			_ = form.RemoveAll()
+		}
+	}()
+	if err := h.boundLegacyUploadBody(c, userID, true); err != nil {
+		status := http.StatusBadRequest
+		if typed, ok := err.(huma.StatusError); ok {
+			status = typed.GetStatus()
+		}
+		return c.JSON(status, map[string]string{fieldError: "upload exceeds available media capacity or has invalid multipart data"})
+	}
 
 	workspaceID := c.FormValue("workspace_id")
 	if workspaceID == "" {
@@ -3383,6 +3530,17 @@ func (h *MediaHandler) processUploadStream(
 	sizeLimit := mediaUploadSizeLimit(assetKind, metadata.Filename, metadata.DeclaredMimeType)
 	if metadata.Size > sizeLimit {
 		return nil, errors.New(mediaUploadSizeError(sizeLimit))
+	}
+	if assetKind == "brand_font" {
+		content, err := io.ReadAll(io.LimitReader(reader, sizeLimit+1))
+		if err != nil {
+			return nil, errors.New("failed to read font")
+		}
+		if int64(len(content)) != metadata.Size {
+			return nil, errors.New("uploaded media size does not match declared size")
+		}
+		metadata.Content = content
+		return h.processUploadBytes(ctx, metadata)
 	}
 	return h.processStreamUpload(ctx, metadata, source, assetKind, reader, sizeLimit)
 }
@@ -3515,7 +3673,7 @@ func (h *MediaHandler) processStreamUpload(
 		media.AnalysisStatus = mediaanalysis.AnalysisStatusPending
 	}
 
-	if _, err := h.db.NewInsert().Model(media).Exec(ctx); err != nil {
+	if err := h.insertAdmittedMedia(ctx, media); err != nil {
 		if mediaSourceSupportsDeduplication(source) && assetKind == "library" {
 			if existing, found, duplicateErr := h.findDuplicateMedia(ctx, input.WorkspaceID, fileHash, media.ID); duplicateErr == nil && found {
 				if cleanupErr := h.reconcileFailedMediaInsert(ctx, media); cleanupErr != nil {
@@ -3557,11 +3715,7 @@ func (h *MediaHandler) processStreamUpload(
 	if mediaanalysis.IsTimeBased(mimeType) && h.video != nil {
 		h.enqueueVideoAnalysis(ctx, media.ID)
 	}
-	if !isInternalMediaAssetKind(assetKind) {
-		if _, err := h.usage.IncrementMonthly(ctx, input.WorkspaceID, entitlements.LimitMediaBytesUploadedMonthly, media.Size, time.Now().UTC()); err != nil {
-			return nil, errors.New("failed to record media upload usage")
-		}
-	}
+
 	return mediaUploadMap(*media, false), nil
 }
 
@@ -3708,16 +3862,7 @@ func (h *MediaHandler) processUploadBytes(ctx context.Context, input mediaUpload
 		media.AnalysisStatus = mediaanalysis.AnalysisStatusPending
 	}
 
-	insertErr := h.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		if _, err := tx.NewInsert().Model(media).Exec(ctx); err != nil {
-			return err
-		}
-		if input.StableID != "" {
-			_, err := usage.IncrementMonthlyInTransaction(ctx, tx, input.WorkspaceID, entitlements.LimitMediaBytesUploadedMonthly, input.Size, time.Now().UTC())
-			return err
-		}
-		return nil
-	})
+	insertErr := h.insertAdmittedMedia(ctx, media)
 	if insertErr != nil {
 		if mediaSourceSupportsDeduplication(source) && assetKind == "library" {
 			if existing, found, duplicateErr := h.findDuplicateMedia(ctx, input.WorkspaceID, fileHash, media.ID); duplicateErr == nil && found {
@@ -3760,13 +3905,60 @@ func (h *MediaHandler) processUploadBytes(ctx context.Context, input mediaUpload
 	if mediaanalysis.IsTimeBased(mimeType) {
 		h.enqueueVideoAnalysis(ctx, media.ID)
 	}
-	if input.StableID == "" && !isInternalMediaAssetKind(assetKind) {
-		if _, err := h.usage.IncrementMonthly(ctx, input.WorkspaceID, entitlements.LimitMediaBytesUploadedMonthly, input.Size, time.Now().UTC()); err != nil {
-			return nil, errors.New("failed to record media upload usage")
-		}
-	}
 
 	return mediaUploadMap(*media, false), nil
+}
+
+func mediaAdmissionHTTPError(err error, detail string) error {
+	var statusError huma.StatusError
+	if errors.As(err, &statusError) {
+		return err
+	}
+	if errors.Is(err, usage.ErrQuotaExceeded) {
+		return huma.Error400BadRequest("media quota exceeded")
+	}
+	return huma.Error500InternalServerError(detail)
+}
+
+// serializeMediaAdmission locks the workspace in both supported databases before
+// observing its stored bytes. Pending sessions reserve their declared size.
+func (h *MediaHandler) serializeMediaAdmission(ctx context.Context, db bun.IDB, media models.MediaAttachment, excludeID string, meter bool) error {
+	if isInternalMediaAssetKind(media.AssetKind) {
+		return nil
+	}
+	if _, err := db.NewUpdate().Model((*models.Workspace)(nil)).Set("name = name").Where("id = ?", media.WorkspaceID).Exec(ctx); err != nil {
+		return err
+	}
+	stored, err := medialifecycle.StoredBytes(ctx, db, media.WorkspaceID, excludeID)
+	if err != nil {
+		return err
+	}
+	decision, err := entitlements.CheckWithDB(ctx, h.quota, db, entitlements.Request{WorkspaceID: media.WorkspaceID, Limit: entitlements.LimitMediaBytesStored, Current: stored, Amount: media.Size})
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed {
+		return usage.ErrQuotaExceeded
+	}
+	if !meter {
+		return nil
+	}
+	decision, err = entitlements.CheckWithDB(ctx, h.quota, db, entitlements.Request{WorkspaceID: media.WorkspaceID, Limit: entitlements.LimitMediaBytesUploadedMonthly, Amount: media.Size})
+	if err != nil {
+		return err
+	}
+	_, err = usage.IncrementMonthlyLimitedInTransaction(ctx, db, media.WorkspaceID, entitlements.LimitMediaBytesUploadedMonthly, media.Size, time.Now().UTC(), decision)
+	return err
+}
+
+func (h *MediaHandler) insertAdmittedMedia(ctx context.Context, media *models.MediaAttachment) error {
+	return h.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		if err := h.serializeMediaAdmission(ctx, tx, *media, "", true); err != nil {
+			return err
+		}
+		_, err := tx.NewInsert().Model(media).Exec(ctx)
+		return err
+	})
 }
 
 func (h *MediaHandler) checkUploadQuota(ctx context.Context, workspaceID string, size int64) error {

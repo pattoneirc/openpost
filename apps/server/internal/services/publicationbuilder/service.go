@@ -64,6 +64,9 @@ func (service *Service) BuildWithProgress(
 	if input.DestinationPolicy == "" {
 		input.DestinationPolicy = DestinationPolicyRecommend
 	}
+	if input.SeriesCount > 0 {
+		return service.planSeries(ctx, input)
+	}
 	if input.OptionCount == 4 {
 		return service.buildOptions(ctx, input, report)
 	}

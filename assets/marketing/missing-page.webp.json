@@ -1,0 +1,12 @@
+{
+  "prompt": "Use case: stylized-concept.\nAsset type: transparent website 404 recovery illustration for OpenPost.\nCreate one exquisite folded-paper sculpture inspired by our social-sharing artwork: a tall mint-green sheet with a clean page silhouette and softly curled upper corner, with a clearly missing square-shaped piece cut from its centre. A small detached lilac square of paper and a folded blue paper plane sit just beside the mint sheet. The subject is a missing page, simple and instantly recognizable. No other objects.\nStyle: tactile handcrafted editorial paper sculpture, restrained studio photography, soft embossed paper fibres, sparse crisp square ordered-dither perforations gently dissolving just one lower outer edge. The sheet remains mostly solid; dither is sparse and deliberate. Confident silhouette and generous breathing room. Match OpenPost palette: mint #e0efcf, powder blue #d5eaf4, pale lilac #e8ddf3, subtle charcoal ink. Soft natural shadows confined to the objects, no dark floor or backdrop.\nComposition: centred, square canvas, isolated sculpture occupies roughly 80 percent height and 70 percent width, full object visible. True native transparent background, including the missing hole and gaps. Legible against both warm ivory and dark charcoal pages.\nNo text, no letters, no digits, no logos, no border, no UI, no watermark. Save the result as a local file and return its local path for integration.\n",
+  "createdAt": "2026-10-12T16:26:14.613Z",
+  "tool": "image_gen",
+  "asset": "missing-page.webp",
+  "transparent": true,
+  "inspiration": [
+    "assets/brand/social/home.png",
+    "apps/marketing/static/og/tool-social-media-image-editor.png",
+    "apps/marketing/static/og/tool-png-to-webp.png"
+  ]
+}

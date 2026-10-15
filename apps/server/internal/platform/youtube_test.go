@@ -26,6 +26,11 @@ func TestYouTubeGenerateAuthURL(t *testing.T) {
 		t.Fatalf("unexpected auth url %s", authURL)
 	}
 	query := parsed.Query()
+	for _, scope := range strings.Fields(query.Get("scope")) {
+		if scope == "https://www.googleapis.com/auth/userinfo.email" || scope == "https://www.googleapis.com/auth/userinfo.profile" {
+			t.Fatalf("YouTube channel connection requested unrelated identity scope %s", scope)
+		}
+	}
 	if query.Get(oauthParamClientID) != "client-id" {
 		t.Fatalf("expected client id, got %q", query.Get(oauthParamClientID))
 	}
@@ -854,5 +859,37 @@ func TestYouTubeUploadRejectsInvalidDescriptionsBeforeNetwork(t *testing.T) {
 				t.Fatalf("expected description rejection, got %v", err)
 			}
 		})
+	}
+}
+
+func TestYouTubeUploadApprovalBlocksWritesButAllowsAcceptedVideoRecovery(t *testing.T) {
+	originalClient := httpClient
+	defer func() { httpClient = originalClient }()
+	writes, reads := 0, 0
+	httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet {
+			writes++
+			return nil, errors.New("unexpected provider write")
+		}
+		reads++
+		return jsonResponse(request, `{"items":[{"id":"accepted-video","status":{"uploadStatus":"processed"},"processingDetails":{"processingStatus":"succeeded"}}]}`), nil
+	})}
+	revoked := errors.New("approval revoked")
+	req := UploadMediaRequest{MimeType: "video/mp4", Size: 5, Title: "Approved launch", Settings: map[string]interface{}{"privacy": "public", "category_id": "22"}, BeforeWrite: func(context.Context) error { return revoked }, OpenReaderAt: func(int64) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("video")), nil }}
+	adapter := NewYouTubeAdapter("", "", "")
+	checkpoint := func(ResumableMediaUploadState) error { return nil }
+	_, err := adapter.UploadMediaResumable(t.Context(), "token", "channel", req, ResumableMediaUploadState{}, checkpoint)
+	if !errors.Is(err, revoked) || writes != 0 {
+		t.Fatalf("revoked fresh upload: err=%v writes=%d", err, writes)
+	}
+	// An ambiguous chunk may already have completed. Do not repeat it or prevent
+	// the read that records the provider's existing result.
+	id, err := adapter.UploadMediaResumable(t.Context(), "token", "channel", req, ResumableMediaUploadState{ProviderMediaID: "accepted-video", Status: MediaUploadUploaded, TotalBytes: 5, UploadedBytes: 5}, checkpoint)
+	if err != nil || id != "accepted-video" || reads != 1 || writes != 0 {
+		t.Fatalf("accepted upload recovery: id=%s err=%v reads=%d writes=%d", id, err, reads, writes)
+	}
+	_, err = adapter.uploadYouTubeChunk(t.Context(), "token", req, "https://www.googleapis.com/upload/session", 0)
+	if !errors.Is(err, revoked) || writes != 0 {
+		t.Fatalf("revoked resumed chunk: err=%v writes=%d", err, writes)
 	}
 }

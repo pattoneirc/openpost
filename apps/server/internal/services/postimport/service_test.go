@@ -3,8 +3,6 @@ package postimport
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -113,33 +111,43 @@ func loadImportState(t *testing.T, db *bun.DB, accountID string) models.PostImpo
 	return state
 }
 
-func blueskyFeedServer(responses map[string]string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		cursor := req.URL.Query().Get("cursor")
-		body, ok := responses[cursor]
-		if !ok {
-			body = `{"feed":[]}`
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	}))
+type nativeReaderFixture struct {
+	platform.Adapter
+	pages map[string]platform.NativePostPage
+	read  func(context.Context, platform.NativePostRequest) (platform.NativePostPage, error)
 }
 
-func blueskyFeedItem(uri, text, createdAt string) string {
-	return fmt.Sprintf(`{"post":{"uri":%q,"author":{"did":"did:plc:owner","handle":"owner.test"},"record":{"text":%q,"createdAt":%q},"indexedAt":%q}}`,
-		uri, text, createdAt, createdAt)
+func (*nativeReaderFixture) NativePostSupport() platform.NativePostSupport {
+	return platform.NativePostSupport{Supported: true}
+}
+func (f *nativeReaderFixture) ListNativePosts(ctx context.Context, _ string, req platform.NativePostRequest) (platform.NativePostPage, error) {
+	if f.read != nil {
+		return f.read(ctx, req)
+	}
+	page, ok := f.pages[req.Cursor]
+	if !ok {
+		return platform.NativePostPage{Coverage: platform.NativePostComplete}, nil
+	}
+	return page, nil
+}
+func nativePostItem(uri, text, createdAt string) platform.NativePostItem {
+	at, err := time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		panic(err)
+	}
+	return platform.NativePostItem{ProviderPostID: uri, Text: text, PublishedAt: at, Origin: platform.ImportedPostOriginExternal}
 }
 
 func TestEnableSetsWatermarkWithoutBackfill(t *testing.T) {
-	server := blueskyFeedServer(map[string]string{
-		"": `{"feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/old", "old post", "2026-01-10T10:00:00Z") + `]}`,
-	})
-	defer server.Close()
+	reader := &nativeReaderFixture{pages: map[string]platform.NativePostPage{
+		"": {Coverage: platform.NativePostComplete, NextCursor: "", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/old", "old post", "2026-01-10T10:00:00Z")}},
+	}}
 
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	tokens := &stubTokenSource{token: "token"}
 	service := NewService(db, tokens)
+	service.SetProvider("bluesky", reader)
 	frozen := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return frozen }
 
@@ -160,10 +168,7 @@ func TestEnableSetsWatermarkWithoutBackfill(t *testing.T) {
 		Exec(context.Background())
 	require.NoError(t, err)
 
-	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/new", "new post", "2026-09-26T13:00:00Z") + `]}`))
-	})
+	reader.pages[""] = platform.NativePostPage{Coverage: platform.NativePostComplete, NextCursor: "", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/new", "new post", "2026-09-26T13:00:00Z")}}
 	require.NoError(t, service.SyncAccount(context.Background(), "workspace-1", account.ID))
 	require.Equal(t, 1, countImported(t, db, account.ID))
 
@@ -174,14 +179,14 @@ func TestEnableSetsWatermarkWithoutBackfill(t *testing.T) {
 }
 
 func TestSyncDedupesRepeatedReads(t *testing.T) {
-	server := blueskyFeedServer(map[string]string{
-		"": `{"feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/aaa", "hello", "2026-09-26T11:00:00Z") + `]}`,
-	})
-	defer server.Close()
+	reader := &nativeReaderFixture{pages: map[string]platform.NativePostPage{
+		"": {Coverage: platform.NativePostComplete, NextCursor: "", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/aaa", "hello", "2026-09-26T11:00:00Z")}},
+	}}
 
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	frozen := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return frozen }
 
@@ -202,15 +207,15 @@ func TestSyncDedupesRepeatedReads(t *testing.T) {
 }
 
 func TestSyncResumesFromStoredCursor(t *testing.T) {
-	server := blueskyFeedServer(map[string]string{
-		"":       `{"cursor":"page-2","feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/aaa", "first", "2026-09-26T11:00:00Z") + `]}`,
-		"page-2": `{"feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/bbb", "second", "2026-09-26T10:00:00Z") + `]}`,
-	})
-	defer server.Close()
+	reader := &nativeReaderFixture{pages: map[string]platform.NativePostPage{
+		"":       {Coverage: platform.NativePostComplete, NextCursor: "page-2", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/aaa", "first", "2026-09-26T11:00:00Z")}},
+		"page-2": {Coverage: platform.NativePostComplete, NextCursor: "", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/bbb", "second", "2026-09-26T10:00:00Z")}},
+	}}
 
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	service.maxPages = 1
 	frozen := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return frozen }
@@ -239,14 +244,14 @@ func TestSyncResumesFromStoredCursor(t *testing.T) {
 }
 
 func TestResumedSyncKeepsStartWatermark(t *testing.T) {
-	server := blueskyFeedServer(map[string]string{
-		"":      `{"cursor":"older","feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/first", "first", "2026-09-26T11:00:00Z") + `]}`,
-		"older": `{"feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/second", "second", "2026-09-26T10:00:00Z") + `]}`,
-	})
-	defer server.Close()
+	reader := &nativeReaderFixture{pages: map[string]platform.NativePostPage{
+		"":      {Coverage: platform.NativePostComplete, NextCursor: "older", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/first", "first", "2026-09-26T11:00:00Z")}},
+		"older": {Coverage: platform.NativePostComplete, NextCursor: "", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/second", "second", "2026-09-26T10:00:00Z")}},
+	}}
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	service.maxPages = 1
 	started := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
 	current := started
@@ -264,11 +269,11 @@ func TestResumedSyncKeepsStartWatermark(t *testing.T) {
 }
 
 func TestInitialSyncRetainsCursorAfter250StoredPosts(t *testing.T) {
-	server := blueskyFeedServer(map[string]string{"": `{"cursor":"older","feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/new", "new", "2026-09-26T11:00:00Z") + `]}`})
-	defer server.Close()
+	reader := &nativeReaderFixture{pages: map[string]platform.NativePostPage{"": {Coverage: platform.NativePostComplete, NextCursor: "older", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/new", "new", "2026-09-26T11:00:00Z")}}}}
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	service.maxPages = 1
 	started := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return started }
@@ -286,15 +291,12 @@ func TestInitialSyncRetainsCursorAfter250StoredPosts(t *testing.T) {
 func TestSyncSkipsPostsPublishedThroughOpenPost(t *testing.T) {
 	ownURI := "at://did:plc:owner/app.bsky.feed.post/own"
 	nativeURI := "at://did:plc:owner/app.bsky.feed.post/native"
-	feedServer := blueskyFeedServer(map[string]string{
-		"": `{"feed":[` +
-			blueskyFeedItem(ownURI, "published via openpost", "2026-09-26T11:00:00Z") + `,` +
-			blueskyFeedItem(nativeURI, "native only", "2026-09-26T10:00:00Z") + `]}`,
-	})
-	defer feedServer.Close()
+	reader := &nativeReaderFixture{pages: map[string]platform.NativePostPage{
+		"": {Coverage: platform.NativePostComplete, NextCursor: "", Items: []platform.NativePostItem{nativePostItem(ownURI, "published via openpost", "2026-09-26T11:00:00Z"), nativePostItem(nativeURI, "native only", "2026-09-26T10:00:00Z")}},
+	}}
 
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", feedServer.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	now := time.Now().UTC()
 	_, err := db.NewInsert().Model(&models.Rendition{
 		ID: "rendition-1", PublicationID: "publication-1", SocialAccountID: account.ID,
@@ -305,6 +307,7 @@ func TestSyncSkipsPostsPublishedThroughOpenPost(t *testing.T) {
 	require.NoError(t, err)
 
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	service.now = func() time.Time { return time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC) }
 	_, err = service.Enable(context.Background(), "workspace-1", account.ID)
 	require.NoError(t, err)
@@ -340,15 +343,15 @@ func TestReadBudgetGuardBlocksProvidersReads(t *testing.T) {
 }
 
 func TestReadBudgetIsFreshAtTheUTCDayItsRetryWaitsFor(t *testing.T) {
-	server := blueskyFeedServer(map[string]string{
-		"":       `{"cursor":"page-2","feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/aaa", "first", "2026-09-26T15:30:00Z") + `]}`,
-		"page-2": `{"feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/bbb", "second", "2026-09-26T15:20:00Z") + `]}`,
-	})
-	defer server.Close()
+	reader := &nativeReaderFixture{pages: map[string]platform.NativePostPage{
+		"":       {Coverage: platform.NativePostComplete, NextCursor: "page-2", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/aaa", "first", "2026-09-26T15:30:00Z")}},
+		"page-2": {Coverage: platform.NativePostComplete, NextCursor: "", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/bbb", "second", "2026-09-26T15:20:00Z")}},
+	}}
 
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	service.SetPolicy("bluesky", Policy{ReadRequestsPerDay: 1, PageSize: 50})
 	now := time.Date(2026, 9, 26, 15, 0, 0, 0, time.UTC)
 	service.now = func() time.Time { return now }
@@ -373,15 +376,14 @@ func TestReadBudgetIsFreshAtTheUTCDayItsRetryWaitsFor(t *testing.T) {
 }
 
 func TestPermissionFailureKeepsAccountConnected(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"error":"AuthRequired"}`))
-	}))
-	defer server.Close()
+	reader := &nativeReaderFixture{read: func(context.Context, platform.NativePostRequest) (platform.NativePostPage, error) {
+		return platform.NativePostPage{}, platform.NewNativePostError(platform.NativePostPermissionRequired, "auth_required", 0)
+	}}
 
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service := NewService(db, &stubTokenSource{token: "stale"})
+	service.SetProvider("bluesky", reader)
 	_, err := service.Enable(context.Background(), "workspace-1", account.ID)
 	require.NoError(t, err)
 
@@ -396,13 +398,12 @@ func TestPermissionFailureKeepsAccountConnected(t *testing.T) {
 }
 
 func TestImportsStayOutOfAnalyticsTables(t *testing.T) {
-	server := blueskyFeedServer(map[string]string{
-		"": `{"feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/aaa", "hello", "2026-09-26T11:00:00Z") + `]}`,
-	})
-	defer server.Close()
+	reader := &nativeReaderFixture{pages: map[string]platform.NativePostPage{
+		"": {Coverage: platform.NativePostComplete, NextCursor: "", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/aaa", "hello", "2026-09-26T11:00:00Z")}},
+	}}
 
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	now := time.Now().UTC()
 	_, err := db.NewInsert().Model(&models.AnalyticsAccountSnapshot{
 		ID: "snapshot-1", WorkspaceID: "workspace-1", SocialAccountID: account.ID,
@@ -412,6 +413,7 @@ func TestImportsStayOutOfAnalyticsTables(t *testing.T) {
 	require.NoError(t, err)
 
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	service.now = func() time.Time { return time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC) }
 	_, err = service.Enable(context.Background(), "workspace-1", account.ID)
 	require.NoError(t, err)
@@ -439,16 +441,15 @@ func TestImportsStayOutOfAnalyticsTables(t *testing.T) {
 
 func TestDisableStopsSync(t *testing.T) {
 	var calls atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	reader := &nativeReaderFixture{read: func(context.Context, platform.NativePostRequest) (platform.NativePostPage, error) {
 		calls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"feed":[]}`))
-	}))
-	defer server.Close()
+		return platform.NativePostPage{Coverage: platform.NativePostComplete}, nil
+	}}
 
 	db := newPostImportTestDB(t)
-	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	account := seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	_, err := service.Enable(context.Background(), "workspace-1", account.ID)
 	require.NoError(t, err)
 	require.NoError(t, service.Disable(context.Background(), "workspace-1", account.ID))
@@ -496,15 +497,15 @@ func TestDueImportIsQueuedOnceAfterItsFirstCycle(t *testing.T) {
 func TestSyncPersistsReadBudgetBeforeProviderCall(t *testing.T) {
 	db := newPostImportTestDB(t)
 	var account models.SocialAccount
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	reader := &nativeReaderFixture{read: func(context.Context, platform.NativePostRequest) (platform.NativePostPage, error) {
 		state := loadImportState(t, db, account.ID)
 		require.Equal(t, 1, state.ReadBudgetUsed, "a crash during the request must not restore the spent budget")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"feed":[]}`))
-	}))
-	defer server.Close()
-	account = seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+		return platform.NativePostPage{Coverage: platform.NativePostComplete}, nil
+	}}
+
+	account = seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service := NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	_, err := service.Enable(t.Context(), "workspace-1", account.ID)
 	require.NoError(t, err)
 	require.NoError(t, service.SyncAccount(t.Context(), "workspace-1", account.ID))
@@ -545,14 +546,14 @@ func TestDisableDuringProviderReadStopsTheInFlightImport(t *testing.T) {
 	db := newPostImportTestDB(t)
 	var service *Service
 	var account models.SocialAccount
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, service.Disable(r.Context(), account.WorkspaceID, account.ID))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"cursor":"next","feed":[` + blueskyFeedItem("at://did:plc:owner/app.bsky.feed.post/new", "new", "2026-10-03T12:00:00Z") + `]}`))
-	}))
-	defer server.Close()
-	account = seedPostImportAccount(t, db, "bluesky", "did:plc:owner", server.URL)
+	reader := &nativeReaderFixture{read: func(ctx context.Context, _ platform.NativePostRequest) (platform.NativePostPage, error) {
+		require.NoError(t, service.Disable(ctx, account.WorkspaceID, account.ID))
+		return platform.NativePostPage{Coverage: platform.NativePostComplete, NextCursor: "next", Items: []platform.NativePostItem{nativePostItem("at://did:plc:owner/app.bsky.feed.post/new", "new", "2026-10-03T12:00:00Z")}}, nil
+	}}
+
+	account = seedPostImportAccount(t, db, "bluesky", "did:plc:owner", "")
 	service = NewService(db, &stubTokenSource{token: "token"})
+	service.SetProvider("bluesky", reader)
 	service.now = func() time.Time { return time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC) }
 	_, err := service.Enable(t.Context(), account.WorkspaceID, account.ID)
 	require.NoError(t, err)

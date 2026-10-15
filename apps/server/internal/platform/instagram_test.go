@@ -71,14 +71,20 @@ func TestInstagramExchangeAndSelectBusinessAccount(t *testing.T) {
 	httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
 		case "/v25.0/oauth/access_token":
-			query := req.URL.Query()
+			if req.Method != http.MethodPost || req.URL.RawQuery != "" {
+				t.Fatal("token exchange must keep credentials in its POST body")
+			}
+			if err := req.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			query := req.PostForm
 			if query.Get(grantType) == "fb_exchange_token" {
 				return jsonResponse(req, `{"access_token":"long-token","token_type":"bearer","expires_in":5184000}`), nil
 			}
 			return jsonResponse(req, `{"access_token":"short-token","token_type":"bearer","expires_in":3600}`), nil
 		case "/v25.0/me/accounts":
 			accountsCalls++
-			if req.URL.Query().Get(oauthParamAccessToken) != "long-token" {
+			if req.Header.Get(headerAuthorization) != "Bearer long-token" {
 				t.Fatalf("unexpected accounts token %q", req.URL.Query().Get(oauthParamAccessToken))
 			}
 			return jsonResponse(req, `{"data":[{"id":"page-1","name":"OpenPost Page","access_token":"page-token","picture":{"data":{"url":"https://cdn.example/page.png"}},"instagram_business_account":{"id":"ig-1","username":"openpost","name":"OpenPost IG","profile_picture_url":"https://cdn.example/ig.png","account_type":"CREATOR"}}]}`), nil

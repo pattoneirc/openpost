@@ -94,7 +94,7 @@ func exchangeMetaAuthCode(ctx context.Context, graphURL func(string) string, cli
 	params.Set(oauthParamCode, code)
 
 	label := providerName + " token exchange"
-	respBody, err := DoRequest(ctx, http.MethodGet, graphURL("oauth/access_token")+"?"+params.Encode(), nil, nil)
+	respBody, err := doMetaRequest(ctx, http.MethodPost, graphURL("oauth/access_token"), strings.NewReader(params.Encode()), map[string]string{headerContentType: contentTypeForm})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", label, err)
 	}
@@ -119,7 +119,7 @@ func exchangeMetaLongLivedToken(ctx context.Context, graphURL func(string) strin
 	params.Set("fb_exchange_token", accessToken)
 
 	label := providerName + " long-lived token exchange"
-	respBody, err := DoRequest(ctx, http.MethodGet, graphURL("oauth/access_token")+"?"+params.Encode(), nil, nil)
+	respBody, err := doMetaRequest(ctx, http.MethodPost, graphURL("oauth/access_token"), strings.NewReader(params.Encode()), map[string]string{headerContentType: contentTypeForm})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", label, err)
 	}
@@ -168,7 +168,7 @@ func fetchMetaGrantedScopes(ctx context.Context, graphURL func(string) string, a
 	endpoint := graphURL("me/permissions") + "?" + url.Values{
 		oauthParamAccessToken: {accessToken},
 	}.Encode()
-	body, err := DoRequest(ctx, http.MethodGet, endpoint, nil, nil)
+	body, err := doMetaRequest(ctx, http.MethodGet, endpoint, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func (f *FacebookAdapter) RefreshToken(_ context.Context, _ RefreshTokenInput) (
 }
 
 func (f *FacebookAdapter) GetProfile(ctx context.Context, accessToken string) (*UserProfile, error) {
-	respBody, err := DoRequest(ctx, http.MethodGet, f.graphURL("me?fields=id,name&access_token="+url.QueryEscape(accessToken)), nil, nil)
+	respBody, err := doMetaRequest(ctx, http.MethodGet, f.graphURL("me?fields=id,name&access_token="+url.QueryEscape(accessToken)), nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("facebook profile: %w", err)
 	}
@@ -230,7 +230,7 @@ func (f *FacebookAdapter) GetProfile(ctx context.Context, accessToken string) (*
 
 func (f *FacebookAdapter) RefreshAccountMetadata(ctx context.Context, accessToken string, _ AccountMetadataRequest) (*UserProfile, error) {
 	endpoint := f.graphURL("me?fields=id,name,username,picture.type(square)&access_token=" + url.QueryEscape(accessToken))
-	respBody, err := DoRequest(ctx, http.MethodGet, endpoint, nil, nil)
+	respBody, err := doMetaRequest(ctx, http.MethodGet, endpoint, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("facebook page profile: %w", err)
 	}
@@ -482,7 +482,7 @@ func (f *FacebookAdapter) waitForFacebookVideoUpload(ctx context.Context, access
 			"fields":              {"status"},
 			oauthParamAccessToken: {accessToken},
 		}
-		response, err := DoRequest(ctx, http.MethodGet, f.graphURL(videoID)+"?"+query.Encode(), nil, nil)
+		response, err := doMetaRequest(ctx, http.MethodGet, f.graphURL(videoID)+"?"+query.Encode(), nil, nil)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -501,7 +501,7 @@ func (f *FacebookAdapter) waitForFacebookVideoUpload(ctx context.Context, access
 		if statusResponse.Status.failed() {
 			return &HTTPError{StatusCode: http.StatusBadRequest, Code: "facebook_video_processing_failed"}
 		}
-		if statusResponse.Status.complete() {
+		if statusResponse.Status.uploadComplete() {
 			return nil
 		}
 	}
@@ -528,8 +528,9 @@ func (s facebookVideoStatus) failed() bool {
 		s.VideoStatus == "error" || s.VideoStatus == "expired"
 }
 
-func (s facebookVideoStatus) complete() bool {
-	return !s.failed() && (s.VideoStatus == "ready" || s.ProcessingPhase.Status == "complete")
+func (s facebookVideoStatus) uploadComplete() bool {
+	// Finish starts provider processing, so upload readiness cannot wait for it.
+	return !s.failed() && (s.UploadingPhase.Status == "complete" || s.VideoStatus == "upload_complete" || s.VideoStatus == "ready")
 }
 
 func isTransientFacebookVideoPollError(err error) bool {
@@ -765,7 +766,7 @@ func resolveMetaContentURL(
 		"fields":              {field},
 		oauthParamAccessToken: {accessToken},
 	}
-	body, err := DoRequest(ctx, http.MethodGet, graphURL(externalID)+"?"+query.Encode(), nil, nil)
+	body, err := doMetaRequest(ctx, http.MethodGet, graphURL(externalID)+"?"+query.Encode(), nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("%s post permalink: %w", providerName, err)
 	}
@@ -801,7 +802,7 @@ func (f *FacebookAdapter) HideComment(ctx context.Context, accessToken, _ string
 
 func (f *FacebookAdapter) DeleteComment(ctx context.Context, accessToken, _ string, commentID string) error {
 	endpoint := f.graphURL(commentID) + "?access_token=" + url.QueryEscape(accessToken)
-	if _, err := DoRequest(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
+	if _, err := doMetaRequest(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
 		return fmt.Errorf("facebook delete comment: %w", err)
 	}
 	return nil
@@ -921,7 +922,7 @@ func (f *FacebookAdapter) ResumePublish(ctx context.Context, token, pageID strin
 	}
 	pending := pendingFacebookVideo(stage, videoID)
 	pending.ProviderReference = reference
-	body, err := DoRequest(ctx, http.MethodGet, f.graphURL(videoID)+"?fields=status&access_token="+url.QueryEscape(token), nil, nil)
+	body, err := doMetaRequest(ctx, http.MethodGet, f.graphURL(videoID)+"?fields=status&access_token="+url.QueryEscape(token), nil, nil)
 	if err != nil {
 		failure := facebookVideoOutcomeError(stage, videoID, err)
 		var outcome *facebookVideoFailure
@@ -941,15 +942,15 @@ func (f *FacebookAdapter) ResumePublish(ctx context.Context, token, pageID strin
 		pending.RetrySafety = PublishRetryNever
 		return pending, &HTTPError{StatusCode: http.StatusBadRequest, Code: "facebook_video_processing_failed"}
 	}
+	if status.PublishingPhase.Status == "complete" || status.VideoStatus == "published" {
+		result := AcceptedPublishResult(publishedID)
+		result.ProviderReference = reference
+		return result, nil
+	}
 	if stage == "publishing" {
-		if status.PublishingPhase.Status == "complete" || status.VideoStatus == "published" {
-			result := AcceptedPublishResult(publishedID)
-			result.ProviderReference = reference
-			return result, nil
-		}
 		return pending, nil
 	}
-	if !status.complete() {
+	if !status.uploadComplete() {
 		return pending, nil
 	}
 	edge, label, values := facebookVideoFinishRequest(req)

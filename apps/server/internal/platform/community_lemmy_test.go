@@ -37,7 +37,7 @@ func TestValidateCommunityPost(t *testing.T) {
 	require.ErrorContains(t, ValidateCommunityPost("lemmy", "!selfhosted@lemmy.world", "  "), "require a title")
 }
 
-func newFakeLemmy(_ *testing.T) (*httptest.Server, *string) {
+func newFakeLemmy(t *testing.T) (*httptest.Server, *string) {
 	version := "0.19.11"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v3/user/login", func(w http.ResponseWriter, _ *http.Request) {
@@ -111,7 +111,7 @@ func newFakeLemmy(_ *testing.T) (*httptest.Server, *string) {
 		}
 		_, _ = w.Write([]byte(`{"msg":"ok","files":[{"file":"8f3c2b.jpeg","delete_token":"d41d8c","details":{"width":1,"height":1,"content_type":"image/jpeg","created_at":"2026-09-01T10:00:00Z"}}]}`))
 	})
-	server := httptest.NewServer(mux)
+	server := newProviderTestServer(t, mux)
 	return server, &version
 }
 
@@ -245,7 +245,7 @@ func TestLemmyImageUpload(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, server.URL+"/pictrs/image/8f3c2b.jpeg", imageURL)
 
-	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	empty := newProviderTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"msg":"no_files"}`))
 	}))
 	defer empty.Close()
@@ -264,8 +264,6 @@ func TestLemmyRejectsV4Instances(t *testing.T) {
 }
 
 func TestResolveCommunityTargetKeys(t *testing.T) {
-	t.Parallel()
-
 	resolved, err := ResolveTargetKey("lemmy", "lemmy", "", map[string]interface{}{"community": "https://remote.example/c/selfhosted"})
 	require.NoError(t, err)
 	require.Equal(t, "lemmy:community:remote.example:selfhosted", resolved)

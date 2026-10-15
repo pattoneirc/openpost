@@ -15,6 +15,7 @@
 	import type { GpuRenderEffect } from '$lib/video-editor/effects/gpu/compositor';
 	import { filmstripCache, type FilmstripFrame } from '$lib/video-editor/media/filmstrip-client';
 	import { mediaPool } from '$lib/video-editor/media/pool.svelte';
+	import { ThumbnailUrlCache } from '$lib/video-editor/media/thumbnail-url-cache';
 	import type { TimelineItem, TimelineTrack } from '$lib/video-editor/project/types';
 	import { editorSession } from '$lib/video-editor/editor.svelte';
 	import {
@@ -58,9 +59,16 @@
 	} = $props();
 
 	let thumbnailUrls = $state<Record<string, string>>({});
-	let thumbnailGeneration = 0;
-	let loadedThumbnailRevision = -1;
-	const ownedThumbnailUrls = new Map<string, string>();
+	const thumbnails = new ThumbnailUrlCache(
+		async (id) => {
+			const root = getWorkspaceRoot();
+			return root ? readBlob(root, mediaThumbnailPath(id)) : null;
+		},
+		(id, url) => {
+			if (url) thumbnailUrls[id] = url;
+			else delete thumbnailUrls[id];
+		}
+	);
 	let gradedThumbnailUrls = $state<Record<string, string>>({});
 	let gradeGeneration = 0;
 	let gradeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -273,39 +281,6 @@
 		setCurrentFrame(Math.min(maxFrame, Math.max(0, frame)));
 	}
 
-	async function syncThumbnails(mediaIds: readonly string[], revision: number): Promise<void> {
-		const generation = ++thumbnailGeneration;
-		const activeIds = new Set(mediaIds);
-		if (revision !== loadedThumbnailRevision) {
-			loadedThumbnailRevision = revision;
-			for (const url of ownedThumbnailUrls.values()) URL.revokeObjectURL(url);
-			ownedThumbnailUrls.clear();
-			thumbnailUrls = {};
-		}
-		for (const [id, url] of ownedThumbnailUrls) {
-			if (activeIds.has(id)) continue;
-			URL.revokeObjectURL(url);
-			ownedThumbnailUrls.delete(id);
-		}
-		const root = getWorkspaceRoot();
-		if (root) {
-			await Promise.all(
-				mediaIds.map(async (id) => {
-					if (ownedThumbnailUrls.has(id)) return;
-					try {
-						const thumbnail = await readBlob(root, mediaThumbnailPath(id));
-						if (!thumbnail || generation !== thumbnailGeneration) return;
-						ownedThumbnailUrls.set(id, URL.createObjectURL(thumbnail));
-					} catch {
-						// The compact tile remains useful without a cached image.
-					}
-				})
-			);
-		}
-		if (generation !== thumbnailGeneration) return;
-		thumbnailUrls = Object.fromEntries(ownedThumbnailUrls);
-	}
-
 	function syncClipStartFrames(requests: typeof clipStartRequests): void {
 		const activeMediaIds = new Set(requests.map((request) => request.media.id));
 		for (const [mediaId, unsubscribe] of filmstripUnsubscribers) {
@@ -394,7 +369,7 @@
 		const mediaIds = Array.from(
 			new Set(visualItems.map((item) => item.mediaId).filter((id): id is string => Boolean(id)))
 		);
-		untrack(() => void syncThumbnails(mediaIds, revision));
+		untrack(() => thumbnails.sync(mediaIds, revision));
 	});
 
 	$effect(() => {
@@ -408,12 +383,10 @@
 	});
 
 	onDestroy(() => {
-		thumbnailGeneration += 1;
 		gradeGeneration += 1;
 		if (gradeTimer) clearTimeout(gradeTimer);
 		cancelScrub();
-		for (const url of ownedThumbnailUrls.values()) URL.revokeObjectURL(url);
-		ownedThumbnailUrls.clear();
+		thumbnails.dispose();
 		for (const entry of ownedGradedUrls.values()) URL.revokeObjectURL(entry.url);
 		ownedGradedUrls.clear();
 		for (const unsubscribe of filmstripUnsubscribers.values()) unsubscribe();

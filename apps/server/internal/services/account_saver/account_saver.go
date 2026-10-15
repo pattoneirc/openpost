@@ -18,6 +18,7 @@ import (
 	"github.com/openpost/backend/internal/platform"
 	"github.com/openpost/backend/internal/services/crypto"
 	"github.com/openpost/backend/internal/services/entitlements"
+	"github.com/openpost/backend/internal/services/organizationguard"
 	"github.com/openpost/backend/internal/services/tokenmanager"
 	"github.com/openpost/backend/internal/services/workspaceaccess"
 	"github.com/uptrace/bun"
@@ -270,6 +271,42 @@ func assembleSaveAccountRecords(inputs []SaveAccountInput, existingAccounts []*m
 
 func (s *AccountSaver) persistSaveAccounts(ctx context.Context, first SaveAccountInput, accounts []*models.SocialAccount, isExisting []bool, preparedGrants []preparedGrant, now time.Time) error {
 	return s.db.RunInTx(ctx, &sql.TxOptions{}, func(txCtx context.Context, tx bun.Tx) error {
+		if err := organizationguard.LockWorkspace(txCtx, tx, first.WorkspaceID); err != nil {
+			return err
+		}
+		var amount int64
+		var active []models.SocialAccount
+		if err := tx.NewSelect().Model(&active).Where("workspace_id = ? AND is_active = ?", first.WorkspaceID, true).Scan(txCtx); err != nil {
+			return err
+		}
+		used := make(map[string]string, len(active))
+		for _, account := range active {
+			used[account.Slug] = account.ID
+		}
+		for index, account := range accounts {
+			existing, err := findExistingAccountWithDB(txCtx, tx, SaveAccountInput{WorkspaceID: account.WorkspaceID, PlatformName: account.Platform, AccountID: account.AccountID, InstanceURL: account.InstanceURL})
+			if err != nil {
+				return err
+			}
+			if existing == nil || !existing.IsActive {
+				amount++
+			}
+			if existing != nil {
+				account.ID = existing.ID
+				account.CreatedAt = existing.CreatedAt
+				account.IsNewlyInserted = false
+				isExisting[index] = true
+			}
+			if owner := used[account.Slug]; owner != "" && owner != account.ID {
+				account.Slug = nextAvailableOwnedSlug(account.Slug, used)
+			}
+			used[account.Slug] = account.ID
+		}
+		if amount > 0 {
+			if err := s.checkSocialAccountQuotaWithDB(txCtx, tx, first.UserID, first.WorkspaceID, amount); err != nil {
+				return err
+			}
+		}
 		for _, prepared := range preparedGrants {
 			if err := persistAuthorizationGrant(txCtx, tx, prepared); err != nil {
 				return err
@@ -584,7 +621,10 @@ func persistAuthorizationGrant(ctx context.Context, tx bun.Tx, prepared prepared
 }
 
 func (s *AccountSaver) findExistingAccount(ctx context.Context, input SaveAccountInput) (*models.SocialAccount, error) {
-	query := s.db.NewSelect().
+	return findExistingAccountWithDB(ctx, s.db, input)
+}
+func findExistingAccountWithDB(ctx context.Context, db bun.IDB, input SaveAccountInput) (*models.SocialAccount, error) {
+	query := db.NewSelect().
 		Model((*models.SocialAccount)(nil)).
 		Where("workspace_id = ?", input.WorkspaceID).
 		Where("platform = ?", input.PlatformName).
@@ -653,7 +693,7 @@ func (s *AccountSaver) validateSaveAccountInput(ctx context.Context, input SaveA
 		return fmt.Errorf("token response is required")
 	}
 
-	decision, err := workspaceaccess.NewAuthorizer(s.db).Authorize(ctx, input.WorkspaceID, input.Actor, workspaceaccess.LevelEdit)
+	decision, err := workspaceaccess.NewAuthorizer(s.db).Authorize(ctx, input.WorkspaceID, input.Actor, workspaceaccess.LevelConnect)
 	if err != nil {
 		return fmt.Errorf("validating workspace access: %w", err)
 	}
@@ -757,7 +797,10 @@ func (s *AccountSaver) CheckSocialAccountQuotaAmount(ctx context.Context, userID
 }
 
 func (s *AccountSaver) checkSocialAccountQuota(ctx context.Context, userID, workspaceID string, amount int64) error {
-	current, err := s.db.NewSelect().
+	return s.checkSocialAccountQuotaWithDB(ctx, s.db, userID, workspaceID, amount)
+}
+func (s *AccountSaver) checkSocialAccountQuotaWithDB(ctx context.Context, db bun.IDB, userID, workspaceID string, amount int64) error {
+	current, err := db.NewSelect().
 		Model((*models.SocialAccount)(nil)).
 		Where("workspace_id = ?", workspaceID).
 		Where("is_active = ?", true).
@@ -766,7 +809,7 @@ func (s *AccountSaver) checkSocialAccountQuota(ctx context.Context, userID, work
 		return fmt.Errorf("loading social account usage: %w", err)
 	}
 
-	decision, err := s.entitlement.Check(ctx, entitlements.Request{
+	decision, err := entitlements.CheckWithDB(ctx, s.entitlement, db, entitlements.Request{
 		WorkspaceID: workspaceID,
 		UserID:      userID,
 		Limit:       entitlements.LimitSocialAccounts,

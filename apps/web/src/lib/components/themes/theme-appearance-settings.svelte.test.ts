@@ -42,6 +42,8 @@ const workspace = {
 	avatar_url: '',
 	color: '',
 	can_edit: true,
+	can_connect: true,
+	can_approve: true,
 	role: 'admin',
 	created_at: '',
 	organization_id: 'org-a',

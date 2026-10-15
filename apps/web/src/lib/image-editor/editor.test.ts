@@ -1721,6 +1721,17 @@ it('protects locked descendant colors and adjustment gestures without blocking u
 	editor.previewImageAdjustment([imageID], 'contrast', 0.3);
 	editor.commitImageAdjustmentGesture();
 	expect(JSON.stringify(editor.document)).toBe(imageBaseline);
+	editor.updateLayer('outer', { locked: false });
+	editor.previewImageAdjustment([imageID], 'contrast', 0.3);
+	editor.previewImageAdjustment([imageID], 'contrast', 0.5);
+	editor.commitImageAdjustmentGesture();
+	expect(
+		editor.activePage?.layers.find((item) => item.id === imageID)?.image?.adjustments.contrast
+	).toBe(0.5);
+	editor.undo();
+	expect(
+		editor.activePage?.layers.find((item) => item.id === imageID)?.image?.adjustments.contrast
+	).toBe(0);
 });
 
 it('bounds authored mask radius without rounding valid fractions', () => {

@@ -1,5 +1,5 @@
 import { m } from '$lib/paraglide/messages';
-import { exportSegments, discardScratchFile, type QuickCutExportProgress } from './export';
+import type { QuickCutExportProgress } from './export';
 import { createSegment } from './model';
 import type { QuickCutSource } from './types';
 
@@ -10,6 +10,9 @@ export async function prepareRepurposePreview(
 	signal: AbortSignal,
 	onProgress: (progress: QuickCutExportProgress) => void
 ) {
+	signal.throwIfAborted();
+	const { exportSegments, discardScratchFile } = await import('./export');
+	signal.throwIfAborted();
 	const artifacts = await exportSegments({
 		sources: [{ ...source, selectedAudioTrackIndices: [audioTrackIndex] }],
 		segments: [

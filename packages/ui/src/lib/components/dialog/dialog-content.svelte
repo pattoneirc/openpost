@@ -46,8 +46,10 @@
 		)}
 		{...restProps}
 	>
-		{@render children?.()}
-		{#if showCloseButton}
+		{#snippet child({ props })}
+		<div {...props}>
+			{@render children?.()}
+			{#if showCloseButton}
 			<DialogPrimitive.Close data-slot="dialog-close">
 				{#snippet child({ props })}
 					<Button
@@ -61,6 +63,8 @@
 					</Button>
 				{/snippet}
 			</DialogPrimitive.Close>
-		{/if}
+			{/if}
+		</div>
+		{/snippet}
 	</DialogPrimitive.Content>
 </DialogPortal>

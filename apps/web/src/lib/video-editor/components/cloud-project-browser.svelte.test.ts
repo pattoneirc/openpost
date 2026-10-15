@@ -3,20 +3,17 @@ import { page, userEvent } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import { WebThemeRuntime } from '$lib/themes/runtime';
 import { resolveBuiltInTheme } from '@openpost/ui/themes/builtins';
-import { createBlankProject } from '../project/defaults';
-import type { CloudVideoProject } from '../cloud/project-repository';
-import type { Project } from '../project/types';
+import type { CloudVideoProjectSummary } from '../cloud/project-repository';
 import CloudProjectBrowser from './cloud-project-browser.svelte';
 import '../../../routes/layout.css';
 
-function project(name: string): CloudVideoProject<Project> {
-	const document = createBlankProject(name);
+function project(name: string): CloudVideoProjectSummary {
 	return {
-		id: document.id,
+		id: name.toLowerCase(),
 		workspaceId: 'library',
 		name,
 		headRevision: 1,
-		document,
+		schemaFamily: 'openpost',
 		syncStatus: 'synced',
 		attentionReason: '',
 		trashedAt: '',

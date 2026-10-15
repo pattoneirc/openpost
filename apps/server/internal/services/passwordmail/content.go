@@ -113,7 +113,7 @@ func workspaceInvitationContent(message transactionalmail.WorkspaceInvitationMes
 		return messageContent{}, fmt.Errorf("workspace invitation inviter is required")
 	}
 	role := strings.ToLower(strings.TrimSpace(message.Role))
-	roleLabel := map[string]string{"admin": "Administrator", "editor": "Editor", "viewer": "Viewer"}[role]
+	roleLabel := map[string]string{"admin": "Administrator", "editor": "Editor", "client": "Client", "viewer": "Viewer"}[role]
 	if roleLabel == "" {
 		return messageContent{}, fmt.Errorf("workspace invitation role is invalid")
 	}

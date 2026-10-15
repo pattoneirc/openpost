@@ -1,31 +1,9 @@
 export const marketingErrorRecovery = {
 	status: 404,
 	label: 'Page not found',
-	title: 'We couldn’t find that page.',
-	description: 'The link may be old or the address mistyped. Try one of these instead.',
-	primary: { label: 'Go to OpenPost home', href: '/' },
-	routes: [
-		{
-			label: 'Explore features',
-			description: 'Find the tools for your next post.',
-			href: '/#features'
-		},
-		{
-			label: 'Read the FAQ',
-			description: 'Answers about posts, plans, and your account.',
-			href: '/faq'
-		},
-		{
-			label: 'Open the help centre',
-			description: 'Get help with OpenPost.',
-			href: 'https://openpo.st/docs/guides/quickstart'
-		}
-	],
-	support: [
-		{ label: 'Email support', href: 'mailto:openpost@rgo.pt' },
-		{
-			label: 'Ask the Discord community',
-			href: 'https://discord.com/invite/u2QwukmY4W'
-		}
-	]
+	title: 'Page not found',
+	description: 'The link may be old or mistyped.',
+	primary: { label: 'Back home', href: '/' },
+	help: { label: 'Help centre', href: '/docs' },
+	illustration: '/assets/marketing/missing-page.webp'
 } as const;

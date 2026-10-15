@@ -225,7 +225,7 @@ func TestOAuthCallbackRechecksReadinessBeforeTokenExchange(t *testing.T) {
 	callbackResp := oauthSelectionRequest(
 		t, e, http.MethodGet,
 		"/api/v1/accounts/facebook/callback?code=provider-code&state="+url.QueryEscape(state),
-		nil, false,
+		nil, true,
 	)
 	require.Equal(t, http.StatusTemporaryRedirect, callbackResp.Code, callbackResp.Body.String())
 	require.Equal(t, "https://app.openpost.test/settings?oauth_status=failed&tab=accounts&workspace_id=ws-1", callbackResp.Header().Get("Location"))
@@ -300,7 +300,7 @@ func TestOAuthCallbackReprovesCertificationInitiatorRole(t *testing.T) {
 	callbackResp := oauthSelectionRequest(
 		t, e, http.MethodGet,
 		"/api/v1/accounts/facebook/callback?code=provider-code&state="+url.QueryEscape(state),
-		nil, false,
+		nil, true,
 	)
 	require.Equal(t, http.StatusTemporaryRedirect, callbackResp.Code, callbackResp.Body.String())
 	require.Equal(t, "https://app.openpost.test/settings?oauth_status=failed&tab=accounts&workspace_id=ws-1", callbackResp.Header().Get("Location"))
@@ -425,7 +425,7 @@ func TestDelayedOAuthSelectionRechecksAfterProviderCallBeforeSave(t *testing.T) 
 	callbackResp := oauthSelectionRequest(
 		t, e, http.MethodGet,
 		"/api/v1/accounts/facebook/callback?code=provider-code&state="+url.QueryEscape(parsed.Query().Get("state")),
-		nil, false,
+		nil, true,
 	)
 	require.Equal(t, http.StatusTemporaryRedirect, callbackResp.Code, callbackResp.Body.String())
 	callbackURL, err := url.Parse(callbackResp.Header().Get("Location"))

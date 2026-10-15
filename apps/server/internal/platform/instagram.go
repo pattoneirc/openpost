@@ -91,7 +91,7 @@ func (i *InstagramAdapter) SearchPublishingOptions(ctx context.Context, accessTo
 		limit = 25
 	}
 	query.Set("limit", strconv.Itoa(limit))
-	body, err := DoRequest(ctx, http.MethodGet, i.graphURL("pages/search")+"?"+query.Encode(), nil, nil)
+	body, err := doMetaRequest(ctx, http.MethodGet, i.graphURL("pages/search")+"?"+query.Encode(), nil, nil)
 	if err != nil {
 		return PublishingOptionsPage{}, fmt.Errorf("searching Instagram locations: %w", err)
 	}
@@ -160,7 +160,7 @@ func (i *InstagramAdapter) RefreshToken(_ context.Context, _ RefreshTokenInput) 
 }
 
 func (i *InstagramAdapter) GetProfile(ctx context.Context, accessToken string) (*UserProfile, error) {
-	respBody, err := DoRequest(ctx, http.MethodGet, i.graphURL("me?fields=id,name&access_token="+url.QueryEscape(accessToken)), nil, nil)
+	respBody, err := doMetaRequest(ctx, http.MethodGet, i.graphURL("me?fields=id,name&access_token="+url.QueryEscape(accessToken)), nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("instagram facebook profile: %w", err)
 	}
@@ -186,7 +186,7 @@ func (i *InstagramAdapter) RefreshAccountMetadata(ctx context.Context, accessTok
 		return nil, fmt.Errorf("instagram account id is required")
 	}
 	endpoint := i.graphURL(url.PathEscape(accountID) + "?fields=id,username,name,profile_picture_url&access_token=" + url.QueryEscape(accessToken))
-	respBody, err := DoRequest(ctx, http.MethodGet, endpoint, nil, nil)
+	respBody, err := doMetaRequest(ctx, http.MethodGet, endpoint, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("instagram profile: %w", err)
 	}
@@ -666,7 +666,7 @@ func (i *InstagramAdapter) HideComment(ctx context.Context, accessToken, _ strin
 
 func (i *InstagramAdapter) DeleteComment(ctx context.Context, accessToken, _ string, commentID string) error {
 	endpoint := i.graphURL(commentID) + "?access_token=" + url.QueryEscape(accessToken)
-	if _, err := DoRequest(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
+	if _, err := doMetaRequest(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
 		return fmt.Errorf("instagram delete comment: %w", err)
 	}
 	return nil
@@ -697,7 +697,7 @@ func (i *InstagramAdapter) waitForContainer(ctx context.Context, accessToken, co
 }
 
 func (i *InstagramAdapter) containerStatus(ctx context.Context, accessToken, containerID string) (status, detail string, err error) {
-	respBody, err := DoRequest(ctx, http.MethodGet, i.graphURL(containerID+"?fields=status_code,status&access_token="+url.QueryEscape(accessToken)), nil, nil)
+	respBody, err := doMetaRequest(ctx, http.MethodGet, i.graphURL(containerID+"?fields=status_code,status&access_token="+url.QueryEscape(accessToken)), nil, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("instagram container status: %w", err)
 	}

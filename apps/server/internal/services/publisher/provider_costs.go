@@ -121,3 +121,27 @@ func providerCostOperationKey(ctx context.Context, workspaceID, providerName, su
 	digest := sha256.Sum256([]byte(seed))
 	return hex.EncodeToString(digest[:])
 }
+
+// Product quota admission can fail after the cost reservation, before any
+// adapter dispatch. Such a request has no uncertain provider outcome.
+func (s *Service) releaseUnsentProviderCost(ctx context.Context, reservation providerCostReservation) error {
+	if !reservation.enabled || s.usage == nil {
+		return nil
+	}
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.usage.ReleaseProviderCost(releaseCtx, reservation.operationKey)
+}
+
+// Reserve both the provider cost exposure and product usage before dispatch.
+// A product quota denial cannot leave an unsent request recorded as uncertain.
+func (s *Service) reserveProviderDispatch(ctx context.Context, workspaceID, providerName, subject, phase string, scope providerWriteScope, req *platform.PublishRequest) (providerCostReservation, error) {
+	reservation, err := s.reserveProviderPublishCost(ctx, workspaceID, providerName, subject, phase, req)
+	if err != nil {
+		return providerCostReservation{}, err
+	}
+	if err := s.admitProviderUsage(ctx, workspaceID, scope); err != nil {
+		return providerCostReservation{}, errors.Join(err, s.releaseUnsentProviderCost(ctx, reservation))
+	}
+	return reservation, nil
+}

@@ -55,7 +55,13 @@ import {
   type RenditionTextEdits,
 } from "@/lib/publication-renditions";
 import { invalidatePublicationData, type Publication } from "@/lib/query-cache";
-import { currentWorkspaceId, useAccounts, usePublication, useSocialSets } from "@/lib/queries";
+import {
+  currentWorkspaceId,
+  useAccounts,
+  usePublication,
+  useSocialSets,
+  useWorkspaceCapabilities,
+} from "@/lib/queries";
 import type { PublicationActivity } from "@/lib/query-policy";
 import { getWorkspaceId } from "@/lib/api/token-store";
 import {
@@ -150,6 +156,17 @@ export default function ComposeScreen() {
   const publication = usePublication(id);
   const accounts = useAccounts();
   const socialSets = useSocialSets();
+  const workspace = useWorkspaceCapabilities();
+  if (!workspace?.can_edit)
+    return (
+      <Screen>
+        <BodyText>This Workspace is read-only for your role.</BodyText>
+        <Button
+          title="View post"
+          onPress={() => router.replace({ pathname: "/publications/[id]", params: { id } })}
+        />
+      </Screen>
+    );
 
   if (publication.isPending && !publication.data) {
     return (

@@ -13,6 +13,7 @@ import (
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/platform"
 	"github.com/openpost/backend/internal/services/crypto"
+	"github.com/openpost/backend/internal/services/entitlements"
 	"github.com/openpost/backend/internal/services/lifecycle"
 	"github.com/openpost/backend/internal/services/notifications"
 	"github.com/openpost/backend/internal/services/providerreadiness"
@@ -195,6 +196,18 @@ func TestPublicationAuthorizationPreflightRejectsChangedContentBeforeProviderCal
 	var publication models.Publication
 	require.NoError(t, srv.db.NewSelect().Model(&publication).Where("id = ?", "publication-1").Scan(t.Context()))
 	require.Equal(t, models.PublicationStatusReady, publication.Status, "preflight must run before publishing state changes")
+}
+
+func TestPublicationAuthorizationPreflightRejectsAccountMovedToAnotherWorkspace(t *testing.T) {
+	adapter := &fakePublisherAdapter{externalID: "must-not-publish"}
+	srv := newPublisherLifecycleTestServer(t, adapter)
+	ctx, payload := srv.authorizedPublicationJob(t)
+	_, err := srv.db.NewUpdate().Model((*models.SocialAccount)(nil)).
+		Set("workspace_id = ?", "foreign-workspace").Where("id = ?", "account-1").Exec(t.Context())
+	require.NoError(t, err)
+	err = srv.service.HandlePublishPublicationJob(ctx, payload)
+	require.Error(t, err)
+	require.Zero(t, adapter.publishCalls)
 }
 
 type publisherLifecycleTestServer struct {
@@ -427,4 +440,26 @@ func TestPublishedTransitionRecoversWithItsDurableEventWithoutAnotherSend(t *tes
 	count, err := srv.db.NewSelect().Model((*models.PublicationLifecycleEvent)(nil)).Where("rendition_id = ? AND type = ?", "rendition-1", lifecycle.EventPublished).Count(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
+}
+
+func TestConfirmedPublicationSurvivesQuotaSettlementFailure(t *testing.T) {
+	adapter := &fakePublisherAdapter{externalID: "confirmed-remote-post"}
+	srv := newPublisherLifecycleTestServer(t, adapter)
+	_, err := srv.db.NewCreateTable().Model((*models.MonthlyUsageReservation)(nil)).Exec(t.Context())
+	require.NoError(t, err)
+	srv.service.SetEntitlement(entitlements.NewStaticService(entitlements.PlanSnapshot{PlanID: "limited", Limits: map[entitlements.LimitKey]int64{entitlements.LimitPublishedPostsMonthly: 1}}))
+	_, err = srv.db.ExecContext(t.Context(), `CREATE TRIGGER reject_usage_settlement BEFORE UPDATE OF state ON monthly_usage_reservations WHEN NEW.state = 'committed' BEGIN SELECT RAISE(FAIL, 'usage settlement unavailable'); END`)
+	require.NoError(t, err)
+	require.NoError(t, srv.publishPublication(t))
+	var publication models.Publication
+	require.NoError(t, srv.db.NewSelect().Model(&publication).Where("id = ?", "publication-1").Scan(t.Context()))
+	require.Equal(t, models.PublicationStatusPublished, publication.Status)
+	var rendition models.Rendition
+	require.NoError(t, srv.db.NewSelect().Model(&rendition).Where("id = ?", "rendition-1").Scan(t.Context()))
+	require.Equal(t, models.RenditionStatusPublished, rendition.Status)
+	require.Equal(t, "confirmed-remote-post", rendition.ExternalID)
+	require.Equal(t, 1, adapter.publishCalls)
+	var receipt models.MonthlyUsageReservation
+	require.NoError(t, srv.db.NewSelect().Model(&receipt).Scan(t.Context()))
+	require.Equal(t, "held", receipt.State, "failed accounting must retain conservative quota exposure")
 }

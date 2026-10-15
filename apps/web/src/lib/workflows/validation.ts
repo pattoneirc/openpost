@@ -1,7 +1,7 @@
 import { referenceTokens, referenceParts } from './reference-path';
 /* oxlint-disable anti-slop/no-runtime-typeof -- This form validator checks arbitrary user-authored JSON literals before publishing or testing a workflow. */
 import type { Definition, Value, Step, WorkflowData } from './api';
-import { availableReferences } from './catalog';
+import { createAvailableReferences } from './catalog';
 import { stepFields, type FieldSpec, type Reference } from './fields';
 import { m } from '$lib/paraglide/messages';
 export type Issue = { node: string; field: string; message: string };
@@ -50,6 +50,7 @@ function interpolationIssue(text: string, references: Reference[]): string {
 }
 export function workflowIssues(definition: Definition, sourceData?: WorkflowData[string]): Issue[] {
 	const issues: Issue[] = [];
+	const referencesForStep = createAvailableReferences(definition.steps ?? [], sourceData);
 	const source = definition.source;
 	const requiredSource =
 		source.kind === 'github_release'
@@ -82,7 +83,7 @@ export function workflowIssues(definition: Definition, sourceData?: WorkflowData
 		issues.push({ node: 'source', field: 'repository', message: m.workflows_repository_help() });
 	function visit(steps: Step[]) {
 		for (const step of steps) {
-			const references = availableReferences(definition.steps ?? [], step.id, sourceData);
+			const references = referencesForStep(step.id);
 			if (step.kind === 'build_draft') {
 				const message = builderDestinationIssue(step.inputs ?? {});
 				if (message) issues.push({ node: step.id, field: 'account_ids', message });

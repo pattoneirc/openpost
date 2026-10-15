@@ -1,9 +1,9 @@
 import type { PortableQuickCutProjectDocument } from '@openpost/video-project';
 import { uploadMediaFile } from '$lib/media-upload-client';
 import {
-	cloudVideoProjectFamily,
 	CloudVideoProjectRepository,
-	type CloudVideoProject
+	type CloudVideoProject,
+	type CloudVideoProjectSummary
 } from '$lib/video-editor/cloud/project-repository';
 import type { MediaMetadata } from '$lib/video-editor/media/types';
 import { hashBlob } from '$lib/video-editor/project-bundle/bundle-utils';
@@ -47,7 +47,7 @@ export interface QuickCutCloudRepository {
 }
 
 export interface QuickCutCloudCatalogRepository extends QuickCutCloudRepository {
-	list(includeTrash?: boolean): Promise<Array<CloudVideoProject<QuickCutCloudDocument>>>;
+	listSummaries(includeTrash?: boolean): Promise<CloudVideoProjectSummary[]>;
 	get(projectId: string): Promise<CloudVideoProject<QuickCutCloudDocument>>;
 }
 
@@ -145,14 +145,12 @@ export function quickCutProjectFromCloudDocument(document: QuickCutCloudDocument
 	);
 }
 
-export function isQuickCutCloudProject(project: CloudVideoProject<QuickCutCloudDocument>): boolean {
-	return cloudVideoProjectFamily(project) === 'quick-cut';
-}
-
 export async function listQuickCutCloudProjects(
-	repository: QuickCutCloudCatalogRepository
-): Promise<Array<CloudVideoProject<QuickCutCloudDocument>>> {
-	return (await repository.list()).filter(isQuickCutCloudProject);
+	repository: Pick<QuickCutCloudCatalogRepository, 'listSummaries'>
+): Promise<CloudVideoProjectSummary[]> {
+	return (await repository.listSummaries()).filter(
+		(project) => project.schemaFamily === 'quick-cut'
+	);
 }
 
 export async function loadQuickCutCloudProject(

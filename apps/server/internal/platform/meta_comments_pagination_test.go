@@ -27,6 +27,8 @@ func TestMetaCommentsCollectAllConversationPages(t *testing.T) {
 			calls := 0
 			httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				calls++
+				require.Empty(t, req.URL.Query().Get(oauthParamAccessToken))
+				require.Equal(t, "Bearer synthetic-token", req.Header.Get(headerAuthorization))
 				switch req.URL.Query().Get("after") {
 				case "":
 					return jsonResponse(req, tc.first), nil

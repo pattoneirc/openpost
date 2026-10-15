@@ -132,11 +132,13 @@ it('retains a rendered visual while caption edits update the native preview', as
 
 it('discards late visual renders after recipe and Workspace changes or unmount', async () => {
 	const completions: Array<() => void> = [];
+	const renderStarts = Array.from({ length: 3 }, () => Promise.withResolvers<void>());
 	const decode = globalThis.createImageBitmap.bind(globalThis);
 	vi.spyOn(globalThis, 'createImageBitmap').mockImplementation(async (image) => {
 		const bitmap = await decode(image);
 		const pending = Promise.withResolvers<ImageBitmap>();
 		completions.push(() => pending.resolve(bitmap));
+		renderStarts[completions.length - 1].resolve();
 		return pending.promise;
 	});
 	const revoked = vi.spyOn(URL, 'revokeObjectURL');
@@ -178,13 +180,13 @@ it('discards late visual renders after recipe and Workspace changes or unmount',
 		onChange: vi.fn()
 	};
 	const screen = render(PostOptionCard, props);
-	await expect.poll(() => completions.length).toBe(1);
+	await renderStarts[0].promise;
 	await screen.rerender({ ...props, workspaceId: 'workspace-2' });
-	await expect.poll(() => completions.length).toBe(2);
+	await renderStarts[1].promise;
 	const next = structuredClone(screenshot);
 	next.destinations[0].media.document!.title = 'A new recipe';
 	await screen.rerender({ ...props, option: next, workspaceId: 'workspace-2' });
-	await expect.poll(() => completions.length).toBe(3);
+	await renderStarts[2].promise;
 	completions[0]();
 	await expect.poll(() => revoked.mock.calls.length).toBe(1);
 	expect(revoked.mock.calls[0][0]).toMatch(/^blob:/);

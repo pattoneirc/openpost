@@ -22,16 +22,23 @@ export async function renderVideoEdit(
 	onProgress: (fraction: number) => void,
 	signal?: AbortSignal
 ): Promise<File> {
+	assertNotAborted(signal);
 	const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(source) });
+	const abortInput = () => {
+		if (!input.disposed) input.dispose();
+	};
+	signal?.addEventListener('abort', abortInput, { once: true });
 	try {
 		const sourceAudioTrack = await input.getPrimaryAudioTrack();
 		const sourceAudioCodec = await sourceAudioTrack?.getCodec();
+		assertNotAborted(signal);
 		const canCopyAAC = sourceAudioTrack !== null && sourceAudioCodec === 'aac';
 		const video: ConversionVideoOptions = {};
 		if (recipe.crop) {
 			const width = even(recipe.crop.width);
 			const height = even(recipe.crop.height);
 			const codec = await firstPlatformVideoCodec(width, height);
+			assertNotAborted(signal);
 			if (!codec) {
 				throw new VideoPreparationError(
 					'encoder-unavailable',
@@ -50,6 +57,7 @@ export async function renderVideoEdit(
 		const stream = await createStreamingOutputTarget(signal);
 		let completed = false;
 		try {
+			assertNotAborted(signal);
 			const output = new Output({ format: new Mp4OutputFormat(), target: stream.target });
 			const conversion = await Conversion.init({
 				input,
@@ -80,12 +88,14 @@ export async function renderVideoEdit(
 			const copiedAudioSource = canCopyAAC ? new EncodedAudioPacketSource('aac') : null;
 			if (copiedAudioSource) output.addAudioTrack(copiedAudioSource);
 			conversion.onProgress = onProgress;
+			let cancellation: Promise<PromiseSettledResult<void>[]> | undefined;
 			const abort = () => {
-				void conversion.cancel();
-				void output.cancel();
+				cancellation ??= Promise.allSettled([conversion.cancel(), output.cancel()]);
 			};
 			signal?.addEventListener('abort', abort, { once: true });
 			try {
+				if (signal?.aborted) abort();
+				assertNotAborted(signal);
 				await output.start();
 				await Promise.all([
 					conversion.execute(),
@@ -99,9 +109,11 @@ export async function renderVideoEdit(
 							)
 						: Promise.resolve()
 				]);
+				assertNotAborted(signal);
 				await output.finalize();
 			} finally {
 				signal?.removeEventListener('abort', abort);
+				await cancellation;
 			}
 			const base = source.name.replace(/\.[^./\\]+$/, '');
 			const rendered = await stream.file(`${base}-edited.mp4`, 'video/mp4');
@@ -111,12 +123,17 @@ export async function renderVideoEdit(
 					'This browser could not preserve the video audio as AAC. The original file was not changed.'
 				);
 			}
+			assertNotAborted(signal);
 			completed = true;
 			return rendered;
 		} finally {
 			if (!completed) await stream.discard();
 		}
+	} catch (cause) {
+		assertNotAborted(signal);
+		throw cause;
 	} finally {
+		signal?.removeEventListener('abort', abortInput);
 		if (!input.disposed) input.dispose();
 	}
 }

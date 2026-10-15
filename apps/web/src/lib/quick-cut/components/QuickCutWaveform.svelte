@@ -50,11 +50,19 @@
 		}
 		failed = false;
 		waveform = null;
+		let active = true;
 		const unsubscribe = subscribeQuickCutWaveform(source, (next) => (waveform = next));
 		void getQuickCutWaveform(source)
-			.then((next) => (waveform = next))
-			.catch(() => (failed = true));
-		return unsubscribe;
+			.then((next) => {
+				if (active) waveform = next;
+			})
+			.catch(() => {
+				if (active) failed = true;
+			});
+		return () => {
+			active = false;
+			unsubscribe();
+		};
 	});
 
 	$effect(() => {

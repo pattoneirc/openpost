@@ -1382,6 +1382,33 @@
       "duration": "Until the tab changes or site data is cleared.",
       "necessity": "functional",
       "source_refs": ["apps/web/src/lib/stores/publication-view.svelte.ts"]
+    },
+    {
+      "id": "session-ideate-recovery",
+      "technology": "sessionStorage",
+      "owner": "OpenPost Ideate",
+      "identifier_kind": "prefix",
+      "identifier": "openpost:ideate:",
+      "purpose": "Retains the current idea, source context, build identity, pending edits and open state so a dismissed or reloaded Ideate dialog can resume without repeating generation.",
+      "scope": "Application origin and browser tab, separated by signed-in actor, Workspace and entry context.",
+      "duration": "Until the tab closes, the stored session is replaced, or site data is cleared.",
+      "necessity": "functional",
+      "source_refs": [
+        "apps/web/src/lib/components/post-builder/ideate-host.svelte",
+        "apps/web/src/lib/post-builder/ideate-storage.ts"
+      ]
+    },
+    {
+      "id": "session-batch-schedule-recovery",
+      "technology": "sessionStorage",
+      "owner": "OpenPost draft scheduling",
+      "identifier_kind": "prefix",
+      "identifier": "openpost:batch-schedule:",
+      "purpose": "Retains reviewed post dates, deselection and confirmation outcomes so partial scheduling can retry the same plan.",
+      "scope": "Application origin and browser tab, separated by signed-in actor, Workspace and selected post IDs.",
+      "duration": "Until the tab closes, the plan is replaced, or site data is cleared.",
+      "necessity": "functional",
+      "source_refs": ["apps/web/src/lib/components/batch-schedule-dialog.svelte"]
     }
   ]
 }

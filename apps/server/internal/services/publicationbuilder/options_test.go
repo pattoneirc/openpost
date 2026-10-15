@@ -114,6 +114,89 @@ func TestFourPostBuildRepairsBrokenMemeAndRetainsDecisionUsage(t *testing.T) {
 	require.Contains(t, usage, `"total_tokens":94`)
 }
 
+func TestFourPostProviderRequestsShareSeriousReleaseContextThroughPlannerRepairWriterAndCritique(t *testing.T) {
+	plannerCalls := 0
+	service, err := New(generationFunc(func(_ context.Context, request ai.GenerateRequest) (ai.GenerateResult, error) {
+		var value any
+		switch request.ResponseSchema.Name {
+		case "openpost_four_post_directions":
+			plannerCalls++
+			require.Contains(t, request.SystemPrompt, "Serious releases and technical updates")
+			require.Contains(t, request.UserPrompt, `"id":"release-notes"`)
+			require.Contains(t, request.UserPrompt, `"outcome":"Help existing users configure the integration safely"`)
+			require.Contains(t, request.UserPrompt, `"platform":"linkedin"`)
+			require.Contains(t, request.UserPrompt, `"platform":"x"`)
+			require.Contains(t, request.UserPrompt, `"platform":"bluesky"`)
+			if plannerCalls == 2 {
+				require.Contains(t, request.UserPrompt, `"validation_error":"exactly four creative options are required"`)
+				require.Contains(t, request.UserPrompt, `"text":"Enable the webhook in Settings, then copy the signing secret."`)
+				require.Contains(t, request.UserPrompt, `"guidance":"Direct, technical, no jokes."`)
+				require.Contains(t, request.UserPrompt, `"writing_model"`, "repair must retain provider policy context")
+			}
+			count := 4
+			if plannerCalls == 1 {
+				count = 3
+			}
+			plans := make([]plannedOption, count)
+			for i := range plans {
+				plans[i] = plannedOption{Label: []string{"Prerequisite", "Decision", "Trade-off", "Result"}[i], Direction: DirectorPlan{
+					CanonicalText: "Webhook signing is available.", FactualKernel: []string{"Enable the webhook in Settings, then copy the signing secret."},
+					Thesis: "The release adds webhook signing with one supplied setup sequence.", Outcome: "Help existing users configure the integration safely", Audience: "Existing technical users", Angle: "Lead with the prerequisite", Route: "artifact_led",
+					Media:        MediaPlan{Treatment: "none", Role: "none", Brief: "The supplied steps carry the update."},
+					Destinations: []DestinationDecision{{AccountID: "linkedin-1", Include: true, Reason: "Required."}, {AccountID: "x-1", Include: true, Reason: "Required."}, {AccountID: "bluesky-1", Include: true, Reason: "Required."}},
+				}}
+			}
+			value = optionDirections{Options: plans}
+		case "openpost_four_complete_posts":
+			require.Contains(t, request.SystemPrompt, "If the source is sparse, write a concise honest announcement")
+			require.Contains(t, request.UserPrompt, `"planned_options"`)
+			require.Contains(t, request.UserPrompt, `"platform_policies"`)
+			posts := make([]PostOption, 4)
+			for i, opening := range []string{"Webhook signing is now available.", "The setup has two supplied steps.", "Signing is explicit by design.", "One prerequisite before copying the secret."} {
+				posts[i] = PostOption{Destinations: []DestinationPlan{
+					{AccountID: "linkedin-1", Objective: "trust", Archetype: "announcement", OutputProfile: "linkedin.post", Preview: opening, Segments: []SegmentPlan{{Body: opening + " Enable the webhook in Settings, then copy the signing secret."}}, Media: MediaPlan{Treatment: "none", Role: "none", Brief: "Text is sufficient."}},
+					{AccountID: "x-1", Objective: "clicks", Archetype: "announcement", OutputProfile: "x.post", Preview: opening, Segments: []SegmentPlan{{Body: opening + " Enable it in Settings, then copy the signing secret."}}, Media: MediaPlan{Treatment: "none", Role: "none", Brief: "Text is sufficient."}},
+					{AccountID: "bluesky-1", Objective: "clicks", Archetype: "technical_note", OutputProfile: "bluesky.post", Preview: opening, Segments: []SegmentPlan{{Body: opening + " Enable it in Settings, then copy the signing secret."}}, Media: MediaPlan{Treatment: "none", Role: "none", Brief: "Text is sufficient."}},
+				}}
+			}
+			value = optionOutput{Options: posts}
+		case "openpost_four_post_review":
+			require.Contains(t, request.SystemPrompt, "useful supported specificity")
+			require.Contains(t, request.UserPrompt, `"platform_policies"`)
+			require.Contains(t, request.UserPrompt, `"guidance":"Direct, technical, no jokes."`)
+			return ai.GenerateResult{Text: `{"approved":true,"issue":""}`}, nil
+		default:
+			t.Fatalf("unexpected schema %s", request.ResponseSchema.Name)
+		}
+		data, marshalErr := json.Marshal(value)
+		require.NoError(t, marshalErr)
+		return ai.GenerateResult{Text: string(data)}, nil
+	}), Config{Model: "writer", DecisionModel: "decision", Decider: decisionFunc(func(_ context.Context, request ai.DecisionRequest) (ai.DecisionResult, error) {
+		require.Contains(t, request.Input, `"id":"release-notes"`)
+		require.Contains(t, request.Criteria, "Do not judge humor, writing quality, voice fit, distinctness, engagement")
+		require.NotContains(t, request.Criteria, "reader benefit")
+		return ai.DecisionResult{Probability: 1}, nil
+	})})
+	require.NoError(t, err)
+	voice := VoiceSnapshot{Definition: VoiceDefinition{Language: "English", Guidance: "Direct, technical, no jokes."}}
+	result, err := service.Build(t.Context(), BuildInput{
+		OptionCount: 4, Idea: "Webhook signing is available.", Sources: []SourceMaterial{{ID: "release-notes", Kind: "text", Text: "Enable the webhook in Settings, then copy the signing secret."}},
+		Direction: DirectionInput{Outcome: "Help existing users configure the integration safely", Audience: "Existing technical users", Angle: "Lead with the prerequisite"}, DestinationPolicy: DestinationPolicyRequireAll,
+		Destinations: []Destination{
+			{AccountID: "linkedin-1", Platform: "linkedin", Voice: voice, AllowedOutputProfiles: []OutputProfile{{Key: "linkedin.post", TextLimit: 3000, MaxSegments: 1}}},
+			{AccountID: "x-1", Platform: "x", Voice: voice, AllowedOutputProfiles: []OutputProfile{{Key: "x.post", TextLimit: 280, MaxSegments: 1}}},
+			{AccountID: "bluesky-1", Platform: "bluesky", Voice: voice, AllowedOutputProfiles: []OutputProfile{{Key: "bluesky.post", TextLimit: 300, MaxSegments: 1}}},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Options, 4)
+	require.Equal(t, 2, plannerCalls)
+	for _, option := range result.Options {
+		require.Len(t, option.Destinations, 3)
+		require.Equal(t, "Help existing users configure the integration safely", option.Direction.Outcome, "locked direction must survive planning repair")
+	}
+}
+
 func TestChoosingAnOptionPersistsAuthorEditsAndMissingDemo(t *testing.T) {
 	db := newBuilderApplicationTestDB(t)
 	input := BuildInput{OptionCount: 4, Idea: "I built a faster editor.", Destinations: []Destination{{AccountID: "account-1", Platform: "x", AllowedOutputProfiles: []OutputProfile{{Key: "x.short_text", TextLimit: 280, MaxSegments: 1, MediaMaxCount: 4, AllowedMIMEs: []string{"video/*"}}}}}}
@@ -173,8 +256,11 @@ func TestSourceBackedOptionEditsSurviveReloadAndCommit(t *testing.T) {
 	reloaded, err := app.Get(t.Context(), "user-1", build.ID)
 	require.NoError(t, err)
 	require.Equal(t, "someone really shipped this", reloaded.Result.Options[0].Destinations[0].Segments[0].Body)
-	_, err = app.SaveOption(t.Context(), "user-1", build.ID, "option-1", build.Revision, edits)
-	require.ErrorIs(t, err, ErrBuildNotReady, "stale edits must not overwrite newer edits")
+	replayed, err := app.SaveOption(t.Context(), "user-1", build.ID, "option-1", build.Revision, edits)
+	require.NoError(t, err, "a lost response must be safely recoverable")
+	require.Equal(t, saved.Revision, replayed.Revision)
+	_, err = app.SaveOption(t.Context(), "user-1", build.ID, "option-1", build.Revision, []OptionEdit{{AccountID: "account-1", Segments: []SegmentPlan{{Body: "obsolete client text"}}}})
+	require.ErrorIs(t, err, ErrBuildNotReady, "stale different edits must not overwrite newer edits")
 	publications := &publicationApplicationStub{}
 	_, err = app.CommitOption(t.Context(), "user-1", build.ID, "option-1", build.Revision, nil, []OptionEdit{{AccountID: "account-1", Segments: []SegmentPlan{{Body: "obsolete client text"}}}}, publications)
 	require.ErrorIs(t, err, ErrBuildNotReady, "stale selection must not overwrite saved edits")
@@ -287,6 +373,7 @@ func TestFourPostCreativeFeedbackGetsOneRewriteWithConsistencyRechecked(t *testi
 			value = optionOutput{Options: posts}
 		case "openpost_four_post_review":
 			reviewCalls++
+			require.Contains(t, request.UserPrompt, `"platform_policies"`)
 			return ai.GenerateResult{Text: `{"approved":false,"issue":"Give the confession a different payoff."}`}, nil
 		default:
 			t.Fatalf("unexpected schema %s", request.ResponseSchema.Name)
@@ -294,18 +381,21 @@ func TestFourPostCreativeFeedbackGetsOneRewriteWithConsistencyRechecked(t *testi
 		data, err := json.Marshal(value)
 		require.NoError(t, err)
 		return ai.GenerateResult{Text: string(data)}, nil
-	}), Config{Model: "writer", DecisionModel: "decision", Decider: decisionFunc(func(context.Context, ai.DecisionRequest) (ai.DecisionResult, error) {
+	}), Config{Model: "writer", DecisionModel: "decision", Decider: decisionFunc(func(_ context.Context, request ai.DecisionRequest) (ai.DecisionResult, error) {
 		decisionCalls++
+		require.Contains(t, request.Criteria, "concrete contradiction")
+		require.Contains(t, request.Criteria, "Do not judge humor, writing quality, voice fit, distinctness, engagement")
+		if decisionCalls == 2 {
+			return ai.DecisionResult{Probability: 0}, nil
+		}
 		return ai.DecisionResult{Probability: 1}, nil
 	})})
 	require.NoError(t, err)
-	result, err := service.Build(t.Context(), BuildInput{OptionCount: 4, Idea: "I deleted 15,000 lines. More features now.", DestinationPolicy: DestinationPolicyRequireAll, Destinations: []Destination{{AccountID: "x-1", Platform: "x", AllowedOutputProfiles: []OutputProfile{{Key: "x.post", TextLimit: 280, MaxSegments: 1}}}}})
-	require.NoError(t, err)
-	require.Len(t, result.Options, 4)
-	require.Equal(t, "My most productive day involved mostly deleting things.", result.Options[1].Destinations[0].Segments[0].Body)
+	_, err = service.Build(t.Context(), BuildInput{OptionCount: 4, Idea: "I deleted 15,000 lines. More features now.", DestinationPolicy: DestinationPolicyRequireAll, Destinations: []Destination{{AccountID: "x-1", Platform: "x", AllowedOutputProfiles: []OutputProfile{{Key: "x.post", TextLimit: 280, MaxSegments: 1}}}}})
+	require.ErrorContains(t, err, "decision review found a concrete source contradiction")
 	require.Equal(t, 2, writerCalls)
 	require.Equal(t, 1, reviewCalls, "a subjective critic must not loop after its rewrite")
-	require.Equal(t, 2, decisionCalls, "both the original and replacement retain concrete consistency checks")
+	require.Equal(t, 2, decisionCalls, "the replacement must be consistency checked without opening another rewrite")
 }
 
 func TestRenderedPrivateContextAssetCanBeExplicitlyAttached(t *testing.T) {

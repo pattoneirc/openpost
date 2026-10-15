@@ -10,14 +10,20 @@ global.Date = class extends SystemDate {
   }
 };
 const { Image } = require("react-native");
-const photo = Image.resolveAssetSource(
-  require("../../../../tests/app/fixtures/product-screenshots/lisbon-tram.png"),
-).uri;
+const photoAsset = require("../../../../tests/app/fixtures/product-screenshots/lisbon-tram.png");
+const photo = Image.resolveAssetSource
+  ? Image.resolveAssetSource(photoAsset).uri
+  : typeof photoAsset === "string"
+    ? photoAsset
+    : photoAsset.uri;
 const workspace = {
   id: "mobile-review",
   name: "Studio",
   organization_id: "review",
   role: "owner",
+  can_edit: true,
+  can_connect: true,
+  can_approve: true,
 };
 const now = new Date();
 const at = (day, hour) => new Date(now.getFullYear(), now.getMonth(), day, hour).toISOString();
@@ -27,6 +33,8 @@ const media = [
     url: photo,
     mime_type: "image/png",
     original_filename: "lisbon-tram.png",
+    width: 1923,
+    height: 818,
   },
 ];
 const account = {
@@ -127,6 +135,39 @@ const posts = [
     false,
   ),
 ];
+// Sample immutable review versions exercise the native inspection and decision controls.
+const reviewPost = post("client-review", "The submitted launch copy", "draft", now.getDate(), 9);
+reviewPost.review_state = "pending";
+reviewPost.renditions = reviewPost.renditions.slice(0, 1);
+reviewPost.renditions[0].segments = [
+  {
+    id: "review-segment",
+    body: "The submitted launch copy",
+    title: "Submitted launch title",
+    description: "Submitted launch description",
+    media,
+    settings: { first_comment: "The submitted follow-up comment" },
+  },
+];
+accounts.push({ ...account, id: "review-account-two", account_username: "studio.launches" });
+reviewPost.renditions.push({
+  ...reviewPost.renditions[0],
+  id: "review-variant-two",
+  social_account_id: "review-account-two",
+});
+posts.push(reviewPost);
+const submittedReview = {
+  id: "review-one",
+  publication_id: reviewPost.id,
+  workspace_id: workspace.id,
+  epoch: 1,
+  current: true,
+  reviewer_id: "review",
+  requested_by: "author",
+  note: "Please review this launch version.",
+  created_at: now.toISOString(),
+  snapshot: JSON.parse(JSON.stringify(reviewPost)),
+};
 const metric = (value, measured, delta) => ({
   value,
   measured,
@@ -419,6 +460,15 @@ global.fetch = async (input, options = {}) => {
   const url = new URL(typeof input === "string" ? input : input.url);
   const method = options.method || input.method || "GET";
   const path = url.pathname.replace(/^\/api\/v1/, "");
+  if (method === "PUT" && path === "/publications/client-review/reviews/review-one") {
+    const body = options.body ? JSON.parse(options.body) : await input.json();
+    if (body.expected_epoch !== 1 || !["approved", "changes_requested"].includes(body.decision))
+      return jsonResponse({ detail: "Invalid review decision" }, 409);
+    submittedReview.decision = body.decision;
+    submittedReview.feedback = body.feedback;
+    reviewPost.review_state = body.decision;
+    return jsonResponse(submittedReview);
+  }
   if (method === "POST") {
     const body = options.body ? JSON.parse(options.body) : await input.json();
     if (path === "/publication-builds") {
@@ -496,6 +546,8 @@ global.fetch = async (input, options = {}) => {
         ? p.status !== "draft"
         : p.status === url.searchParams.get("activity_bucket"),
     );
+  } else if (path === "/publications/client-review/reviews") {
+    value = [submittedReview];
   } else if (path.startsWith("/publications/")) {
     value = posts.find((p) => path === `/publications/${p.id}`);
   } else if (path === "/analytics") {
@@ -508,4 +560,8 @@ global.fetch = async (input, options = {}) => {
     ? jsonResponse({ detail: `No screenshot fixture for ${path}` }, 404)
     : jsonResponse(value);
 };
-require("expo-router/entry");
+if (require("react-native").Platform.OS === "web") {
+  workspace.role = "client";
+  workspace.can_edit = false;
+  require("./review-harness");
+} else require("expo-router/entry");

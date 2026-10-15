@@ -356,6 +356,9 @@ func TestWorkspaceSetupRetiresAfterActivation(t *testing.T) {
 
 func (s *workspaceTestServer) createWorkspace(t *testing.T, name string) *httptest.ResponseRecorder {
 	t.Helper()
+	// The authenticated principal must have a stored User for creation locking.
+	_, err := s.db.NewInsert().Model(&models.User{ID: "user-1", Email: "user@example.com", PasswordHash: "hash", CreatedAt: time.Now().UTC()}).On("CONFLICT DO NOTHING").Exec(t.Context())
+	require.NoError(t, err)
 
 	var payload bytes.Buffer
 	require.NoError(t, json.NewEncoder(&payload).Encode(map[string]string{"name": name}))
@@ -859,4 +862,31 @@ func TestCreateInvitationAppliesPerWorkspaceAbuseControl(t *testing.T) {
 	}, "web-token")
 	require.Equal(t, http.StatusTooManyRequests, limited.Code, limited.Body.String())
 	require.Contains(t, limited.Body.String(), "invitation limit reached")
+}
+
+type workspaceInterleavedEntitlement struct {
+	entitlements.Service
+	beforeCheck func()
+}
+
+func (s *workspaceInterleavedEntitlement) Check(ctx context.Context, req entitlements.Request) (entitlements.Decision, error) {
+	if s.beforeCheck != nil {
+		fn := s.beforeCheck
+		s.beforeCheck = nil
+		fn()
+	}
+	return s.Service.Check(ctx, req)
+}
+func TestCreateWorkspaceRechecksLimitAfterCompetingCreation(t *testing.T) {
+	policy := &workspaceInterleavedEntitlement{Service: entitlements.NewStaticService(entitlements.PlanSnapshot{PlanID: "limited", Limits: map[entitlements.LimitKey]int64{entitlements.LimitWorkspaces: 1}})}
+	srv := newWorkspaceTestServer(t, policy)
+	policy.beforeCheck = func() {
+		resp := srv.createWorkspace(t, "Competing")
+		require.Equal(t, http.StatusOK, resp.Code, resp.Body.String())
+	}
+	resp := srv.createWorkspace(t, "Late")
+	require.Equal(t, http.StatusPaymentRequired, resp.Code, resp.Body.String())
+	count, err := srv.db.NewSelect().Model((*models.Workspace)(nil)).Count(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
 }

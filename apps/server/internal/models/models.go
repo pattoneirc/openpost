@@ -62,6 +62,10 @@ const (
 const (
 	WorkspaceRoleAdmin  = "admin"
 	WorkspaceRoleEditor = "editor"
+	// WorkspaceRoleClient may connect accounts and decide approvals, but may
+	// not author or change content. It is the role for the person who owns the
+	// accounts and the reputation without working in the product.
+	WorkspaceRoleClient = "client"
 	WorkspaceRoleViewer = "viewer"
 
 	WorkspaceMemberStatusActive   = "active"
@@ -1335,22 +1339,26 @@ type OAuthAccountSelectionReservation struct {
 type Publication struct {
 	bun.BaseModel `bun:"table:publications"`
 
-	ID                  string    `bun:",pk" json:"id"`
-	WorkspaceID         string    `bun:",notnull" json:"workspace_id"`
-	CreatedByID         string    `bun:"created_by,notnull" json:"created_by"`
-	Title               string    `bun:",notnull" json:"title"`
-	Intent              string    `bun:"intent,notnull,default:'post'" json:"intent"`
-	CreationPreset      string    `bun:"creation_preset,notnull,default:'post'" json:"creation_preset"`
-	CreationSource      string    `bun:"creation_source,notnull,default:'unknown'" json:"creation_source"`
-	SocialSetID         string    `bun:"social_set_id,notnull,default:''" json:"social_set_id,omitempty"`
-	ContentProfile      string    `bun:"content_profile,notnull,default:'short_text'" json:"content_profile"`
-	SourceText          string    `bun:"source_text,notnull,default:''" json:"source_text"`
-	SourceContent       string    `bun:"source_content,notnull" json:"source_content"` // legacy mirror until old post flows are removed
-	SourceURL           string    `bun:"source_url" json:"source_url"`
-	Goal                string    `json:"goal"`
-	Audience            string    `json:"audience"`
-	Status              string    `bun:",notnull,default:'draft'" json:"status"`
-	Revision            int       `bun:",notnull,default:1" json:"revision"`
+	ID             string `bun:",pk" json:"id"`
+	WorkspaceID    string `bun:",notnull" json:"workspace_id"`
+	CreatedByID    string `bun:"created_by,notnull" json:"created_by"`
+	Title          string `bun:",notnull" json:"title"`
+	Intent         string `bun:"intent,notnull,default:'post'" json:"intent"`
+	CreationPreset string `bun:"creation_preset,notnull,default:'post'" json:"creation_preset"`
+	CreationSource string `bun:"creation_source,notnull,default:'unknown'" json:"creation_source"`
+	SocialSetID    string `bun:"social_set_id,notnull,default:''" json:"social_set_id,omitempty"`
+	ContentProfile string `bun:"content_profile,notnull,default:'short_text'" json:"content_profile"`
+	SourceText     string `bun:"source_text,notnull,default:''" json:"source_text"`
+	SourceContent  string `bun:"source_content,notnull" json:"source_content"` // legacy mirror until old post flows are removed
+	SourceURL      string `bun:"source_url" json:"source_url"`
+	Goal           string `json:"goal"`
+	Audience       string `json:"audience"`
+	Status         string `bun:",notnull,default:'draft'" json:"status"`
+	Revision       int    `bun:",notnull,default:1" json:"revision"`
+	ReviewID       string `bun:"review_id,notnull,default:''" json:"review_id,omitempty"`
+	ReviewEpoch    int    `bun:"review_epoch,notnull,default:0" json:"review_epoch,omitempty"`
+	ReviewState    string `bun:"review_state,notnull,default:''" json:"review_state,omitempty"`
+
 	ScheduledAt         time.Time `bun:"scheduled_at,nullzero" json:"scheduled_at"`
 	ActualRunAt         time.Time `bun:"actual_run_at,nullzero" json:"actual_run_at"`
 	FailureDismissedAt  time.Time `bun:"failure_dismissed_at,nullzero" json:"failure_dismissed_at"`

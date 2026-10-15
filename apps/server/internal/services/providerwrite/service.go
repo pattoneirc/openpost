@@ -19,6 +19,8 @@ import (
 
 var safeStateValue = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{0,128}$`)
 
+const reconciliationExpiredCode = "provider_reconciliation_expired"
+
 type Service struct {
 	db  *bun.DB
 	now func() time.Time
@@ -147,6 +149,9 @@ func (s *Service) executeAttempt(
 	reconcile ReconcileFunc,
 	resume ResumeFunc,
 ) (platform.PublishResult, error) {
+	if s.reconciliationExpired(attempt) {
+		return s.expireReconciliation(ctx, attempt)
+	}
 	switch attempt.Status {
 	case StatusAccepted:
 		return resultFromAttempt(attempt), nil
@@ -179,6 +184,43 @@ func (s *Service) executeAttempt(
 	default:
 		return platform.PublishResult{}, fmt.Errorf("invalid provider write attempt status %q", attempt.Status)
 	}
+}
+
+func (s *Service) reconciliationExpired(attempt *models.ProviderWriteAttempt) bool {
+	if attempt.Status != StatusSending && attempt.Status != StatusAmbiguous {
+		return false
+	}
+	if attempt.SafeErrorCode == reconciliationExpiredCode {
+		return true
+	}
+	if attempt.ProviderState == "scheduled" || attempt.ProviderState == DeliveryProviderScheduled {
+		return false
+	}
+	limit := 24 * time.Hour
+	if attempt.Provider == "tiktok" && attempt.ProviderState == "inbox_delivered" {
+		limit = 30 * 24 * time.Hour
+	}
+	started := attempt.SendingStartedAt
+	if started.IsZero() {
+		started = attempt.CreatedAt
+	}
+	return !started.IsZero() && !s.now().Before(started.Add(limit))
+}
+
+func (s *Service) expireReconciliation(ctx context.Context, attempt *models.ProviderWriteAttempt) (platform.PublishResult, error) {
+	result := resultFromAttempt(attempt)
+	result.RetrySafety = platform.PublishRetryNever
+	if err := s.persistAmbiguous(ctx, attempt, result, ErrReconciliationExpired); err != nil {
+		return platform.PublishResult{}, err
+	}
+	current, err := s.loadAttempt(context.WithoutCancel(ctx), attempt.ID)
+	if err != nil {
+		return platform.PublishResult{}, err
+	}
+	if current.Status == StatusAccepted {
+		return resultFromAttempt(current), nil
+	}
+	return platform.PublishResult{}, &OutcomeError{Kind: StatusAmbiguous, ProviderState: current.ProviderState, Err: ErrReconciliationExpired}
 }
 
 func (s *Service) resumeAmbiguous(
@@ -389,6 +431,10 @@ func (s *Service) persistResult(
 	reconciled bool,
 ) error {
 	result = normalizeResult(result)
+	if result.SubmissionState != platform.PublishSubmissionAccepted && s.reconciliationExpired(attempt) {
+		_, err := s.expireReconciliation(ctx, attempt)
+		return err
+	}
 	now := s.now()
 	status := StatusSending
 	completedAt := any(nil)
@@ -404,7 +450,7 @@ func (s *Service) persistResult(
 	durableCtx, cancel := durableContext(ctx)
 	defer cancel()
 	err := s.db.RunInTx(durableCtx, &sql.TxOptions{}, func(txCtx context.Context, tx bun.Tx) error {
-		updated, updateErr := tx.NewUpdate().Model((*models.ProviderWriteAttempt)(nil)).
+		query := tx.NewUpdate().Model((*models.ProviderWriteAttempt)(nil)).
 			Set("status = ?", status).
 			Set("submission_state = ?", result.SubmissionState).
 			Set("provider_state = ?", result.ProviderState).
@@ -418,13 +464,23 @@ func (s *Service) persistResult(
 			Set("reconcile_after = ?", reconcileAt).
 			Set("completed_at = ?", completedAt).
 			Set("updated_at = ?", now).
-			Where("id = ? AND status IN (?, ?)", attempt.ID, StatusSending, StatusAmbiguous).
-			Exec(txCtx)
+			Where("id = ? AND status IN (?, ?)", attempt.ID, StatusSending, StatusAmbiguous)
+		if result.SubmissionState != platform.PublishSubmissionAccepted {
+			query = query.Where("safe_error_code != ?", reconciliationExpiredCode)
+		}
+		updated, updateErr := query.Exec(txCtx)
 		if updateErr != nil {
 			return updateErr
 		}
 		rows, _ := updated.RowsAffected()
 		if rows != 1 {
+			var current models.ProviderWriteAttempt
+			if err := tx.NewSelect().Model(&current).Where("id = ?", attempt.ID).Scan(txCtx); err != nil {
+				return err
+			}
+			if current.SafeErrorCode == reconciliationExpiredCode {
+				return &OutcomeError{Kind: StatusAmbiguous, ProviderState: current.ProviderState, Err: ErrReconciliationExpired}
+			}
 			return errors.New("attempt is no longer active")
 		}
 		return s.syncDeliveryTx(txCtx, tx, attempt.ID, reconciled)
@@ -485,9 +541,10 @@ func (s *Service) persistAmbiguous(ctx context.Context, attempt *models.Provider
 			Set("safe_error_class = ?", errorClass).
 			Set("safe_error_code = ?", errorCode).
 			Set("error_http_status = ?", httpStatus).
+			Set("reconcile_after = NULL").
 			Set("completed_at = ?", now).
 			Set("updated_at = ?", now).
-			Where("id = ? AND status = ?", attempt.ID, StatusSending).
+			Where("id = ? AND status IN (?, ?)", attempt.ID, StatusSending, StatusAmbiguous).
 			Exec(txCtx)
 		if err != nil {
 			return err
@@ -651,7 +708,7 @@ func deliveryState(attempt models.ProviderWriteAttempt) string {
 	case StatusDefiniteFailure:
 		return DeliveryRejected
 	case StatusAmbiguous:
-		if attempt.ProviderReference == "" && attempt.RetrySafety == string(platform.PublishRetryNever) {
+		if attempt.RetrySafety == string(platform.PublishRetryNever) && (attempt.ProviderReference == "" || attempt.SafeErrorCode == reconciliationExpiredCode) {
 			return DeliveryManualResolution
 		}
 		return DeliveryAmbiguous
@@ -845,6 +902,9 @@ func definitelyRejected(err error) bool {
 func safeError(err error) (string, string, int) {
 	if err == nil {
 		return "", "", 0
+	}
+	if errors.Is(err, ErrReconciliationExpired) {
+		return "reconciliation_expired", reconciliationExpiredCode, 0
 	}
 	var providerErr *platform.HTTPError
 	if errors.As(err, &providerErr) {

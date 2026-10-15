@@ -233,6 +233,7 @@
 			fps: timelineStore.fps,
 			frameWidth: canvasWidth,
 			frameHeight: canvasHeight,
+			itemById: timelineStore.itemById,
 			items: timelineStore.items
 		})
 	);

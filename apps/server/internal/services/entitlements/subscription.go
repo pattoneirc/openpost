@@ -12,7 +12,7 @@ import (
 )
 
 type SubscriptionService struct {
-	db       *bun.DB
+	db       bun.IDB
 	fallback Service
 }
 
@@ -265,4 +265,15 @@ func limitValueAsInt64(value any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// CheckWithDB evaluates stored entitlements through the mutation's transaction.
+// Static policies have no database state and retain their ordinary Check path.
+func CheckWithDB(ctx context.Context, service Service, db bun.IDB, req Request) (Decision, error) {
+	if subscription, ok := service.(*SubscriptionService); ok {
+		bound := *subscription
+		bound.db = db
+		return bound.Check(ctx, req)
+	}
+	return service.Check(ctx, req)
 }

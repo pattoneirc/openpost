@@ -79,6 +79,9 @@ func (application *Application) Commit(
 	if err := decodeStoredJSON(record.ResultJSON, &result); err != nil {
 		return Build{}, errors.New("saved publication build result is invalid")
 	}
+	if len(result.Series) > 0 {
+		return Build{}, errors.New("choose series concepts and generate posts before creating drafts")
+	}
 	if len(result.Options) > 0 && result.SelectedOptionID == "" {
 		return Build{}, errors.New("choose a post option before creating the draft")
 	}
@@ -215,6 +218,9 @@ func publicationCreateCommand(
 			"review_flags":     result.ReviewFlags,
 			"destinations":     result.Destinations,
 		},
+	}
+	if request.SeriesOrigin != nil {
+		metadata["series"] = request.SeriesOrigin
 	}
 	command := publicationservice.CreateCommand{
 		WorkspaceID:    workspaceID,

@@ -24,6 +24,7 @@ const surfaceSourceDirectories = Object.freeze({
   docs: [path.join(repositoryRoot, "apps/docs")],
   marketing: [
     path.join(repositoryRoot, "apps/marketing", "src"),
+    path.join(repositoryRoot, "apps/marketing", "scripts"),
     path.join(repositoryRoot, "apps/marketing", "functions"),
   ],
 });

@@ -529,14 +529,12 @@
 </svelte:head>
 
 <QueryClientProvider client={queryClient}>
-	<ThemeAppShell publicDefault={isPublicRoute && !isPreviewRoute} />
+	<ThemeAppShell publicDefault={isPublicRoute} />
 	<NavigationProgress />
 	{#if !isPreviewRoute}
 		<PwaManager />
-		<ModeWatcher
-			disableHeadScriptInjection
-			themeColors={{ light: '#faf9f7', dark: '#251f1c' }}
-		/>{/if}
+	{/if}
+	<ModeWatcher disableHeadScriptInjection themeColors={{ light: '#faf9f7', dark: '#251f1c' }} />
 	<Toaster position="bottom-center" richColors closeButton />
 	<TelemetryConsent
 		title={m.telemetry_consent_title()}

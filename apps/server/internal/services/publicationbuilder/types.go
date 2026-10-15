@@ -74,6 +74,7 @@ type Destination struct {
 }
 
 type BuildInput struct {
+	SeriesCount       int                 `json:"series_count,omitempty" minimum:"0" maximum:"3"`
 	OptionCount       int                 `json:"option_count,omitempty" enum:"0,4" doc:"Generate four complete alternatives; zero keeps the single-package workflow"`
 	Idea              string              `json:"idea"`
 	Sources           []SourceMaterial    `json:"sources,omitempty"`
@@ -167,6 +168,7 @@ type ReviewFlag struct {
 }
 
 type BuildResult struct {
+	Series           []SeriesConcept      `json:"series,omitempty"`
 	SelectedOptionID string               `json:"selected_option_id,omitempty"`
 	Options          []PostOption         `json:"options,omitempty" doc:"Four complete alternatives. Choosing one is an explicit author action"`
 	CanonicalText    string               `json:"canonical_text"`

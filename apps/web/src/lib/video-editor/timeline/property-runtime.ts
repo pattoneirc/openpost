@@ -17,6 +17,7 @@ export interface PropertyRuntimeContext {
 	absoluteFrame: number;
 	fps: number;
 	items: readonly TimelineItem[];
+	itemById?: ReadonlyMap<string, TimelineItem>;
 	resolvePreExpressionItem: (item: TimelineItem, absoluteFrame: number) => TimelineItem;
 }
 
@@ -94,7 +95,8 @@ export function resolveItemPropertyRuntime(
 		linkedCache: new Map(),
 		expressionCache: new Map(),
 		active: new Set(),
-		itemsById: new Map(context.items.map((candidate) => [candidate.id, candidate]))
+		itemsById:
+			context.itemById ?? new Map(context.items.map((candidate) => [candidate.id, candidate]))
 	};
 	let resolved = preExpressionItem;
 	for (const property of ['position', 'scale', 'anchor', ...SCALAR_PROPERTIES] as const) {

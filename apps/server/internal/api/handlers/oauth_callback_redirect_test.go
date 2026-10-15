@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humaecho"
@@ -63,7 +64,7 @@ func TestThreadsOAuthCallbackRejectsTokenAndProfileIdentityMismatch(t *testing.T
 		tokenUserID: "token-user",
 		profileID:   "profile-user",
 	})
-	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/threads/callback?code=provider-code&state="+url.QueryEscape(state), nil, false)
+	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/threads/callback?code=provider-code&state="+url.QueryEscape(state), nil, true)
 	result := rec.Result()
 	t.Cleanup(func() { _ = result.Body.Close() })
 
@@ -95,7 +96,7 @@ func TestOAuthCallbackAccountSelectionRedirectsExposeFinalLocationHeader(t *test
 
 			e, state, _ := newOAuthCallbackRedirectTestServer(t, providerName, &selectionTestAdapter{})
 
-			rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/"+providerName+"/callback?code=provider-code&state="+url.QueryEscape(state), nil, false)
+			rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/"+providerName+"/callback?code=provider-code&state="+url.QueryEscape(state), nil, true)
 			result := rec.Result()
 			t.Cleanup(func() { _ = result.Body.Close() })
 
@@ -118,7 +119,7 @@ func TestFacebookOAuthCallbackExplainsMissingManageablePages(t *testing.T) {
 		listErr: platform.ErrNoFacebookPages,
 	})
 
-	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/facebook/callback?code=provider-code&state="+url.QueryEscape(state), nil, false)
+	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/facebook/callback?code=provider-code&state="+url.QueryEscape(state), nil, true)
 	result := rec.Result()
 	t.Cleanup(func() { _ = result.Body.Close() })
 
@@ -136,7 +137,7 @@ func TestInstagramOAuthCallbackExplainsMissingPageLinkedAccount(t *testing.T) {
 	e, state, _ := newOAuthCallbackRedirectTestServer(t, "instagram", &selectionTestAdapter{
 		listErr: platform.ErrNoInstagramProfessionalAccount,
 	})
-	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/instagram/callback?code=provider-code&state="+url.QueryEscape(state), nil, false)
+	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/instagram/callback?code=provider-code&state="+url.QueryEscape(state), nil, true)
 	result := rec.Result()
 	t.Cleanup(func() { _ = result.Body.Close() })
 
@@ -167,7 +168,7 @@ func TestOAuthCallbackReauthorizationOfInactiveDestinationReturnsToAccounts(t *t
 	}).Exec(t.Context())
 	require.NoError(t, err)
 
-	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/threads/callback?code=provider-code&state="+url.QueryEscape(state), nil, false)
+	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/threads/callback?code=provider-code&state="+url.QueryEscape(state), nil, true)
 	result := rec.Result()
 	t.Cleanup(func() { _ = result.Body.Close() })
 
@@ -227,6 +228,7 @@ func newOAuthCallbackRedirectTestServer(t *testing.T, providerName string, adapt
 		(*models.SocialAccount)(nil),
 		(*models.Job)(nil),
 	)
+	seedOAuthTestWorkspace(t, db)
 	_, err := db.NewInsert().Model(&models.WorkspaceMember{
 		WorkspaceID: "ws-1",
 		UserID:      "user-1",
@@ -269,4 +271,28 @@ func newOAuthCallbackRedirectTestServer(t *testing.T, providerName string, adapt
 	require.NotEmpty(t, state)
 
 	return e, state, db
+}
+
+func TestOAuthCallbackCannotConnectWithoutInitiatingActor(t *testing.T) {
+	e, state, db := newOAuthCallbackRedirectTestServer(t, "threads", &directOAuthTestAdapter{})
+	rec := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/threads/callback?code=provider-code&state="+url.QueryEscape(state), nil, false)
+	require.Contains(t, rec.Header().Get("Location"), "oauth_status=failed")
+	count, err := db.NewSelect().Model((*models.SocialAccount)(nil)).Count(t.Context())
+	require.NoError(t, err)
+	require.Zero(t, count)
+}
+
+func seedOAuthTestWorkspace(t *testing.T, db *bun.DB) {
+	const workspaceID = "ws-1"
+	t.Helper()
+	for _, model := range []any{(*models.Organization)(nil), (*models.Workspace)(nil)} {
+		_, err := db.NewCreateTable().Model(model).IfNotExists().Exec(t.Context())
+		require.NoError(t, err)
+	}
+	now := time.Now().UTC()
+	organizationID := "oauth-org-" + workspaceID
+	_, err := db.NewInsert().Model(&models.Organization{ID: organizationID, Name: "OAuth", CreatedByID: "user-1", CreatedAt: now, UpdatedAt: now}).On("CONFLICT DO NOTHING").Exec(t.Context())
+	require.NoError(t, err)
+	_, err = db.NewInsert().Model(&models.Workspace{ID: workspaceID, OrganizationID: organizationID, Name: "OAuth", CreatedAt: now}).On("CONFLICT DO NOTHING").Exec(t.Context())
+	require.NoError(t, err)
 }

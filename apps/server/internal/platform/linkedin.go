@@ -34,12 +34,13 @@ func linkedInAPIVersion() string {
 }
 
 type LinkedInAdapter struct {
-	clientID             string
-	clientSecret         string
-	redirectURI          string
-	disableThreadReplies bool
-	enableOrganizations  bool
-	enableMemberReads    bool
+	clientID              string
+	clientSecret          string
+	redirectURI           string
+	disableThreadReplies  bool
+	enableOrganizations   bool
+	enableMemberReads     bool
+	enableMemberAnalytics bool
 }
 
 func NewLinkedInAdapter(clientID, clientSecret, redirectURI string, disableThreadReplies bool, enableOrganizations ...bool) *LinkedInAdapter {
@@ -70,7 +71,10 @@ func (l *LinkedInAdapter) GenerateAuthURL(state string) (string, map[string]stri
 		scope += " r_member_social"
 	}
 	if l.enableOrganizations {
-		scope += " rw_organization_admin w_organization_social r_organization_social r_member_profileAnalytics r_member_postAnalytics"
+		scope += " rw_organization_admin w_organization_social r_organization_social"
+	}
+	if l.enableMemberAnalytics {
+		scope += " r_member_profileAnalytics r_member_postAnalytics"
 	}
 
 	params := map[string]string{

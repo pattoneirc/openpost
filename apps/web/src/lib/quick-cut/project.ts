@@ -15,7 +15,7 @@ import type {
 	QuickCutVideoStream
 } from './types';
 import type { QuickCutSource } from './types';
-import { createHash } from './fingerprint';
+import { matchFingerprint } from './fingerprint';
 
 const MAX_SOURCES = 64;
 const MAX_SEGMENTS = 10000;
@@ -548,6 +548,12 @@ export async function restoreSourceHandles(
 ): Promise<Map<string, FileSystemFileHandle | null>> {
 	const map = new Map<string, FileSystemFileHandle | null>();
 	for (const m of metas) {
+		// Preserve saved words until an explicit Reconnect establishes their source.
+		// Legacy samples cannot prove that the unsampled bytes still match.
+		if (m.transcript && !m.contentFingerprint?.startsWith('sha256:')) {
+			map.set(m.id, null);
+			continue;
+		}
 		const rec = await getHandle('media', `quick-cut:${m.id}`);
 		if (rec) {
 			// SAFETY: handle was saved as FileSystemFileHandle for quick-cut source via saveHandle with kind 'media'
@@ -557,15 +563,19 @@ export async function restoreSourceHandles(
 				const sizeOk = file.size === m.size;
 				const nameOk = file.name === m.name;
 				const lastModifiedOk = m.lastModified === undefined || file.lastModified === m.lastModified;
-				let fingerprintOk = true;
-				if (m.contentFingerprint) {
-					const fp = await createHash(file);
-					fingerprintOk = fp === m.contentFingerprint;
-				}
-				if (!sizeOk || !nameOk || !lastModifiedOk || !fingerprintOk) {
+				if (!sizeOk || !nameOk || !lastModifiedOk) {
 					map.set(m.id, null);
 					continue;
 				}
+				const fingerprint = m.contentFingerprint
+					? await matchFingerprint(file, m.contentFingerprint)
+					: undefined;
+				const fingerprintOk = fingerprint !== null;
+				if (!fingerprintOk) {
+					map.set(m.id, null);
+					continue;
+				}
+				if (fingerprint) m.contentFingerprint = fingerprint;
 				map.set(m.id, handle);
 			} catch {
 				map.set(m.id, null);

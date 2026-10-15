@@ -16,22 +16,30 @@ const (
 )
 
 func (l *LinkedInAdapter) AnalyticsSupport() AnalyticsSupport {
-	if !l.enableOrganizations {
+	if !l.enableOrganizations && !l.enableMemberAnalytics {
 		return linkedinCommunityManagementUnavailable()
 	}
 	return AnalyticsSupport{Account: true, Content: true}
 }
 
 func (l *LinkedInAdapter) AnalyticsSupportForAccount(input AnalyticsAccountContext) AnalyticsSupport {
-	if !l.enableOrganizations {
-		return linkedinCommunityManagementUnavailable()
-	}
 	if linkedinAnalyticsAccountType(input.AccountID, input.CapabilityState) == "organization" {
+		if !l.enableOrganizations {
+			return linkedinCommunityManagementUnavailable()
+		}
 		return AnalyticsSupport{
 			Account:               true,
 			Content:               true,
 			AccountRequiredScopes: []string{linkedinScopeOrganizationAdmin},
 			ContentRequiredScopes: []string{linkedinScopeOrganizationAdmin},
+		}
+	}
+	if !l.enableMemberAnalytics {
+		return AnalyticsSupport{
+			Account:            false,
+			Content:            false,
+			AccountUnavailable: "LinkedIn member analytics require Community Management API access for this OpenPost installation.",
+			ContentUnavailable: "LinkedIn member analytics require Community Management API access for this OpenPost installation.",
 		}
 	}
 	return AnalyticsSupport{

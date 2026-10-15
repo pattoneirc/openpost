@@ -50,8 +50,13 @@ func TestFirstCommentSettingsPreferRootSegment(t *testing.T) {
 }
 
 func TestPublishFirstCommentBestEffortNeverFailsParent(t *testing.T) {
-	service := NewService(nil, nil)
+	srv := newPublisherUsageTestServer(t, &fakePublisherAdapter{})
+	service := srv.service
+	_, err := srv.db.NewCreateTable().Model((*models.Publication)(nil)).IfNotExists().Exec(t.Context())
+	require.NoError(t, err)
 	publication := &models.Publication{ID: "pub-1", WorkspaceID: "ws-1"}
+	_, err = srv.db.NewInsert().Model(publication).Exec(t.Context())
+	require.NoError(t, err)
 	rendition := &models.Rendition{ID: "ren-1", Platform: "instagram"}
 
 	failing := &firstCommentFakeAdapter{commentErr: errors.New("provider down")}
@@ -72,5 +77,10 @@ func TestPublishFirstCommentBestEffortNeverFailsParent(t *testing.T) {
 		service.publishFirstCommentBestEffort(context.Background(), publication, &models.Rendition{ID: "ren-2", Platform: "x"}, unsupported, "token", "acct-1", "post-1", map[string]any{"first_comment": "hi"})
 	})
 
+	_, err = srv.db.NewUpdate().Model(publication).Set("review_id = 'pending-review'").Set("review_state = 'pending'").WherePK().Exec(t.Context())
+	require.NoError(t, err)
+	blocked := &firstCommentFakeAdapter{}
+	service.publishFirstCommentBestEffort(t.Context(), publication, rendition, blocked, "token", "acct-1", "media-1", map[string]any{"first_comment": "Must not send"})
+	require.Zero(t, blocked.calls, "a separate first-comment provider call requires current approval")
 	_ = platform.SupportsFirstComment
 }

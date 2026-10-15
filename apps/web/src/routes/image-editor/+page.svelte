@@ -37,7 +37,7 @@
 		deleteGuestImageEditorDesign,
 		listGuestImageEditorDesigns,
 		requestGuestImageEditorPersistence,
-		warmGuestImageEditorDesignMedia,
+		warmGuestImageEditorPreviewMedia,
 		type LocalImageEditorDesign
 	} from '$lib/image-editor/local-persistence';
 	import { trackPublicImageEditorEvent } from '$lib/image-editor/public-telemetry';
@@ -192,7 +192,7 @@
 				heldLocalDesignIDs.add(id);
 			}
 			await Promise.all(
-				localDesigns.map((record) => warmGuestImageEditorDesignMedia(record.document))
+				localDesigns.map((record) => warmGuestImageEditorPreviewMedia(record.document))
 			);
 			if (!localDesignListMounted || sequence !== localDesignLoadSequence) return;
 			recentDesigns = localDesigns;
@@ -406,7 +406,7 @@
 		disabled={Boolean(creating)}
 	>
 		<div class="aspect-square overflow-hidden border-b">
-			<TemplatePreview document={template.document} label={templateName(template)} compact />
+			<TemplatePreview document={template.document} label={templateName(template)} compact cached />
 		</div>
 		<div class="flex min-h-16 items-center gap-2 p-3">
 			<div class="min-w-0 flex-1">
@@ -584,6 +584,7 @@
 										document={design.document}
 										label={design.document.title}
 										compact
+										cached
 									/>
 								</div>
 								<div class="flex min-h-16 items-center gap-3 border-t px-3 py-2.5">

@@ -40,12 +40,21 @@ OpenPost uses LinkedIn's Images API for images and Videos API for videos. Video 
 
 ## Analytics
 
-Analytics is an optional feature per connected LinkedIn account. It starts off for a new account. Enable it after connection or in Account details. LinkedIn analytics require Community Management API access, so the operator must turn on Organization support and use an approved app. With that access and when enabled:
+Analytics is an optional feature per connected LinkedIn account. It starts off for a new account. Enable it after connection or in Account details. LinkedIn analytics require approved Community Management API access and the setting for the account type:
+
+- For personal profiles, set `OPENPOST_LINKEDIN_MEMBER_ANALYTICS_ENABLED=true`. It defaults to false and works independently of Organization support.
+- For Organization Pages, set `OPENPOST_LINKEDIN_ORGANIZATIONS_ENABLED=true`. Member analytics can remain disabled.
+
+Restart OpenPost after changing these settings. Reconnect an account if its authorization lacks the required scopes. With approved access and Analytics enabled:
 
 - personal profiles can return followers plus post impressions, reach, reactions, comments, reposts, saves, and link clicks;
 - Organization Pages can return followers plus the post numbers that LinkedIn provides.
 
 The connected account also needs `r_member_profileAnalytics` and `r_member_postAnalytics` for profile analytics or `rw_organization_admin` for Organization Page analytics. Disabling Analytics stops future LinkedIn analytics collection without deleting stored metrics or revoking authorization.
+
+When upgrading an installation with working member analytics, explicitly enable `OPENPOST_LINKEDIN_MEMBER_ANALYTICS_ENABLED=true` to retain collection. Organization support no longer enables member analytics. Existing analytics permissions remain valid, so reconnect only if permissions are missing.
+
+Initial Community Management Development Tier access requires a new app without other products. Approved Standard Tier access can be added to an existing Advertising API app. See [LinkedIn's access guidance](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/community-management-overview#frequently-asked-questions).
 
 ## Common issues
 

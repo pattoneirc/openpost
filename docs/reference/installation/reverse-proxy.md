@@ -17,6 +17,22 @@ HTTPS and a stable public URL matter for social network sign-in, passkeys, MCP s
 - `OPENPOST_PUBLIC_URL=https://openpost.example.com`
 - `OPENPOST_MEDIA_URL=https://openpost.example.com/media`
 
+## Trust the proxy network
+
+Set `OPENPOST_TRUSTED_PROXY_CIDRS` to the IP networks of the immediate proxy connections that reach OpenPost. The default is empty: forwarded client IP and scheme headers are ignored. Configure this before upgrading a deployment that terminates HTTPS at a proxy, otherwise browser sign-in and writes can fail their Origin check.
+
+IPv4-mapped IPv6 CIDRs such as `::ffff:10.0.0.0/120` are normalized to their IPv4 equivalent, `10.0.0.0/24`. Mapped prefixes shorter than 96 bits are rejected because they include addresses outside the IPv4-mapped range.
+
+For Caddy or Nginx running on the same host and connecting over loopback:
+
+```dotenv
+OPENPOST_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+```
+
+For a container network or tunnel, use its actual upstream connection addresses or dedicated subnet instead. Do not trust all networks or a shared subnet containing untrusted clients. Keep the backend private. The trusted proxy must overwrite client-supplied forwarded headers; OpenPost walks client IPs from right to left and accepts the scheme only from a trusted immediate peer.
+
+After recreating the backend with these settings, sign in through its public HTTPS URL and save a draft. Confirm the session cookie has `Secure`, and that a direct request to the backend cannot choose its client IP or scheme through forwarded headers.
+
 ## Caddy example
 
 ```txt
@@ -68,7 +84,7 @@ server {
     proxy_request_buffering off;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
   }
 }

@@ -65,12 +65,12 @@ func (handler *TelegramConnectionHandler) issueCode(ctx context.Context, input *
 		return nil, huma.Error503ServiceUnavailable("telegram connections are unavailable")
 	}
 	workspaceID := strings.TrimSpace(input.Body.WorkspaceID)
-	allowed, err := workspaceEditAllowed(ctx, handler.db, workspaceID, middleware.GetUserID(ctx))
+	allowed, err := workspaceConnectAllowed(ctx, handler.db, workspaceID, middleware.GetUserID(ctx))
 	if err != nil {
 		return nil, huma.Error503ServiceUnavailable("failed to verify workspace access")
 	}
 	if !allowed {
-		return nil, huma.Error403Forbidden("workspace editor access is required")
+		return nil, huma.Error403Forbidden("workspace account connection access is required")
 	}
 	if err := account_saver.NewAccountSaver(handler.db, nil, handler.entitlement).
 		CheckSocialAccountQuota(ctx, middleware.GetUserID(ctx), workspaceID); err != nil {

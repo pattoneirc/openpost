@@ -37,6 +37,17 @@ interface RgbaColor {
   alpha: number;
 }
 
+interface ValidatedColor {
+  valid: boolean;
+  rgba?: RgbaColor | null;
+}
+
+// Validation is independent of the DOM. Cache exact strings, never mutable
+// manifests, and bound retained input while editing or browsing many themes.
+const validatedColors = new Map<string, ValidatedColor>();
+const MAX_VALIDATED_COLORS = 512;
+const INVALID_COLOR: ValidatedColor = { valid: false };
+
 const readableColorPairs = [
   ["ink", "canvas", "canvas", MINIMUM_TEXT_CONTRAST],
   ["mutedInk", "canvas", "canvas", MINIMUM_TEXT_CONTRAST],
@@ -116,11 +127,22 @@ export function isSafeThemeCssValue(value: string): boolean {
 }
 
 export function isSafeThemeColor(value: string): boolean {
-  return (
-    isSafeThemeCssValue(value) &&
-    isColor(value) &&
-    convert.colorToHex(value, { alpha: true }) !== null
-  );
+  return validatedColor(value).valid;
+}
+
+function validatedColor(value: string): ValidatedColor {
+  if (!isSafeThemeCssValue(value)) return INVALID_COLOR;
+  const cached = validatedColors.get(value);
+  if (cached) return cached;
+  const result = {
+    valid: isColor(value) && convert.colorToHex(value, { alpha: true }) !== null,
+  };
+  if (validatedColors.size >= MAX_VALIDATED_COLORS) {
+    const oldest = validatedColors.keys().next().value;
+    if (oldest !== undefined) validatedColors.delete(oldest);
+  }
+  validatedColors.set(value, result);
+  return result;
 }
 
 function parseSimpleCssLength(value: string): ParsedCssLength | undefined {
@@ -317,15 +339,21 @@ function isSafeMotionRecipe(
 }
 
 function toRgbaColor(value: string): RgbaColor | undefined {
-  if (!isSafeThemeColor(value)) return undefined;
+  const validated = validatedColor(value);
+  if (!validated.valid) return undefined;
+  if (validated.rgba !== undefined) return validated.rgba ?? undefined;
   const [red, green, blue, alpha] = convert.colorToRgb(value).map(Number);
-  if (![red, green, blue, alpha].every(Number.isFinite)) return undefined;
-  return {
+  if (![red, green, blue, alpha].every(Number.isFinite)) {
+    validated.rgba = null;
+    return undefined;
+  }
+  validated.rgba = {
     red: Math.min(1, Math.max(0, red! / 255)),
     green: Math.min(1, Math.max(0, green! / 255)),
     blue: Math.min(1, Math.max(0, blue! / 255)),
     alpha: Math.min(1, Math.max(0, alpha!)),
   };
+  return validated.rgba;
 }
 
 function compositeColor(foreground: RgbaColor, background: RgbaColor): RgbaColor {

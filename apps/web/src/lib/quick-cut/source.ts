@@ -122,7 +122,7 @@ export async function probeSourceFile(
 		const lastModified = file.lastModified;
 		let contentFingerprint: string | undefined;
 		try {
-			contentFingerprint = await createHash(file);
+			contentFingerprint = await createHash(file, signal);
 			signal?.throwIfAborted();
 		} catch (error) {
 			if (signal?.aborted) throw signal.reason ?? error;

@@ -102,4 +102,57 @@ describe('visual track moves', () => {
 			{ id: 'lower', from: 0, trackId: 'lower' }
 		]);
 	});
+	it('clamps a linked selection to the nearest boundary across its visual tracks', () => {
+		const video = {
+			...clip('video', 'video'),
+			from: 100,
+			durationInFrames: 20,
+			linkedGroupId: 'pair'
+		};
+		const audio = {
+			...clip('audio', 'audio', 'audio'),
+			from: 100,
+			durationInFrames: 20,
+			linkedGroupId: 'pair'
+		};
+		const text = { ...clip('text', 'text', 'lower'), from: 150, durationInFrames: 10 };
+		const items = [
+			video,
+			audio,
+			text,
+			{ ...clip('upper-left', 'video'), from: 70, durationInFrames: 20 },
+			{ ...clip('upper-right', 'video'), from: 140 },
+			{ ...clip('lower-left', 'video', 'lower'), from: 120, durationInFrames: 15 },
+			{ ...clip('lower-right', 'video', 'lower'), from: 165 },
+			{ ...clip('existing-overlap', 'video'), from: 105 },
+			{ ...clip('mixing-audio', 'audio', 'audio'), from: 0, durationInFrames: 300 }
+		];
+		for (const [proposed, expectedDelta] of [
+			[200, 5],
+			[50, -10]
+		] as const) {
+			expect(
+				planLinkedMoveGesture(video, proposed, items, ['text', 'video'], {
+					trackId: 'upper',
+					tracks
+				})
+			).toEqual([
+				{ id: 'text', from: 150 + expectedDelta, trackId: 'lower' },
+				{ id: 'video', from: 100 + expectedDelta, trackId: 'upper' },
+				{ id: 'audio', from: 100 + expectedDelta, trackId: 'audio' }
+			]);
+		}
+		expect(items.slice(0, 3).map(({ from }) => from)).toEqual([100, 100, 150]);
+	});
+	it('rejects a long occupied destination even when shorter clips start between its boundaries', () => {
+		const item = { ...clip('moving', 'video'), from: 400 };
+		const items = [
+			item,
+			{ ...clip('long', 'video', 'lower'), from: 0, durationInFrames: 500 },
+			{ ...clip('short', 'video', 'lower'), from: 100, durationInFrames: 10 }
+		];
+		expect(
+			planLinkedMoveGesture(item, 400, items, [item.id], { trackId: 'lower', tracks })
+		).toEqual([{ id: 'moving', from: 400, trackId: 'upper' }]);
+	});
 });

@@ -4,6 +4,128 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [7.21.1] - 2026-10-14
+
+### Added
+
+- Italian interface translations, language selection, regional formatting, and offline recovery copy in the web app.
+
+### Fixed
+
+- Backup restore drills count the current Publication inventory and clean up their temporary database after failed restores.
+
+### Maintenance
+
+- Remove the README demo-maintenance note and the retired VitePress link-checking branch. Point the superseded composer proposal to the maintained Ideate and review contracts.
+- Remove obsolete web dependency declarations after the shared UI extraction and keep theme-icon generator dependencies with repository tooling.
+
+## [7.20.8] - 2026-10-14
+
+### Fixed
+
+- Facebook Reels and video Stories finish completed uploads before waiting for processing, and recognize already published videos from older checkpoints without sending finish again.
+- Pending publications stay in progress without repeated failure events. Automatic provider reconciliation is bounded and retains unresolved receipts for manual checks.
+- YouTube waits for confirmed processing before reporting a video published, and preserves provider schedules. X processing checks stop at media expiry and yield without repeating uploads.
+- Preserve the first day's Analytics trend change when its previous measurement falls on the same UTC date as the selected range's start.
+- Calendar week headers wrap long timezone names within their column, keeping the full name readable without overlapping the first day.
+- Image Editor cancels exports and previews while document fonts are still loading. Multi-page exports continue when animation frames pause in a background tab, and export task yields remain cancellable.
+- Curved text finishes reshaping after an intervening group edit and refreshes its stroke from the new glyphs, preserving the editing caret.
+- Cancelling or closing the Image Editor reliably stops a pending magic scan. Cancelled previews cannot apply edits, and an older scan cannot hide a replacement scan's progress controls.
+- Protect unsaved Quick Cut projects during failed downloads, offer a project backup before refreshing, and cancel pending imports and export continuations when leaving the editor.
+- Keep late waveform results from a previous source out of the current Quick Cut timeline.
+- Reject theme manifests with trailing JSON or malformed data so corrupt stored themes use the complete Workshop recovery theme.
+- Imported video animation lanes are ordered at load time while retaining each keyframe's value, identity, easing, and preset attribution.
+- Keep video upload editing actions visible on small screens. Cancel pending file reads and active edits cleanly, and prevent an older file's encoder check from changing the current file's crop controls.
+- Refresh a workflow inspector when a newer run summary arrives before its first complete snapshot. Late list responses cannot make older run details appear current, including results recorded after cancellation.
+- Restored Dependabot coverage for the server and Directus example Dockerfiles. Repository checks now reject stale automation paths and Docker dependency ignore rules.
+- LinkedIn Organization Page connections no longer request member analytics permissions unless separately enabled with `OPENPOST_LINKEDIN_MEMBER_ANALYTICS_ENABLED=true` and approved by LinkedIn. Thanks to [@Heavyarms83](https://github.com/Heavyarms83) in [#335](https://github.com/getopenpost/openpost/pull/335).
+- Updated native app dependencies to the compatible Expo 57.0.29 patch set while retaining the Swift compiler compatibility fix.
+- Pending provider receipts continue reconciling when another destination has a longer rate-limit delay, without repeating an accepted write.
+- Performance index migrations follow the already published security and client-review migrations, so upgrades and fresh installations apply without version collisions.
+
+### Performance
+
+- Read the latest stored Analytics measurements and pre-range trend baselines through a workspace-scoped rendition index, avoiding full-history transfers and repeated historical sorts. Preserve workspace and account filters, missing measurements, and insights across the complete filtered post inventory.
+- Video Editor preview and export reuse the active sequence's item index when resolving transform parents, property links, and expressions. Large timelines no longer rebuild the complete lookup for each visible clip; paused edits continue to update immediately.
+- Resolve built-in workspace themes from a catalogue validated once per server process. Requests copy only the selected theme, preserving independent manifests, custom-theme validation, and complete Workshop recovery.
+- Calendar date ranges use an index on each post's actual calendar occurrence, avoiding scans and sorts over unrelated history. Authored schedules, published timestamps, workspace boundaries, and stable pagination retain their existing behavior.
+- Calendar week view groups posts by their local hour once per data or timezone change, preserving daylight-saving transitions and existing post order while avoiding repeated time formatting for every grid cell.
+- Filmstrip previews display decoded frames before JPEG cache encoding finishes. Replacing large filmstrips checks retained bitmaps once instead of repeatedly scanning every frame.
+- Image Editor galleries render visible previews through the shared thumbnail queue instead of retaining a live editor canvas for every card. Recent local designs load cover-page media for browsing; opening a design still restores media for every page.
+- Color adjustment gestures reuse layer lookups when checking nested group locks. Large grouped image selections update faster while keeping inherited locks and undo behavior.
+- Video Editor history checks simple timeline settings, tracks, and markers before serializing clip and sequence data, avoiding that work when recording those edits. Full undo and redo snapshots remain intact.
+- Accelerated the Image Editor's CPU color-grading fallback by reusing exact channel mappings and preparing color-wheel parameters once per render. Pixel rounding, effect order, alpha, and the GPU path are preserved.
+- Image Editor keeps unchanged child artwork, masks, and stroke decorations when a group is hidden, locked, or renamed. Inherited visibility and editing controls still update immediately.
+- Speed up Image Editor selection in deeply grouped artwork by indexing parent layers once per page update and stopping topmost selection at its first visible hit. Preserve group locking, inherited visibility, stacking order, and transparent-pixel selection.
+- Video Editor reuses linked clip lookups and indexes occupied track boundaries when moving large selections, retaining synchronized audio, collision checks, locked tracks, and undo behavior.
+- The Image Editor reads only the newest local designs needed for its recent-design list. Older document payloads stay in browser storage until needed, while load-more order and designs saved at the same time retain their existing behavior.
+- Accelerated large Image Editor magic selections and fills with scanline traversal and worker execution that no longer pauses between progress updates. Scans use less temporary memory and retain the same pixel matching and connectivity rules.
+- Media library usage summaries count distinct post references in the database instead of loading every matching post into the server. Reused media retains accurate usage and deletion protection with substantially less response processing and memory allocation.
+- Video Editor playback prepares audio ownership, processing requirements, and transition handles when their inputs change. Frame updates reuse those bounds while keeping clip edits, mute changes, media readiness, and existing audio graphs responsive.
+- Source audio waveforms reuse their sampled peaks and drawing during playback, redraw cleanly when the display scale changes, and discard results from previously selected sources.
+- Reuse bounded color parsing results while validating theme contrast and editing palettes. Every manifest edit is still checked, including alpha compositing, focus visibility, and Dither texture contrast.
+- Video Editor media and Color previews share thumbnail read and URL ownership. Pending reads survive clip moves without duplication, completed imports load their previews once, and removed or refreshed sources cannot publish outdated thumbnails.
+- Video animation evaluation now finds scalar, vector, and color keyframe segments with binary search, improving playback and export evaluation for long or densely baked animation lanes.
+- Video Editor, Quick Cut, and mobile project browsers now load lightweight Cloud Video Project summaries instead of complete timelines. Opening a project still loads its full document. Summary reads preserve Workspace permissions, Trash, editor-family filtering, and mutation refreshes; mobile clients retain compatibility with older self-hosted servers.
+- Cloud Video Project, revision, and conflict reads validate and return stored documents directly, reducing response CPU time and temporary allocations while preserving the existing API schema. Stored numeric values no longer lose precision during response encoding.
+- Load video inspection and editing code when a video is opened or edited, reducing the Media page's initial JavaScript download.
+- Workflow validation discovers sample fields and branch-scoped variables once per edit, keeping larger sample payloads responsive while preserving variable visibility within each branch.
+
+### Fixes
+
+- Video Editor filmstrip eviction now releases decoded images and object URLs while preserving thumbnails still in use. Cache cleanup discards and releases pending thumbnail loads, preventing stale thumbnails from returning after cleanup.
+- Source previews keep usable space in short panels and on phones. Audio waveforms remain visible while the source controls scroll, and the source name and touch-sized close button stay reachable.
+
+### Improved
+
+- Open image designs with many grouped layers faster by preparing group destinations when a layer menu opens.
+- Open Quick Cut with less JavaScript by loading source inspection, waveforms, and export processing when needed.
+- Load workflow history and connected accounts when their views need them, and pause hidden history polling. Keep navigation available during loading and offer retry controls for failed history requests.
+- Build workflow diagram catalogues once per graph, and avoid validating run payloads for compact previews. Full editor and run canvases retain their validation warnings.
+- Load workflow run cards without transferring every run's source data, inputs, and outputs. Opening a run retrieves its complete saved snapshot, with loading and retry feedback.
+
+### Changed
+
+- Existing installations using LinkedIn member analytics must set `OPENPOST_LINKEDIN_MEMBER_ANALYTICS_ENABLED=true` and restart OpenPost to retain collection after upgrading. The setting defaults to false, independently of Organization Page support. Reconnect accounts only if their existing authorization lacks `r_member_profileAnalytics` or `r_member_postAnalytics`. Stored metrics are preserved.
+
+### Added
+
+- Native clients can inspect submitted post versions and review history, then approve their assigned version or request changes. Review previews show destination accounts, segment titles, descriptions, provider settings, and first comments. Protected videos and audio play in the app; other attachments open through the device's file controls.
+- Shared recovery pages give the app, public site, documentation, and native app a consistent route back to work, including offline recovery.
+- Self-hosting documentation includes an UmbrelOS installation guide.
+
+### Upgrade notes
+
+- Android advances to version 0.2.59 (61). Database migrations 159 and 160 add analytics and calendar lookup indexes.
+
+## [7.19.1] - 2026-10-13
+
+### Added
+
+- Invite clients to connect and reconnect social accounts and decide assigned approvals. Clients cannot author, publish, disconnect accounts, or administer the workspace.
+- Workspace summaries expose `can_connect` and `can_approve` separately from editing rights, and the interface follows those capabilities.
+- Client invitations open account connections after acceptance.
+- Client-role support incorporates [PR #332](https://github.com/getopenpost/openpost/pull/332) by Digital Media Group.
+- Create a source-backed series within Ideate, select concepts to generate, edit each post, and explicitly save selected drafts.
+- Preview exact dates for selected drafts, then confirm them with safe partial retries and workspace-local timing.
+- Send individual posts to a named client for required approval. Submitted versions and decisions remain inspectable, and content changes require another review.
+
+### Changed
+
+- Improved Ideate's four post alternatives to prioritize source-supported reader value, honest openings and payoffs, feasible media briefs, meaningful variety, and earned humor without inventing tutorial details or platform-performance claims.
+- Web Ideate uses one resumable dialog from navigation and the composer. The old route opens that dialog. Ordinary solo-founder drafting and publishing remain unchanged.
+- Scheduled usage is reserved atomically with delivery jobs across individual and batch scheduling.
+
+### Upgrade notes
+
+- Apply additive migration 158 and upgrade every publishing process before enabling `OPENPOST_CLIENT_REVIEWS_ENABLED`. Existing reviews remain enforced when new review admission is disabled. See `docs/development/client-reviews-and-series.md` for rollout and rollback instructions.
+
+## [7.18.5] - 2026-10-13
+
+### Fixed
+
+- Upload production browser source maps for the app, website, and documentation so new error reports can show readable source locations.
+
 ## [7.18.4] - 2026-10-13
 
 ### Added

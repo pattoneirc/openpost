@@ -7,6 +7,7 @@ export const browserExtensions = [
       "Translate video titles, descriptions and thumbnails in YouTube Studio. Generate new thumbnails with your own reference images.",
     headline: "Make your videos work in more languages.",
     repository: "https://github.com/getopenpost/youtube-localizer",
+    chromeStoreUrl: "https://chromewebstore.google.com/detail/gblknofeccibdadogbplgcokneofgcdo",
     screenshot: "/assets/marketing/extensions/youtube-localizer-745a10444f66.webp",
     screenshotAlt:
       "YouTube Localizer’s Generate button beside a real video thumbnail in YouTube Studio",
@@ -77,6 +78,7 @@ export const browserExtensions = [
       "Pause feeds on X, YouTube, Instagram, TikTok, LinkedIn, Facebook, Reddit, Threads, Bluesky and Pinterest. Set site limits, a shared allowance and allowed hours.",
     headline: "Less scrolling. Keep the useful parts.",
     repository: "https://github.com/getopenpost/feed-limiter",
+    chromeStoreUrl: "https://chromewebstore.google.com/detail/ckiajdbokbecejpammackpihhojjdbke",
     screenshot: "/assets/marketing/extensions/x-timeline-blocker-08db3f799836.webp",
     screenshotAlt: "A paused X home feed with posting and navigation still available",
     screenshotWidth: 1280,

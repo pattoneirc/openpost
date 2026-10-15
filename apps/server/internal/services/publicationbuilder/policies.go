@@ -23,8 +23,8 @@ var platformPolicies = map[string]platformPolicy{
 			"contrarian_take", "community_ritual", "brand_manifesto", "timely_values_story",
 			"trend_parody", "lesson", "announcement",
 		},
-		Distribution: "The visible opening lines decide whether someone expands the post. Pick one dominant reaction and one idea. Optimize explicitly for reach, comments, reposts, authority, or trust instead of blending all five.",
-		Writing:      "Start with an exact tension, change, contradiction, confession, or proof. Do not begin with topic-setting filler. Put the hook and important claim in the pre-expansion preview. Use concrete numbers, artifacts, decisions, and consequences. A long post must repay the opening with evidence or experience. Questions must be specific enough that a real person could answer them. Preserve the Voice Profile's casing, punctuation, sentence length, technical depth, humor tolerance, and formality.",
+		Distribution: "Choose one supported reader job and one honest payoff. Reach, comments, reposts, authority, or trust may describe intent, but they are not guarantees and do not replace usefulness to a named reader.",
+		Writing:      "Start with the specific tension, change, decision, artifact, or supported result that matters to the reader. A long post must repay its opening with supplied evidence or experience. Ask a question only when the answer could clarify a genuine choice, boundary, or missing case. Preserve the Voice Profile's casing, punctuation, sentence length, technical depth, humor tolerance, and formality.",
 		Media:        "Choose no visual or give the visual one job: proof, punchline, portability, authenticity, or novelty. Prefer real screenshots, diffs, interfaces, charts, collages, or branded statement cards. State crop priorities and text that must stay readable. Generated visuals need a precise job and must never be decorative by default. Do not explain a visual punchline in the text.",
 		Safety:       "Do not turn one anecdote into an industry fact. Label parody and fictional artifacts clearly. Do not force a generic LinkedIn persona, a vague engagement question, an unnecessary CTA on a meme, or categorical certainty that the source does not support.",
 	},
@@ -36,7 +36,7 @@ var platformPolicies = map[string]platformPolicy{
 			"artifact_joke", "product_demo", "technical_opinion", "analogy", "taxonomy",
 			"principle", "explainer", "announcement",
 		},
-		Distribution: "Treat personalized ranking and recommendation eligibility as separate systems. The post must be useful on its own before any link. A direct link is valid when the post earns attention; never hide a required link in an automatic first reply. Topic consistency can help the network place the author, but do not convert ranking windows, action weights, or posting frequency into universal rules.",
+		Distribution: "Treat personalized ranking and recommendation eligibility as separate systems. The post must be useful on its own before any link. A direct link is valid when it serves the reader; never hide a required link in an automatic first reply. Do not convert ranking windows, action weights, or posting frequency into universal rules.",
 		Writing:      "Remove dead setup. Lead with the exact artifact, command, result, product behavior, or opinion. Use compact natural language and keep the useful point clear. A joke must work without an explanation. Use a current reference only when supplied evidence establishes its meaning and freshness. A thread must earn every extra segment. Preserve rough edges that belong to the Voice Profile instead of polishing the post into generic creator copy.",
 		Media:        "Prefer real artifacts, interfaces, screenshots, diffs, diagrams, and short product demos. Use an annotated screenshot only when the annotation adds information. Generated conceptual art should be rare. The media role must be proof, punchline, demo, or necessary context.",
 		Safety:       "Do not invent current references, secret ranking scores, premium reach multipliers, fixed action weights, golden-window claims, or a virality score. Do not force a joke, add generic reply bait, or copy a LinkedIn opening. Keep visibility or safety risks separate from writing advice.",
@@ -48,7 +48,7 @@ var platformPolicies = map[string]platformPolicy{
 		Archetypes: []string{
 			"community_note", "technical_update", "source_share", "release_note", "discussion",
 		},
-		Distribution: "Mastodon distribution is federated. Followers, local and federated timelines, precise hashtags, boosts, visibility, and instance rules matter more than one global ranking model. Direct links are normal. Use zero to three precise hashtags when they improve discovery.",
+		Distribution: "Mastodon distribution is federated. Followers, local and federated timelines, relevant hashtags, boosts, visibility, server configuration, and instance rules shape discovery; there is no single global ranking model or universal hashtag count. Direct links are normal when useful.",
 		Writing:      "Write as a useful member of a technical community. Give enough context, use exact terminology, link to the primary source, and invite discussion only when there is a real question. Prefer informative release notes, source shares, and community updates over virality theater.",
 		Media:        "Use source artifacts when they help someone understand or verify the post. Request useful alt text for every meaningful image. Do not add visual bait or media that contributes nothing to the discussion.",
 		Safety:       "Preserve the connected account's visibility, content-warning, quote, and provider settings. Do not add a content warning to an ordinary technical post. Warn when instance rules, trend eligibility, quote behavior, or remote-instance visibility cannot be known. Never promise network-wide compatibility or discovery.",
@@ -72,10 +72,10 @@ var platformPolicies = map[string]platformPolicy{
 		Archetypes: []string{
 			"specific_argument", "builder_question", "media_context", "original_take", "lesson", "current_reference",
 		},
-		Distribution: "Threads rewards original platform-native posts, topic and community relevance, useful context around media, and conversations that continue after publishing. Recommendation eligibility and cross-Meta reach are separate from basic publishability.",
-		Writing:      "Use casual public-conversation language around one specific tension. Give readers an easy sincere reply path, not a forced engagement question. Write original Threads wording rather than resizing an X post. Use a current reference only when supplied evidence makes it relevant. Follow-up notes may suggest how the author can take part after publishing, but never generate automatic replies.",
+		Distribution: "Topic and community context may help interested readers understand and find a post, but do not claim a guaranteed reward, recommendation, or cross-Meta reach. Recommendation eligibility and basic publishability are separate.",
+		Writing:      "Use the account voice to state one specific tension, observation, or useful point completely. Ask for replies only when there is a genuine question or decision boundary. Reuse wording from another destination when it already fits; platform-specific rewriting is optional, not a quota. Use a current reference only when supplied evidence makes it relevant. Follow-up notes may suggest how the author can participate after publishing, but never generate automatic replies.",
 		Media:        "A visual needs written context that explains the proof, demo, punchline, or trade-off. Prefer before-and-after artifacts, product demos, and images that support the conversation. Do not leave media to carry an unstated claim.",
-		Safety:       "Do not assume a topic, community, recommendation status, or cross-Meta eligibility that OpenPost did not supply. Do not copy an X punchline, ask a generic question, or recommend reply automation. Keep policy warnings separate from the draft.",
+		Safety:       "Do not assume a topic, community, recommendation status, or cross-Meta eligibility that OpenPost did not supply. Do not import mismatched platform bait, ask a generic question, or recommend reply automation; fitting source wording may be reused. Keep policy warnings separate from the draft.",
 	},
 }
 

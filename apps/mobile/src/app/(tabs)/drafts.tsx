@@ -39,6 +39,7 @@ import {
   prefetchPublicationEditor,
   usePublications,
   useWorkspaces,
+  useWorkspaceCapabilities,
 } from "@/lib/queries";
 import { getWorkspaceId } from "@/lib/api/token-store";
 import {
@@ -66,6 +67,7 @@ export default function DraftsScreen() {
   const ideaInputRef = useRef<TextInput | null>(null);
   const drafts = usePublications("draft");
   const workspaces = useWorkspaces();
+  const canEdit = Boolean(useWorkspaceCapabilities()?.can_edit);
   const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
   const handledShare = useRef(false);
 
@@ -222,7 +224,7 @@ export default function DraftsScreen() {
 
   useEffect(() => {
     if (!hasShareIntent || handledShare.current) return;
-    if (!workspaces.data?.[0]?.id) return;
+    if (!canEdit || !workspaces.data?.[0]?.id) return;
     handledShare.current = true;
 
     const parts = [shareIntent.text?.trim(), shareIntent.webUrl?.trim()].filter(Boolean);
@@ -251,7 +253,15 @@ export default function DraftsScreen() {
         void errorHaptic();
       }
     })();
-  }, [hasShareIntent, shareIntent, resetShareIntent, workspaces.data, createDraft, queryClient]);
+  }, [
+    hasShareIntent,
+    shareIntent,
+    resetShareIntent,
+    workspaces.data,
+    createDraft,
+    queryClient,
+    canEdit,
+  ]);
 
   const list = drafts.data ?? [];
   const hasDraftData = drafts.data !== undefined;
@@ -260,7 +270,9 @@ export default function DraftsScreen() {
     <Screen>
       <Stack.Screen options={{ headerShown: false }} />
       <WorkspaceHeader>
-        <IconButton role="sparkles" label="Ideate" onPress={() => router.push("/ideate")} />
+        {canEdit ? (
+          <IconButton role="sparkles" label="Ideate" onPress={() => router.push("/ideate")} />
+        ) : null}
       </WorkspaceHeader>
 
       <ScrollView
@@ -278,124 +290,126 @@ export default function DraftsScreen() {
           />
         }
       >
-        <DitherPanel>
-          <TextField
-            ref={ideaInputRef}
-            value={idea}
-            onChangeText={setIdea}
-            accessibilityLabel="Draft idea"
-            placeholder="What are you building?"
-            multiline
-            textAlignVertical="top"
-            imageKeyboard={{
-              onImageReceived: (attachment, context) => applyImage(attachment, context.focus),
-              onError: (message, context) => {
-                setCaptureError(message);
-                void errorHaptic();
-                context.focus();
-              },
-            }}
-            style={[
-              styles.ideaField,
-              typography.bodyLarge,
-              { backgroundColor: "transparent", borderColor: "transparent" },
-            ]}
-          />
-          {image ? (
+        {canEdit ? (
+          <DitherPanel>
+            <TextField
+              ref={ideaInputRef}
+              value={idea}
+              onChangeText={setIdea}
+              accessibilityLabel="Draft idea"
+              placeholder="What are you building?"
+              multiline
+              textAlignVertical="top"
+              imageKeyboard={{
+                onImageReceived: (attachment, context) => applyImage(attachment, context.focus),
+                onError: (message, context) => {
+                  setCaptureError(message);
+                  void errorHaptic();
+                  context.focus();
+                },
+              }}
+              style={[
+                styles.ideaField,
+                typography.bodyLarge,
+                { backgroundColor: "transparent", borderColor: "transparent" },
+              ]}
+            />
+            {image ? (
+              <View
+                style={[
+                  styles.attachmentRow,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.outlineVariant,
+                    borderRadius: shape.medium,
+                    gap: spacing.medium,
+                    padding: spacing.small,
+                  },
+                ]}
+              >
+                <Image
+                  source={{ uri: image.uri }}
+                  style={[styles.attachmentThumb, { borderRadius: shape.small }]}
+                  contentFit="cover"
+                />
+                <BodyText numberOfLines={1} style={{ color: colors.onSurface, flex: 1 }}>
+                  {image.filename}
+                </BodyText>
+                <IconButton
+                  label={`Remove ${image.filename}`}
+                  role="delete"
+                  color={colors.error}
+                  onPress={() => setImage(null)}
+                />
+              </View>
+            ) : null}
             <View
               style={[
-                styles.attachmentRow,
+                styles.captureActions,
                 {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.outlineVariant,
-                  borderRadius: shape.medium,
-                  gap: spacing.medium,
-                  padding: spacing.small,
+                  gap: spacing.small,
+                  flexDirection: fontScale >= 1.3 ? "column" : "row",
+                  flexWrap: "nowrap",
                 },
               ]}
             >
-              <Image
-                source={{ uri: image.uri }}
-                style={[styles.attachmentThumb, { borderRadius: shape.small }]}
-                contentFit="cover"
+              <Button
+                icon="gallery"
+                title={image ? "Replace image" : "Add image"}
+                intent="ordinary"
+                disabled={createDraft.isPending}
+                onPress={() => void pickImage()}
+                style={{
+                  flex: fontScale >= 1.3 ? 0 : 1,
+                  width: fontScale >= 1.3 ? "100%" : undefined,
+                }}
               />
-              <BodyText numberOfLines={1} style={{ color: colors.onSurface, flex: 1 }}>
-                {image.filename}
-              </BodyText>
-              <IconButton
-                label={`Remove ${image.filename}`}
-                role="delete"
-                color={colors.error}
-                onPress={() => setImage(null)}
+              <Button
+                title="Camera"
+                icon="camera"
+                intent="ordinary"
+                disabled={createDraft.isPending}
+                onPress={() => void pickImage("camera")}
+                style={{
+                  flex: fontScale >= 1.3 ? 0 : 1,
+                  width: fontScale >= 1.3 ? "100%" : undefined,
+                }}
               />
             </View>
-          ) : null}
-          <View
-            style={[
-              styles.captureActions,
-              {
-                gap: spacing.small,
-                flexDirection: fontScale >= 1.3 ? "column" : "row",
-                flexWrap: "nowrap",
-              },
-            ]}
-          >
-            <Button
-              icon="gallery"
-              title={image ? "Replace image" : "Add image"}
-              intent="ordinary"
-              disabled={createDraft.isPending}
-              onPress={() => void pickImage()}
-              style={{
-                flex: fontScale >= 1.3 ? 0 : 1,
-                width: fontScale >= 1.3 ? "100%" : undefined,
-              }}
-            />
-            <Button
-              title="Camera"
-              icon="camera"
-              intent="ordinary"
-              disabled={createDraft.isPending}
-              onPress={() => void pickImage("camera")}
-              style={{
-                flex: fontScale >= 1.3 ? 0 : 1,
-                width: fontScale >= 1.3 ? "100%" : undefined,
-              }}
-            />
-          </View>
-          {captureError ? (
-            <BodyText accessibilityRole="alert" style={{ color: colors.error, marginTop: 6 }}>
-              {captureError}
-            </BodyText>
-          ) : null}
-          <View
-            style={[
-              styles.captureActions,
-              {
-                gap: spacing.small,
-                flexDirection: fontScale >= 1.3 ? "column" : "row",
-                flexWrap: "nowrap",
-              },
-            ]}
-          >
-            <Button
-              title="Ideate"
-              icon="sparkles"
-              intent="focal"
-              onPress={() => void quickCapture(true)}
-              disabled={createDraft.isPending || idea.trim().length === 0}
-              loading={createDraft.isPending}
-              style={{ flex: 1, minWidth: 120 }}
-            />
-            <Button
-              title="Write post"
-              intent="ordinary"
-              style={{ flex: 1, minWidth: 120 }}
-              onPress={() => void quickCapture(false)}
-              disabled={createDraft.isPending || (idea.trim().length === 0 && !image)}
-            />
-          </View>
-        </DitherPanel>
+            {captureError ? (
+              <BodyText accessibilityRole="alert" style={{ color: colors.error, marginTop: 6 }}>
+                {captureError}
+              </BodyText>
+            ) : null}
+            <View
+              style={[
+                styles.captureActions,
+                {
+                  gap: spacing.small,
+                  flexDirection: fontScale >= 1.3 ? "column" : "row",
+                  flexWrap: "nowrap",
+                },
+              ]}
+            >
+              <Button
+                title="Ideate"
+                icon="sparkles"
+                intent="focal"
+                onPress={() => void quickCapture(true)}
+                disabled={createDraft.isPending || idea.trim().length === 0}
+                loading={createDraft.isPending}
+                style={{ flex: 1, minWidth: 120 }}
+              />
+              <Button
+                title="Write post"
+                intent="ordinary"
+                style={{ flex: 1, minWidth: 120 }}
+                onPress={() => void quickCapture(false)}
+                disabled={createDraft.isPending || (idea.trim().length === 0 && !image)}
+              />
+            </View>
+          </DitherPanel>
+        ) : null}
 
         <ContentTitle>Recent drafts</ContentTitle>
         <DelayedQueryPlaceholder
@@ -434,7 +448,7 @@ export default function DraftsScreen() {
                 const workspaceId = currentWorkspaceId();
                 void prefetchPublicationEditor(queryClient, workspaceId, draft.id);
                 router.push({
-                  pathname: "/publications/[id]/edit",
+                  pathname: canEdit ? "/publications/[id]/edit" : "/publications/[id]",
                   params: { id: draft.id },
                 });
               }}

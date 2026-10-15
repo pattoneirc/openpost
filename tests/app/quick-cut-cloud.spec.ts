@@ -43,6 +43,14 @@ test("Quick Cut saves a source project to OpenPost and opens it again", async ({
   await expect((await cloudCreatePromise).ok()).toBe(true);
   await expect(page.getByRole("img", { name: /Saved to OpenPost/ })).toBeVisible();
   await expect(page).toHaveURL(/\/quick-cut\?project=[^&]+&storage=cloud$/u);
+  const savedProjectURL = page.url();
+  await page.getByRole("link", { name: "Back", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Open videos", exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(savedProjectURL);
+  await expect(
+    page.getByRole("button", { name: "Source 1 · study-sos-demo.mp4", exact: true }),
+  ).toBeVisible();
   await page.reload();
   await expect(
     page.getByRole("button", { name: "Source 1 · study-sos-demo.mp4", exact: true }),

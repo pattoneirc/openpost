@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 import { authenticatePage, createWorkspace, registerUser } from "./helpers";
 
@@ -9,7 +12,7 @@ test("video preparation commits its accepted trim bounds after keyboard edits", 
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   const auth = await registerUser(request, `trim-input-${randomUUID()}@example.com`);
-  await createWorkspace(request, auth.token, "Trim input admission");
+  const workspace = await createWorkspace(request, auth.token, "Trim input admission");
   await authenticatePage(page, auth.token);
   await page.goto("/media");
   await page.getByRole("button", { name: "Add media", exact: true }).click();
@@ -54,6 +57,11 @@ test("video preparation commits its accepted trim bounds after keyboard edits", 
       await start.scrollIntoViewIfNeeded();
       await expect(start).toHaveValue("0.7");
       await expect(end).toHaveValue(String(duration));
+      for (const name of ["Upload without editing", "Cancel", "Apply edit"]) {
+        const action = dialog.getByRole("button", { name, exact: true });
+        await expect(action).toBeInViewport({ ratio: 1 });
+        expect((await action.boundingBox())?.height).toBeGreaterThanOrEqual(44);
+      }
       await page.screenshot({ path: testInfo.outputPath(`trim-${width}-${scheme}.png`) });
     }
   }
@@ -62,6 +70,49 @@ test("video preparation commits its accepted trim bounds after keyboard edits", 
   await page.getByRole("button", { name: "Upload 1 file", exact: true }).click();
   await expect(start).toHaveValue("0");
   await expect(end).toHaveValue(String(duration));
-  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await end.fill("1");
+  await end.press("Tab");
+  await dialog.getByRole("button", { name: "Apply edit", exact: true }).click();
+  await expect(
+    page.getByRole("button", {
+      name: "Open details for study-sos-demo-edited.mp4",
+      exact: true,
+    }),
+  ).toBeVisible();
+  const inventory = await request.get(`/api/v1/media?workspace_id=${workspace.id}`, {
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
+  expect(inventory.ok()).toBe(true);
+  const { media: items } = await inventory.json();
+  expect(items).toHaveLength(1);
+  const media = items[0];
+  expect(media.original_filename).toBe("study-sos-demo-edited.mp4");
+  const stored = await request.get(media.url, {
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
+  expect(stored.ok()).toBe(true);
+  const outputPath = testInfo.outputPath("trimmed.mp4");
+  await writeFile(outputPath, await stored.body());
+  const { stdout } = await promisify(execFile)(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration:stream=codec_name,codec_type",
+      "-of",
+      "json",
+      outputPath,
+    ],
+    { timeout: 30_000 },
+  );
+  const details = JSON.parse(stdout);
+  expect(Number(details.format.duration)).toBeCloseTo(1, 1);
+  expect(details.streams).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ codec_type: "video", codec_name: "h264" }),
+      expect.objectContaining({ codec_type: "audio", codec_name: "aac" }),
+    ]),
+  );
   expect(errors).toEqual([]);
 });

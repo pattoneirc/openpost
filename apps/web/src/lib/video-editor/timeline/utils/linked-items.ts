@@ -20,6 +20,24 @@ export function getLinkedItems(items: TimelineItem[], itemId: string): TimelineI
 	return items.filter((item) => item.linkedGroupId === anchor.linkedGroupId);
 }
 
+function linkedItemsLookup(items: TimelineItem[], selectionSize: number) {
+	if (selectionSize < 2) return (itemId: string) => getLinkedItems(items, itemId);
+	const byId = new Map<string, TimelineItem>();
+	const byGroup = new Map<string, TimelineItem[]>();
+	for (const item of items) {
+		if (!byId.has(item.id)) byId.set(item.id, item);
+		if (!item.linkedGroupId) continue;
+		const group = byGroup.get(item.linkedGroupId);
+		if (group) group.push(item);
+		else byGroup.set(item.linkedGroupId, [item]);
+	}
+	return (itemId: string): TimelineItem[] => {
+		const anchor = byId.get(itemId);
+		if (!anchor) return [];
+		return anchor.linkedGroupId ? (byGroup.get(anchor.linkedGroupId) ?? []) : [anchor];
+	};
+}
+
 export function getLinkedItemIds(items: TimelineItem[], itemId: string): string[] {
 	return getLinkedItems(items, itemId).map((item) => item.id);
 }
@@ -139,7 +157,10 @@ export function getLinkedSyncOffsetFrames(
  * Ported from FreeCut (MIT) - timeline/utils/linked-items.ts.
  */
 export function getSynchronizedLinkedItems(items: TimelineItem[], itemId: string): TimelineItem[] {
-	const linkedItems = getLinkedItems(items, itemId);
+	return synchronizedLinkedItems(getLinkedItems(items, itemId), itemId);
+}
+
+function synchronizedLinkedItems(linkedItems: TimelineItem[], itemId: string): TimelineItem[] {
 	const anchor = linkedItems.find((item) => item.id === itemId);
 	if (!anchor) return [];
 
@@ -153,6 +174,21 @@ export function getSynchronizedLinkedItems(items: TimelineItem[], itemId: string
 				(item.speed ?? 1) === (anchor.speed ?? 1) &&
 				item.isReversed === anchor.isReversed)
 	);
+}
+
+/** Expand synchronized companions once per selection, preserving authored item order. */
+export function getSynchronizedLinkedSelection(
+	items: TimelineItem[],
+	itemIds: string[]
+): TimelineItem[] {
+	const lookup = linkedItemsLookup(items, itemIds.length);
+	const participants = new Map<string, TimelineItem>();
+	for (const itemId of itemIds) {
+		for (const item of synchronizedLinkedItems(lookup(itemId), itemId)) {
+			participants.set(item.id, item);
+		}
+	}
+	return [...participants.values()];
 }
 
 /** Find synchronized partners for both sides of one cut on the same companion track. */
@@ -181,16 +217,17 @@ export function getSynchronizedLinkedCounterpartPair(
 export function getUniqueLinkedItemAnchorIds(items: TimelineItem[], itemIds: string[]): string[] {
 	const anchors: string[] = [];
 	const visitedIds = new Set<string>();
+	const lookup = linkedItemsLookup(items, itemIds.length);
 
 	for (const itemId of itemIds) {
 		if (visitedIds.has(itemId)) continue;
 
-		const linkedIds = getLinkedItemIds(items, itemId);
-		if (linkedIds.length === 0) continue;
+		const linkedItems = lookup(itemId);
+		if (linkedItems.length === 0) continue;
 
 		anchors.push(itemId);
-		for (const linkedId of linkedIds) {
-			visitedIds.add(linkedId);
+		for (const linked of linkedItems) {
+			visitedIds.add(linked.id);
 		}
 	}
 
@@ -199,9 +236,10 @@ export function getUniqueLinkedItemAnchorIds(items: TimelineItem[], itemIds: str
 
 export function expandSelectionWithLinkedItems(items: TimelineItem[], itemIds: string[]): string[] {
 	const expandedIds = new Set<string>();
+	const lookup = linkedItemsLookup(items, itemIds.length);
 	for (const itemId of itemIds) {
-		for (const linkedId of getLinkedItemIds(items, itemId)) {
-			expandedIds.add(linkedId);
+		for (const linked of lookup(itemId)) {
+			expandedIds.add(linked.id);
 		}
 	}
 	return Array.from(expandedIds);
@@ -239,9 +277,10 @@ export function canLinkItems(items: TimelineItem[]): boolean {
  * already part of a single shared linked group.
  */
 export function canLinkSelection(items: TimelineItem[], itemIds: string[]): boolean {
-	const uniqueSelectedIds = Array.from(new Set(itemIds)).filter((id) =>
-		items.some((item) => item.id === id)
-	);
+	const uniqueIds = Array.from(new Set(itemIds));
+	if (uniqueIds.length < 2) return false;
+	const existingIds = new Set(items.map((item) => item.id));
+	const uniqueSelectedIds = uniqueIds.filter((id) => existingIds.has(id));
 	if (uniqueSelectedIds.length < 2) return false;
 
 	const expandedIds = expandSelectionWithLinkedItems(items, uniqueSelectedIds);

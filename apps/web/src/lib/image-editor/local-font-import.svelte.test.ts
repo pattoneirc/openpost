@@ -26,6 +26,14 @@ import {
 } from './local-persistence';
 import { releaseLocalImageEditorMedia } from './local-media-url';
 
+function expectSamePixels(actual: Uint8ClampedArray, expected: Uint8ClampedArray): void {
+	expect(actual.length).toBe(expected.length);
+	expect(
+		actual.findIndex((value, index) => value !== expected[index]),
+		'first different pixel channel'
+	).toBe(-1);
+}
+
 it('imports an embedded TrueType font, restores its saved face, and preserves migration bytes', async () => {
 	const sourceFont = await (await fetch(fontURL)).arrayBuffer();
 	const authored = new ImageEditorController();
@@ -247,7 +255,7 @@ it.each([false, true])('preserves font asset identity (curved: %s)', async (curv
 		};
 		const first = await pixels(documents[0]);
 		const second = await pixels(documents[1]);
-		expect(second).not.toEqual(first);
+		expect(second.some((value, index) => value !== first[index])).toBe(true);
 		const firstFamily = imageEditorTextFontFamily(documents[0].pages[0].layers[0].text!);
 		for (const face of document.fonts) if (face.family === firstFamily) document.fonts.delete(face);
 		const inspector = new ImageEditorController();
@@ -280,16 +288,16 @@ it.each([false, true])('preserves font asset identity (curved: %s)', async (curv
 		try {
 			await adapter.mount();
 			await expect.element(screen.getByRole('alert')).not.toBeInTheDocument();
-			expect(await livePixels()).toEqual(first);
+			expectSamePixels(await livePixels(), first);
 			await adapter.render(documents[1], documents[1].pages[0]);
-			expect(await livePixels()).toEqual(second);
+			expectSamePixels(await livePixels(), second);
 			await adapter.render(documents[0], documents[0].pages[0]);
-			expect(await livePixels()).toEqual(first);
+			expectSamePixels(await livePixels(), first);
 			const changed = structuredClone(documents[0]);
 			changed.pages[0].layers[0].text!.font_asset_id =
 				documents[1].pages[0].layers[0].text!.font_asset_id;
 			await adapter.sync(changed, changed.pages[0]);
-			expect(await livePixels()).toEqual(second);
+			expectSamePixels(await livePixels(), second);
 			const missingID = `local_media_missing_${crypto.randomUUID()}`;
 			const unavailable = structuredClone(changed);
 			unavailable.pages[0].layers[0].text!.font_asset_id = missingID;
@@ -316,7 +324,7 @@ it.each([false, true])('preserves font asset identity (curved: %s)', async (curv
 				font_style: 'normal',
 				font_asset_id: fontID
 			});
-			expect(await pixels(reopened.document)).toEqual(index === 0 ? first : second);
+			expectSamePixels(await pixels(reopened.document), index === 0 ? first : second);
 		}
 	} finally {
 		for (const face of document.fonts)

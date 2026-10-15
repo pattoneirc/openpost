@@ -6,6 +6,18 @@ type QueryTransport = Pick<typeof client, 'GET'>;
 
 export function createVideoProjectQueryAPI(transport: QueryTransport): VideoProjectQueryAPI {
 	return {
+		async listVideoProjectSummaries(workspaceId, includeTrash, signal) {
+			const { data } = await queryGET({
+				signal,
+				fallback: 'Could not load Cloud Video Projects',
+				request: (requestSignal) =>
+					transport.GET('/video-project-summaries', {
+						params: { query: { workspace_id: workspaceId, include_trash: includeTrash } },
+						signal: requestSignal
+					})
+			});
+			return data;
+		},
 		async listVideoProjects(workspaceId, includeTrash, signal) {
 			const { data } = await queryGET({
 				signal,

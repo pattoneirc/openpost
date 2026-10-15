@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -38,9 +39,13 @@ import (
 	"github.com/openpost/backend/internal/services/publicationauth"
 	publicationservice "github.com/openpost/backend/internal/services/publications"
 	"github.com/openpost/backend/internal/services/publicurl"
+	"github.com/openpost/backend/internal/services/sessions"
 	"github.com/openpost/backend/internal/services/usage"
 	"github.com/uptrace/bun"
 )
+
+//go:embed mcp_ui.css
+var mcpUIStyles string
 
 const (
 	mcpProtocolVersion    = "2025-06-18"
@@ -672,6 +677,11 @@ func (h *MCPHandler) authenticate(r *http.Request) (*middleware.Principal, error
 	if err != nil {
 		return nil, err
 	}
+	expectedOrigin, err := url.Parse(h.externalBaseURL(r))
+	if err != nil || middleware.SessionOriginRejected(principal, r.Header.Get("Origin"), expectedOrigin.Host, expectedOrigin.Scheme) {
+		return nil, fmt.Errorf("cross-site session request rejected")
+	}
+
 	if principal.Audience != "" && strings.TrimRight(principal.Audience, "/") != h.externalBaseURL(r)+"/mcp" {
 		return nil, fmt.Errorf("api token audience %q cannot access this mcp resource", principal.Audience)
 	}
@@ -1052,32 +1062,31 @@ func mcpAppWidgetHTML() string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenPost Scheduler</title>
-<style>
-:root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-body { margin: 0; background: #f8fafc; color: #102033; }
+<style>` + mcpUIStyles + `
 .shell { min-height: 100vh; padding: 16px; box-sizing: border-box; }
-.panel { border: 1px solid #dce4ee; border-radius: 10px; background: #fff; box-shadow: 0 12px 32px rgba(15, 23, 42, .08); overflow: hidden; }
-.header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px; border-bottom: 1px solid #e7edf4; background: linear-gradient(135deg, #f7fff9 0%, #ffffff 46%, #f6f8ff 100%); }
+.panel { overflow: hidden; }
+.header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px; border-bottom: 1px solid var(--border); }
 .brand { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.eyebrow { color: #0f8f5f; font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: .08em; }
+.eyebrow { color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
 h1 { margin: 0; font-size: 20px; line-height: 1.2; letter-spacing: 0; }
-.workspace { color: #5a6b7d; font-size: 12px; white-space: nowrap; }
+.workspace { color: var(--muted-foreground); font-size: 12px; overflow-wrap: anywhere; }
 .content { padding: 14px; display: grid; gap: 10px; }
 .grid { display: grid; gap: 10px; }
-.card { border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; padding: 12px; display: grid; gap: 8px; }
-.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #eef2f7; padding-top: 8px; }
+.card { border: 1px solid var(--border); border-radius: var(--theme-radius-md); background: var(--card); padding: 12px; display: grid; gap: 8px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
 .row:first-child { border-top: 0; padding-top: 0; }
-.title { color: #102033; font-size: 14px; font-weight: 750; overflow-wrap: anywhere; }
-.muted { color: #64748b; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.pill { display: inline-flex; align-items: center; min-height: 22px; border-radius: 999px; padding: 0 8px; background: #ecfdf5; color: #067647; font-size: 11px; font-weight: 700; white-space: nowrap; }
-.warn { background: #fff7ed; color: #b45309; }
-.idle { background: #f1f5f9; color: #475569; }
-.json { margin: 0; max-height: 280px; overflow: auto; border-radius: 8px; background: #0f172a; color: #e2e8f0; padding: 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.empty { border: 1px dashed #cbd5e1; border-radius: 8px; padding: 18px; text-align: center; color: #64748b; font-size: 13px; }
+.title { color: var(--foreground); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.muted { color: var(--muted-foreground); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.pill { display: inline-flex; align-items: center; min-height: 22px; border-radius: var(--theme-radius-pill); padding: 0 8px; background: var(--success); color: var(--success-foreground); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.warn { background: var(--warning); color: var(--warning-foreground); }
+.idle { background: var(--muted); color: var(--muted-foreground); }
+.json { margin: 0; max-height: 280px; overflow: auto; border-radius: var(--theme-radius-md); background: var(--muted); color: var(--foreground); padding: 12px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty { border: 1px dashed var(--border); border-radius: var(--theme-radius-md); padding: 18px; text-align: center; color: var(--muted-foreground); font-size: 13px; }
 @media (min-width: 620px) { .grid.cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+::selection { background: var(--selection); color: var(--selection-foreground); }
 </style>
 </head>
-<body>
+<body data-theme-button="dither">
 <div class="shell"><main class="panel" id="root"><div class="content"><div class="empty">Waiting for OpenPost scheduler data.</div></div></main></div>
 <script>
 (function () {
@@ -1168,7 +1177,7 @@ h1 { margin: 0; font-size: 20px; line-height: 1.2; letter-spacing: 0; }
     var view = state.view || inferView(data);
     var title = state.title || "OpenPost Scheduler";
     var workspace = state.workspace_id ? "Workspace " + state.workspace_id : "Agentic social scheduler";
-    root.innerHTML = '<header class="header"><div class="brand"><div class="eyebrow">OpenPost</div><h1>' + escapeHTML(title) + '</h1></div><div class="workspace">' + escapeHTML(workspace) + '</div></header><section class="content">' + renderData(view, data) + '</section>';
+    root.innerHTML = '<header class="header" data-dither-panel><div class="brand"><div class="eyebrow">OpenPost</div><h1>' + escapeHTML(title) + '</h1></div><div class="workspace">' + escapeHTML(workspace) + '</div></header><section class="content">' + renderData(view, data) + '</section>';
   }
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
@@ -1194,9 +1203,10 @@ func mcpUploadWidgetHTML() string {
 	return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Upload media to OpenPost</title>
-<style>
-:root{color-scheme:light dark;font-family:Inter,ui-sans-serif,system-ui,sans-serif}body{margin:0;padding:16px;background:Canvas;color:CanvasText}.panel{display:grid;gap:14px;padding:16px;border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:12px}h1{font-size:18px;margin:0}p{margin:0;color:color-mix(in srgb,CanvasText 70%,transparent);line-height:1.45}.field{display:grid;gap:6px}label{font-size:13px;font-weight:650}input{font:inherit;min-height:44px}button{min-height:44px;border:0;border-radius:8px;padding:0 16px;background:#0f8f5f;color:#fff;font:inherit;font-weight:700;cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}.status{min-height:22px;font-size:13px}.error{color:#c2413b}.success{color:#0f8f5f}
-</style></head><body><main class="panel"><div><h1>Add local media</h1><p>Choose an image or video from this device. OpenPost validates it and adds it to your media library.</p></div><div class="field"><label for="file">Media file</label><input id="file" type="file" accept="image/*,video/*"></div><div class="field"><label for="alt">Alt text <span aria-hidden="true">(optional)</span></label><input id="alt" type="text" maxlength="2000"></div><button id="upload" type="button">Upload to OpenPost</button><div id="status" class="status" role="status" aria-live="polite"></div></main>
+<style>` + mcpUIStyles + `
+body{padding:16px}.panel{display:grid;gap:14px;padding:16px;max-width:36rem;margin-inline:auto}h1{font-size:18px;margin:0}p{margin:0;color:var(--muted-foreground);line-height:1.45}.field{display:grid;gap:6px}label{font-size:13px;font-weight:650}input{box-sizing:border-box;width:100%;font:inherit;min-height:44px;border:1px solid var(--input);border-radius:var(--theme-radius-md);padding:8px 12px;background:var(--background);color:var(--foreground)}input:focus-visible{outline:2px solid var(--ring);outline-offset:3px}.status{min-height:22px;font-size:13px;overflow-wrap:anywhere}.error{color:var(--destructive)}.success{color:var(--success-foreground)}
+::selection { background: var(--selection); color: var(--selection-foreground); }
+</style></head><body data-theme-button="dither"><main class="panel"><div><h1>Add local media</h1><p>Add an image or video to your media library.</p></div><div class="field"><label for="file">Media file</label><input id="file" type="file" accept="image/*,video/*"></div><div class="field"><label for="alt">Alt text <span aria-hidden="true">(optional)</span></label><input id="alt" type="text" maxlength="2000"></div><button id="upload" type="button" data-static-action data-dither-button="always">Upload to OpenPost</button><div id="status" class="status" role="status" aria-live="polite"></div></main>
 <script>
 (function(){var file=document.getElementById('file'),alt=document.getElementById('alt'),button=document.getElementById('upload'),status=document.getElementById('status');
 function input(){return (window.openai&&window.openai.toolInput)||{};} function show(text,kind){status.textContent=text;status.className='status '+(kind||'');}
@@ -6039,12 +6049,22 @@ func (h *MCPHandler) handleLocalMediaUpload(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{fieldError: "failed to validate upload ticket"})
 	}
+	principal, err := h.localUploadTicketPrincipal(c.Request().Context(), ticket, now)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, map[string]string{fieldError: err.Error()})
+	}
+
+	uploadCtx := contextWithMCPPrincipal(c.Request().Context(), principal)
+	if err := h.ensureWorkspaceEditAccess(uploadCtx, ticket.UserID, ticket.WorkspaceID); err != nil {
+		return c.JSON(http.StatusForbidden, map[string]string{fieldError: "upload workspace is no longer accessible"})
+	}
+
 	if c.Request().ContentLength >= 0 && c.Request().ContentLength != ticket.Size {
 		return c.JSON(http.StatusBadRequest, map[string]string{fieldError: "uploaded media size does not match declared size"})
 	}
 	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, ticket.Size+1)
 	result, uploadErr := h.mediaHandler.processUploadStream(
-		c.Request().Context(), ticket.WorkspaceID, ticket.Filename, ticket.MimeType, ticket.Size, c.Request().Body,
+		uploadCtx, ticket.WorkspaceID, ticket.Filename, ticket.MimeType, ticket.Size, c.Request().Body,
 		mediaUploadBytesInput{AltText: ticket.AltText},
 	)
 	if uploadErr != nil {
@@ -6205,4 +6225,24 @@ func boolFromMap(values map[string]interface{}, key string) bool {
 
 func newUUID() string {
 	return uuid.New().String()
+}
+
+func (h *MCPHandler) localUploadTicketPrincipal(ctx context.Context, ticket models.MCPMediaUploadTicket, now time.Time) (*middleware.Principal, error) {
+	principal := &middleware.Principal{UserID: ticket.UserID, SessionID: ticket.SessionID, TokenID: ticket.TokenID, ClientID: ticket.ClientID, WorkspaceID: ticket.WorkspaceID}
+	switch {
+	case ticket.SessionID != "":
+		if _, err := sessions.NewService(h.db).ValidateSession(ctx, ticket.UserID, ticket.SessionID); err != nil {
+			return nil, errors.New("upload session is no longer active")
+		}
+	case ticket.TokenID != "":
+		var token models.APIToken
+		err := h.db.NewSelect().Model(&token).Where("id = ? AND user_id = ? AND revoked_at IS NULL", ticket.TokenID, ticket.UserID).Where("expires_at IS NULL OR expires_at > ?", now).Scan(ctx)
+		if err != nil || !mcpScopeAllowed(token.Scope) || mcpScopeIsReadOnly(token.Scope) || (token.WorkspaceID != "" && token.WorkspaceID != ticket.WorkspaceID) {
+			return nil, errors.New("upload credential is no longer active")
+		}
+		principal.Scope = token.Scope
+	default:
+		return nil, errors.New("upload credential is unavailable")
+	}
+	return principal, nil
 }

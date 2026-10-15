@@ -234,6 +234,14 @@ func (s *Service) confirmFirstWorkspaceTx(ctx context.Context, tx bun.Tx, input 
 			return FirstWorkspaceConfirmation{}, fmt.Errorf("locking first Workspace confirmation: %w", err)
 		}
 	}
+	if tx.Dialect().Name() == dialect.SQLite {
+		// Take the SQLite writer lock before any eligibility snapshot. A deferred
+		// read transaction cannot safely upgrade after another confirmation commits.
+		if _, err := tx.NewUpdate().Model((*models.OrganizationMember)(nil)).
+			Set("user_id = user_id").Where("user_id = ?", input.UserID).Exec(ctx); err != nil {
+			return FirstWorkspaceConfirmation{}, fmt.Errorf("locking first Workspace confirmation: %w", err)
+		}
+	}
 	var existing models.BillingCheckoutAttempt
 	err := tx.NewSelect().Model(&existing).Where("user_id = ?", input.UserID).Where("confirmation_key = ?", input.ConfirmationKey).Scan(ctx)
 	if err == nil {
@@ -982,6 +990,16 @@ func (s *Service) resolvePaddleSubscription(ctx context.Context, subscription *p
 	plan, ok := s.paddle.Plans[planID]
 	if !ok {
 		return resolvedPaddleSubscription{}, fmt.Errorf("paddle subscription references unknown OpenPost plan %q", planID)
+	}
+	expectedPrice, err := s.planFor(planID, attempt.BillingPeriod)
+	if err != nil {
+		return resolvedPaddleSubscription{}, err
+	}
+	if priceID == "" || priceID != attempt.ProviderPriceID || priceID != expectedPrice {
+		return resolvedPaddleSubscription{}, fmt.Errorf("paddle subscription price does not match the checkout plan and billing period")
+	}
+	if attempt.ProviderSubscriptionID != "" && attempt.ProviderSubscriptionID != subscription.ID {
+		return resolvedPaddleSubscription{}, fmt.Errorf("paddle subscription does not match the checkout subscription")
 	}
 	return resolvedPaddleSubscription{
 		Attempt:   attempt,

@@ -342,3 +342,20 @@ func TestListAndRevokeAPITokensWireFormat(t *testing.T) {
 		t.Fatal("revoke request was not observed")
 	}
 }
+
+func TestAPIClientDoesNotForwardCredentialsThroughRedirects(t *testing.T) {
+	forwarded := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { forwarded = true; w.WriteHeader(200) }))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	err := New(source.URL, "secret").GetJSON(context.Background(), "/redirect", nil)
+	if err == nil {
+		t.Fatal("redirect must be rejected")
+	}
+	if forwarded {
+		t.Fatal("redirect target was contacted with credentials")
+	}
+}

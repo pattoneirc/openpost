@@ -3,6 +3,7 @@
 	import { onDestroy, tick, untrack } from 'svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { mediaPool } from '$lib/video-editor/media/pool.svelte';
+	import { ThumbnailUrlCache } from '$lib/video-editor/media/thumbnail-url-cache';
 	import {
 		clearActiveMediaDrag,
 		mediaDragData,
@@ -168,8 +169,10 @@
 	const assetViewMode = $derived(editorSettings.mediaLibraryViewMode);
 	const assetGridSize = $derived(editorSettings.mediaLibraryItemSize);
 	const assetGridTemplate = $derived(mediaLibraryGridTemplate(assetGridSize));
-	const ownedThumbnailUrls = new Map<string, string>();
-	let loadedThumbnailRevision = -1;
+	const thumbnails = new ThumbnailUrlCache(loadThumbnail, (id, url) => {
+		if (url) objectUrls[id] = url;
+		else delete objectUrls[id];
+	});
 	const visibleMedia = $derived(
 		filterAndSortMedia(
 			mediaPool.mediaList.filter((media) => !media.tags.includes('font')),
@@ -342,50 +345,22 @@
 		sequenceSelectionAnchorId = sequenceId;
 		clearMediaSelection();
 	}
-	async function previewUrl(id: string): Promise<void> {
+	async function loadThumbnail(id: string): Promise<Blob | string | null> {
 		const media = mediaPool.get(id);
-		if (!media || objectUrls[id]) return;
+		if (!media) return null;
 		if (media.storageType === 'cloud') {
-			if (media.remoteThumbnailUrl) objectUrls[id] = media.remoteThumbnailUrl;
-			else if (media.tags.includes('image'))
-				objectUrls[id] = await getMediaObjectUrl(media).catch(() => '');
-			return;
+			if (media.remoteThumbnailUrl) return media.remoteThumbnailUrl;
+			return media.tags.includes('image') ? getMediaObjectUrl(media) : null;
 		}
-		try {
-			const thumbnail = await readBlob(requireWorkspaceRoot(), mediaThumbnailPath(id));
-			if (thumbnail) {
-				const thumbnailUrl = URL.createObjectURL(thumbnail);
-				const previous = ownedThumbnailUrls.get(id);
-				if (previous) URL.revokeObjectURL(previous);
-				ownedThumbnailUrls.set(id, thumbnailUrl);
-				objectUrls[id] = thumbnailUrl;
-			} else if (media.tags.includes('image')) {
-				objectUrls[id] = await getMediaObjectUrl(media);
-			}
-		} catch {
-			// Preview unavailable; tile stays generic.
-		}
-	}
-
-	function syncThumbnails(revision: number, ids: readonly string[]): void {
-		if (revision !== loadedThumbnailRevision) {
-			loadedThumbnailRevision = revision;
-			for (const url of ownedThumbnailUrls.values()) URL.revokeObjectURL(url);
-			ownedThumbnailUrls.clear();
-			objectUrls = {};
-		}
-		const activeIds = new Set(ids);
-		for (const [id, url] of ownedThumbnailUrls) {
-			if (activeIds.has(id)) continue;
-			URL.revokeObjectURL(url);
-			ownedThumbnailUrls.delete(id);
-			delete objectUrls[id];
-		}
-		for (const id of ids) void previewUrl(id);
+		const thumbnail = await readBlob(requireWorkspaceRoot(), mediaThumbnailPath(id));
+		if (thumbnail) return thumbnail;
+		return media.tags.includes('image') ? getMediaObjectUrl(media) : null;
 	}
 
 	$effect(() => {
-		syncThumbnails(mediaPool.thumbnailRevision, mediaPool.order);
+		const revision = mediaPool.thumbnailRevision;
+		const ids = mediaPool.order.filter((id) => mediaPool.entry(id)?.status === 'ready');
+		untrack(() => thumbnails.sync(ids, revision));
 	});
 
 	$effect(() => {
@@ -433,8 +408,7 @@
 	onDestroy(() => {
 		sequenceThumbnailGeneration += 1;
 		compoundThumbnailService.clearAll();
-		for (const url of ownedThumbnailUrls.values()) URL.revokeObjectURL(url);
-		ownedThumbnailUrls.clear();
+		thumbnails.dispose();
 		clearActiveMediaDrag();
 	});
 

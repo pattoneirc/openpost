@@ -59,7 +59,7 @@ func (s *Service) loadDailyContentTrends(
 	}
 
 	renditionIDs := uniqueRenditionIDs(snapshots)
-	baselines, err := s.loadRenditionTrendBaselines(ctx, workspaceID, start, accountID, renditionIDs)
+	baselines, err := s.loadLatestRenditionSnapshots(ctx, workspaceID, renditionIDs, start, accountID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -93,36 +93,6 @@ func (s *Service) loadDailyContentTrends(
 		appendRenditionTrend(history, start, publishedAt, label, account.AccountUsername, engagementByDate, viewsByDate)
 	}
 	return orderedDailyBreakdown(engagementByDate), orderedDailyBreakdown(viewsByDate), nil
-}
-
-func (s *Service) loadRenditionTrendBaselines(
-	ctx context.Context,
-	workspaceID string,
-	start time.Time,
-	accountID string,
-	renditionIDs []string,
-) ([]models.AnalyticsRenditionSnapshot, error) {
-	if len(renditionIDs) == 0 {
-		return []models.AnalyticsRenditionSnapshot{}, nil
-	}
-	statement := `
-		WITH ranked AS (
-			SELECT id, workspace_id, publication_id, rendition_id, social_account_id, platform,
-				metrics_json, metric_metadata_json, capture_key, captured_at,
-				ROW_NUMBER() OVER (PARTITION BY rendition_id ORDER BY captured_at DESC) AS row_number
-			FROM analytics_rendition_snapshots
-			WHERE workspace_id = ? AND captured_at < ? AND rendition_id IN (?)`
-	args := []any{workspaceID, start, bun.List(renditionIDs)}
-	if accountID != "" {
-		statement += " AND social_account_id = ?"
-		args = append(args, accountID)
-	}
-	statement += ") SELECT id, workspace_id, publication_id, rendition_id, social_account_id, platform, metrics_json, metric_metadata_json, capture_key, captured_at FROM ranked WHERE row_number = 1"
-	var snapshots []models.AnalyticsRenditionSnapshot
-	if err := s.db.NewRaw(statement, args...).Scan(ctx, &snapshots); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("load rendition analytics trend baselines: %w", err)
-	}
-	return snapshots, nil
 }
 
 func (s *Service) loadTrendPublications(
@@ -220,9 +190,14 @@ func appendRenditionTrend(
 	daily := make([]models.AnalyticsRenditionSnapshot, 0, len(history))
 	for _, snapshot := range history {
 		date := snapshot.CapturedAt.UTC().Format("2006-01-02")
-		if len(daily) > 0 && daily[len(daily)-1].CapturedAt.UTC().Format("2006-01-02") == date {
-			daily[len(daily)-1] = snapshot
-			continue
+		if len(daily) > 0 {
+			last := daily[len(daily)-1]
+			// A range can begin mid-day. Keep its earlier baseline separate
+			// from that day's latest in-range measurement.
+			if last.CapturedAt.Before(start) == snapshot.CapturedAt.Before(start) && last.CapturedAt.UTC().Format("2006-01-02") == date {
+				daily[len(daily)-1] = snapshot
+				continue
+			}
 		}
 		daily = append(daily, snapshot)
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/zalando/go-keyring"
 
@@ -28,11 +29,8 @@ type Store interface {
 	Delete(profileName string) error
 }
 
-// NewStore returns the appropriate Store. Insecure is consulted only
-// if openStore() succeeds AND keyring.Set returns a libsecret/secret-service
-// error. We don't silently degrade to file storage on the user's first
-// login — that decision is the user's, via the --insecure-storage flag
-// during `openpost auth login`.
+// NewStore uses the keyring unless the user selected file storage or the
+// profile already has a nonempty credential in the file store.
 func NewStore(cfg *config.Runtime) Store {
 	// Heuristic: if the env explicitly opts into insecure storage,
 	// or if a credentials.json already exists with a token for this
@@ -132,8 +130,8 @@ func hasFileToken(path, profileName string) bool {
 	if err != nil {
 		return false
 	}
-	_, ok := creds.Profiles[profileName]
-	return ok
+	token, ok := creds.Profiles[profileName]
+	return ok && strings.TrimSpace(token) != ""
 }
 
 // file shim to avoid an import cycle with config (which already has
@@ -166,5 +164,17 @@ func saveCreds(path string, c fileCreds) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	if err = f.Chmod(0600); err != nil {
+		return err
+	}
+	if err = f.Truncate(0); err != nil {
+		return err
+	}
+	_, err = f.Write(data)
+	return err
 }

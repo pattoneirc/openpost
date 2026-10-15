@@ -36,7 +36,11 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
+    "@iconify-json/heroicons": "^1.2.3",
     "@iconify-json/lucide": "^1.2.126",
+    "@iconify-json/ph": "^1.2.2",
+    "@iconify-json/tabler": "^1.2.38",
+    "@iconify/utils": "3.1.4",
     "@napi-rs/canvas": "0.1.80",
     "@oxlint/plugins": "1.78.0",
     "@playwright/test": "^1.61.1",
@@ -49,7 +53,8 @@
     "parse5": "7.3.0",
     "sharp": "0.35.5",
     "tar": "7.5.22",
-    "turbo": "^2.6.3"
+    "turbo": "^2.6.3",
+    "zod": "4.4.3"
   },
   "overrides": {
     "@sveltejs/kit": "2.70.2",

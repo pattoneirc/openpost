@@ -13,12 +13,15 @@ export interface MagicPixelScanOptions {
 	shouldCancel?: () => boolean;
 	onProgress?: (fraction: number) => void;
 	yieldEvery?: number;
+	/** Workers can report progress without yielding their dedicated thread. */
+	yieldToEventLoop?: boolean;
 }
 
 export async function scanMagicPixels(
 	input: MagicPixelScanInput,
 	options: MagicPixelScanOptions = {}
 ): Promise<Uint8Array> {
+	if (options.shouldCancel?.()) throw new DOMException('Pixel scan cancelled.', 'AbortError');
 	const { width, height, data } = input;
 	const total = width * height;
 	const mask = new Uint8Array(total);
@@ -38,7 +41,9 @@ export async function scanMagicPixels(
 	const checkpoint = async (completed: number): Promise<void> => {
 		if (options.shouldCancel?.()) throw new DOMException('Pixel scan cancelled.', 'AbortError');
 		options.onProgress?.(Math.max(0, Math.min(1, completed / Math.max(1, total))));
-		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		if (options.yieldToEventLoop !== false)
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		if (options.shouldCancel?.()) throw new DOMException('Pixel scan cancelled.', 'AbortError');
 	};
 	const matches = (index: number): boolean => {
 		const offset = index * 4;
@@ -61,38 +66,52 @@ export async function scanMagicPixels(
 		return mask;
 	}
 
-	const visited = new Uint8Array(total);
-	const queue = new Uint32Array(total);
-	let head = 0;
-	let tail = 0;
-	queue[tail++] = startIndex;
-	visited[startIndex] = 1;
+	// Flood whole horizontal spans. The output mask also marks queued seeds,
+	// avoiding a visited image and a queue allocated for every source pixel.
+	let stack = new Uint32Array(Math.min(total, 1024));
+	let size = 0;
+	const enqueue = (index: number): void => {
+		if (size === stack.length) {
+			const grown = new Uint32Array(Math.min(total, stack.length * 2));
+			grown.set(stack);
+			stack = grown;
+		}
+		mask[index] = 2;
+		stack[size++] = index;
+	};
+	if (!matches(startIndex)) return mask;
+	enqueue(startIndex);
 	let processed = 0;
-	while (head < tail) {
-		const index = queue[head++];
-		processed++;
-		if (matches(index)) {
-			mask[index] = 1;
-			const x = index % width;
-			const y = Math.floor(index / width);
-			if (x > 0 && !visited[index - 1]) {
-				visited[index - 1] = 1;
-				queue[tail++] = index - 1;
-			}
-			if (x + 1 < width && !visited[index + 1]) {
-				visited[index + 1] = 1;
-				queue[tail++] = index + 1;
-			}
-			if (y > 0 && !visited[index - width]) {
-				visited[index - width] = 1;
-				queue[tail++] = index - width;
-			}
-			if (y + 1 < height && !visited[index + width]) {
-				visited[index + width] = 1;
-				queue[tail++] = index + width;
+	let nextYield = yieldEvery;
+	while (size > 0) {
+		const index = stack[--size];
+		if (mask[index] === 1) continue;
+		const rowStart = index - (index % width);
+		const rowEnd = rowStart + width;
+		let left = index;
+		let right = index + 1;
+		while (left > rowStart && mask[left - 1] !== 1 && matches(left - 1)) left--;
+		while (right < rowEnd && mask[right] !== 1 && matches(right)) right++;
+		mask.fill(1, left, right);
+		processed += right - left;
+		for (const offset of [-width, width]) {
+			if (left + offset < 0 || left + offset >= total) continue;
+			let inSpan = false;
+			for (let neighbor = left + offset; neighbor < right + offset; neighbor++) {
+				if (mask[neighbor] === 2) {
+					inSpan = true;
+				} else if (mask[neighbor] === 0 && matches(neighbor)) {
+					if (!inSpan) enqueue(neighbor);
+					inSpan = true;
+				} else {
+					inSpan = false;
+				}
 			}
 		}
-		if (processed % yieldEvery === 0) await checkpoint(Math.min(total, head));
+		if (processed >= nextYield) {
+			await checkpoint(processed);
+			nextYield = processed + yieldEvery;
+		}
 	}
 	options.onProgress?.(1);
 	return mask;

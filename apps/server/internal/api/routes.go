@@ -52,6 +52,7 @@ import (
 	"github.com/openpost/backend/internal/services/publicationbuilder"
 	"github.com/openpost/backend/internal/services/publicationdiscovery"
 	"github.com/openpost/backend/internal/services/publicurl"
+	"github.com/openpost/backend/internal/services/ratelimit"
 	repostservice "github.com/openpost/backend/internal/services/reposts"
 	"github.com/openpost/backend/internal/services/repurpose"
 	"github.com/openpost/backend/internal/services/sessions"
@@ -211,6 +212,7 @@ func RegisterHumaRoutes(api huma.API, deps RouteDeps) {
 		deps.MFAService,
 		deps.DisableRegistrations,
 	)
+	authHandler.SetRateLimiter(ratelimit.NewShared(deps.DB))
 	authHandler.SetWaitlist(deps.WaitlistService)
 	authHandler.JoinWaitlist(api)
 	authHandler.SetSessionService(deps.SessionService)
@@ -282,6 +284,7 @@ func RegisterHumaRoutes(api huma.API, deps RouteDeps) {
 	handlers.NewExternalApplicationHandler(deps.ExternalApps, deps.DB, deps.Authenticator).RegisterRoutes(api)
 	handlers.NewExternalWebhookHandler(deps.ExternalWebhooks, deps.DB, deps.Authenticator).RegisterRoutes(api)
 	cliAuthHandler := handlers.NewCLIAuthHandler(deps.CLIAuthService, deps.Authenticator, deps.PublicURL)
+	cliAuthHandler.SetRateLimiter(ratelimit.NewShared(deps.DB))
 	cliAuthHandler.SetIdentityService(deps.IdentityService)
 	cliAuthHandler.RegisterRoutes(api)
 	handlers.NewMCPActivityHandler(deps.DB, deps.Authenticator).RegisterRoutes(api)
@@ -317,6 +320,7 @@ func RegisterHumaRoutes(api huma.API, deps RouteDeps) {
 	publicationHandler.SetRepostService(deps.RepostService)
 	publicationHandler.SetProviderReadiness(deps.ProviderReadinessService)
 	publicationHandler.SetTelemetry(deps.Telemetry)
+	publicationHandler.SetNotificationService(deps.NotificationService)
 	publicationHandler.RegisterRoutes(api)
 	publicationBuildHandler := handlers.NewPublicationBuildHandler(deps.DB, deps.Authenticator, deps.PublicationBuilder)
 	publicationBuildHandler.SetPublicationApplication(publicationHandler.BuilderApplication())
@@ -365,6 +369,7 @@ func RegisterHumaRoutes(api huma.API, deps RouteDeps) {
 	if mcpOAuthHandler == nil {
 		mcpOAuthHandler = handlers.NewMCPOAuthHandler(deps.MCPOAuthService, deps.Authenticator, deps.PublicURL)
 	}
+	mcpOAuthHandler.SetRateLimiter(ratelimit.NewShared(deps.DB))
 	mcpOAuthHandler.SetIdentityService(deps.IdentityService)
 	mcpOAuthHandler.SetExternalApplicationService(deps.ExternalApps)
 	mcpOAuthHandler.RegisterAPIRoutes(api)

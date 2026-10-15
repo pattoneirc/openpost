@@ -29,6 +29,9 @@ func (x *XAdapter) UploadMediaResumable(ctx context.Context, token, _ string, re
 	if state.Status == MediaUploadReady && state.ProviderMediaID != "" {
 		return state.ProviderMediaID, nil
 	}
+	if err := checkXUploadWrite(ctx, req, state); err != nil {
+		return "", err
+	}
 	category := xMediaCategory(req.MimeType)
 	source, err := openXMediaSource(req, state)
 	if err != nil {
@@ -48,6 +51,16 @@ func (x *XAdapter) UploadMediaResumable(ctx context.Context, token, _ string, re
 		return state.ProviderMediaID, nil
 	}
 	return x.uploadMediaChunkedResumable(ctx, token, req.MimeType, category, source, req.Size, state, func(next ResumableMediaUploadState) error { state = next; return checkpoint(next) })
+}
+
+func checkXUploadWrite(ctx context.Context, req UploadMediaRequest, state ResumableMediaUploadState) error {
+	// These durable states only inspect an already accepted upload.
+	switch state.OpaqueState {
+	case "finalizing", "processing", "append_started":
+		return nil
+	default:
+		return checkUploadWrite(ctx, req)
+	}
 }
 
 func classifyXMediaUploadError(err error, state ResumableMediaUploadState) error {
@@ -127,7 +140,7 @@ func (x *XAdapter) resumeMediaProcessing(ctx context.Context, token string, stat
 	if info == nil || (state.OpaqueState == "append_started" && info.State != "succeeded") {
 		return "", &MediaUploadError{RetryClassification: MediaRetryReconcile, Err: fmt.Errorf("x media operation remains unresolved")}
 	}
-	if err := x.waitForMediaProcessing(ctx, token, state.ProviderMediaID, info); err != nil {
+	if err := x.waitForMediaProcessing(ctx, token, state.ProviderMediaID, info, state.SessionExpiresAt); err != nil {
 		return "", err
 	}
 	return state.ProviderMediaID, nil

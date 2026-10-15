@@ -22,6 +22,7 @@ type topicPolicy struct {
 }
 
 var topicCatalogue = []topicPolicy{
+	newOptionalTopic(TypePostReview, "publishing", false, EmailFrequencyImmediate, materializePostReview),
 	newOptionalTopic(TypePostPublished, "publishing", false, EmailFrequencyOff, materializePublicationOutcome),
 	newOptionalTopic(TypePublishFailed, "publishing", true, EmailFrequencyImmediate, materializePublicationOutcome),
 	newOptionalTopic(TypeAccountNeedsAttention, "publishing", true, EmailFrequencyOff, materializeAccountAttentionOutcome),

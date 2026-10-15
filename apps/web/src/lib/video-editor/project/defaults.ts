@@ -20,6 +20,7 @@ import { normalizeAudioEffects } from '../audio/audio-effects';
 import { convertFreeCutProjectDocument, isFreeCutProjectDocument } from './freecut-compat';
 import { isValidProjectCreationSettings, type ProjectCreationSettings } from './project-presets';
 import { createUUID } from '$lib/crypto-random-uuid';
+import { normalizeItemKeyframeOrder } from './keyframe-order';
 
 export { CURRENT_SCHEMA_VERSION } from './migrations';
 
@@ -200,7 +201,7 @@ export function normalizeProject(project: Project): NormalizedProject {
 				shapeStylesRepaired = true;
 			}
 			if (normalized !== item) shapeStylesRepaired = true;
-			return normalized;
+			return normalizeItemKeyframeOrder(normalized);
 		});
 	const timeline = project.timeline ?? createEmptyTimeline();
 	if (!project.timeline) {

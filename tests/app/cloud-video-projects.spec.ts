@@ -23,7 +23,8 @@ test("Cloud Video Projects are the signed-in default with recovery on desktop an
     "aria-pressed",
     "true",
   );
-  await expect(page.getByRole("heading", { name: "Choose your editing workspace" })).toHaveCount(0);
+  // Both libraries remain visible; the storage choice applies to new projects.
+  await expect(page.getByRole("heading", { name: "Choose your editing workspace" })).toBeVisible();
 
   await page.getByRole("button", { name: "Open Video Editor", exact: true }).click();
   await page.getByRole("textbox", { name: "Project name" }).fill("Cross-device launch");

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/openpost/backend/internal/api/middleware"
+	"github.com/openpost/backend/internal/config"
 	"github.com/openpost/backend/internal/models"
 	"github.com/openpost/backend/internal/publicprofiles"
 	"github.com/openpost/backend/internal/services/identity"
@@ -146,20 +147,23 @@ func (r appReadModel) workspaces(ctx context.Context, userID string) ([]Workspac
 			}
 		}
 		workspaces = append(workspaces, WorkspaceResponse{
-			WorkspaceID:        workspace.ID,
-			OrganizationID:     workspace.OrganizationID,
-			OrganizationName:   workspace.OrganizationName,
-			WorkspaceName:      workspace.Name,
-			AvatarURL:          workspace.AvatarURL,
-			Color:              normalizedWorkspaceColor(workspace.Color),
-			WorkspaceCreatedAt: workspace.CreatedAt.Format(time.RFC3339),
-			Role:               workspace.Role,
-			CanEdit:            decision.Allowed && (workspace.Role == models.WorkspaceRoleAdmin || workspace.Role == models.WorkspaceRoleEditor),
-			SSORequired:        decision.SSORequired,
-			SSOAuthenticated:   decision.Allowed,
-			SSOProviderID:      decision.ProviderID,
-			SSOProviderName:    decision.ProviderName,
-			SSOIdentityLinked:  identityLinked,
+			WorkspaceID:          workspace.ID,
+			OrganizationID:       workspace.OrganizationID,
+			OrganizationName:     workspace.OrganizationName,
+			WorkspaceName:        workspace.Name,
+			AvatarURL:            workspace.AvatarURL,
+			Color:                normalizedWorkspaceColor(workspace.Color),
+			WorkspaceCreatedAt:   workspace.CreatedAt.Format(time.RFC3339),
+			Role:                 workspace.Role,
+			CanEdit:              decision.Allowed && (workspace.Role == models.WorkspaceRoleAdmin || workspace.Role == models.WorkspaceRoleEditor),
+			CanConnect:           decision.Allowed && workspaceaccess.RoleMeetsLevel(workspace.Role, workspaceaccess.LevelConnect),
+			ClientReviewsEnabled: config.ClientReviewsEnabled(),
+			CanApprove:           decision.Allowed && workspaceaccess.RoleMeetsLevel(workspace.Role, workspaceaccess.LevelApprove),
+			SSORequired:          decision.SSORequired,
+			SSOAuthenticated:     decision.Allowed,
+			SSOProviderID:        decision.ProviderID,
+			SSOProviderName:      decision.ProviderName,
+			SSOIdentityLinked:    identityLinked,
 		})
 	}
 	return workspaces, nil

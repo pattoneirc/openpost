@@ -81,27 +81,14 @@ type ValidateInput struct {
 }
 
 func CreateBatch(ctx context.Context, db bun.IDB, input BatchInput) (string, []models.PublicationAuthorization, error) {
-	input.Actor = input.Actor.normalized()
-	if !input.Actor.valid() {
-		return "", nil, ErrActorRequired
-	}
-	input.PublicationID = strings.TrimSpace(input.PublicationID)
-	input.Action = strings.TrimSpace(input.Action)
-	input.PolicyMode = strings.TrimSpace(input.PolicyMode)
-	input.ExecutionIntent = normalizedExecutionIntent(input.ExecutionIntent)
-	if input.PublicationID == "" || !validAction(input.Action) || !validPolicyMode(input.PolicyMode) ||
-		input.ExecutionIntent == "" || len(input.Targets) == 0 {
-		return "", nil, fmt.Errorf("invalid publication authorization batch")
-	}
-	if input.BatchID == "" {
-		input.BatchID = uuid.NewString()
-	}
-	if input.ConfirmedAt.IsZero() {
-		input.ConfirmedAt = time.Now().UTC()
-	} else {
-		input.ConfirmedAt = input.ConfirmedAt.UTC()
+	input, err := normalizeBatchInput(input)
+	if err != nil {
+		return "", nil, err
 	}
 
+	if err := requireReviewAdmission(ctx, db, input); err != nil {
+		return "", nil, err
+	}
 	resolved, err := resolveBatchTargets(ctx, db, input.PublicationID, input.Targets)
 	if err != nil {
 		return "", nil, err
@@ -127,9 +114,37 @@ func CreateBatch(ctx context.Context, db bun.IDB, input BatchInput) (string, []m
 	return input.BatchID, receipts, nil
 }
 
+func normalizeBatchInput(input BatchInput) (BatchInput, error) {
+	input.Actor = input.Actor.normalized()
+	if !input.Actor.valid() {
+		return BatchInput{}, ErrActorRequired
+	}
+	input.PublicationID = strings.TrimSpace(input.PublicationID)
+	input.Action = strings.TrimSpace(input.Action)
+	input.PolicyMode = strings.TrimSpace(input.PolicyMode)
+	input.ExecutionIntent = normalizedExecutionIntent(input.ExecutionIntent)
+	if input.PublicationID == "" || !validAction(input.Action) || !validPolicyMode(input.PolicyMode) ||
+		input.ExecutionIntent == "" || len(input.Targets) == 0 {
+		return BatchInput{}, fmt.Errorf("invalid publication authorization batch")
+	}
+	if input.BatchID == "" {
+		input.BatchID = uuid.NewString()
+	}
+	if input.ConfirmedAt.IsZero() {
+		input.ConfirmedAt = time.Now().UTC()
+	} else {
+		input.ConfirmedAt = input.ConfirmedAt.UTC()
+	}
+
+	return input, nil
+}
+
 func CreateExplicit(ctx context.Context, db bun.IDB, input ExplicitInput) (string, *models.PublicationAuthorization, error) {
 	input, err := normalizeExplicitInput(input)
 	if err != nil {
+		return "", nil, err
+	}
+	if err := requireReviewAdmission(ctx, db, input.BatchInput); err != nil {
 		return "", nil, err
 	}
 	snapshot, err := explicitSnapshot(ctx, db, input.PublicationID, input.RenditionID, input.Content, input.Media, input.Settings)

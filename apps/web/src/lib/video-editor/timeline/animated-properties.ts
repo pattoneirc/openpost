@@ -45,6 +45,8 @@ export interface AnimatedItemMotionContext {
 	frameHeight: number;
 	/** Items in the active sequence, used by links and expression references. */
 	items?: readonly TimelineItem[];
+	/** The owning sequence's index, kept in sync with items by its store or renderer. */
+	itemById?: ReadonlyMap<string, TimelineItem>;
 }
 
 const VISUAL_PROPERTIES: KeyframeProperty[] = [
@@ -160,7 +162,9 @@ export function resolveAnimatedItemAt(
 ): TimelineItem {
 	const resolved = resolveAnimatedItemLocalAt(item, absoluteFrame, motionContext);
 	if (!motionContext?.items || !item.transformParent) return resolved;
-	const itemsById = new Map(motionContext.items.map((candidate) => [candidate.id, candidate]));
+	const itemsById =
+		motionContext.itemById ??
+		new Map(motionContext.items.map((candidate) => [candidate.id, candidate]));
 	const world = resolveTransformHierarchy(item, {
 		getItem: (itemId) => itemsById.get(itemId),
 		resolveLocal: (candidate) =>
@@ -209,6 +213,7 @@ export function resolveAnimatedItemLocalAt(
 			absoluteFrame,
 			fps: motionContext.fps,
 			items: motionContext.items,
+			itemById: motionContext.itemById,
 			resolvePreExpressionItem: resolvePreExpressionItemAt
 		});
 	}

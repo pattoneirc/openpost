@@ -185,7 +185,8 @@ it('reports reviewed source sections once when cleanup cuts linked tracks', asyn
 			.getImageData(0, 0, 64, 36)
 			.data.some((value, index) => index % 4 !== 3 && value > 32);
 	};
-	await expect.poll(picture).toBe(true);
+	// Native clip videos decode asynchronously, especially when cuts remount them.
+	await expect.poll(picture, { timeout: 5000 }).toBe(true);
 	const onapplied = vi.fn();
 	const screen = await render(SpeechCleanupDialog, {
 		open: true,
@@ -202,7 +203,7 @@ it('reports reviewed source sections once when cleanup cuts linked tracks', asyn
 		await screen.getByRole('button', { name: m.video_editor_apply_silences() }).click();
 		expect(onapplied).toHaveBeenCalledExactlyOnceWith(4);
 		expect(timelineStore.maxItemEndFrame).toBe(120);
-		await expect.poll(picture).toBe(true);
+		await expect.poll(picture, { timeout: 5000 }).toBe(true);
 		expect(timelineStore.currentFrame).toBe(119);
 		expect(editorSession.clock.currentFrame).toBe(119);
 		expect(commandHistory.undoStack).toHaveLength(1);
@@ -212,7 +213,7 @@ it('reports reviewed source sections once when cleanup cuts linked tracks', asyn
 		commandHistory.redo();
 		expect(timelineStore.maxItemEndFrame).toBe(120);
 		expect(timelineStore.currentFrame).toBe(119);
-		await expect.poll(picture).toBe(true);
+		await expect.poll(picture, { timeout: 5000 }).toBe(true);
 	} finally {
 		await screen.unmount();
 		await preview.unmount();
@@ -223,7 +224,7 @@ it('reports reviewed source sections once when cleanup cuts linked tracks', asyn
 		timelineStore.__resetForTesting();
 		commandHistory.clearHistory();
 	}
-});
+}, 20_000);
 
 it('keeps repeated starts optional and applies reviewed cuts and voice treatment in one Undo', async () => {
 	const clip: TimelineItem = {

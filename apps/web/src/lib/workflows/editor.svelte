@@ -5,7 +5,10 @@
 	import { onMount, tick, untrack } from 'svelte';
 
 	import { createQuery } from '@tanstack/svelte-query';
-	import { workflowRunQueryOptions, workflowRunsQueryOptions } from '@openpost/query-catalog';
+	import {
+		workflowRunQueryOptions,
+		workflowRunSummariesQueryOptions
+	} from '@openpost/query-catalog';
 	import type { SocialAccount } from '@openpost/query-catalog';
 	import { workflowQueryAPI } from '$lib/query/workflows';
 	import { workspaceCtx } from '$lib/stores/workspace.svelte';
@@ -46,6 +49,8 @@
 	import { stepFields } from './fields';
 	import { connectionWouldLoop, type Port } from './graph';
 	import InlineNotice from '$lib/components/inline-notice.svelte';
+	import PageLoading from '$lib/components/page-loading.svelte';
+	import { readQueryErrorMessage } from '$lib/query/error-message';
 	import { Button } from '$lib/components/ui/button';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -109,7 +114,7 @@
 	let inspectorElement = $state<HTMLDivElement | null>(null);
 	let runContexts = $state.raw<Record<string, { definition: Definition; data: WorkflowData }>>({});
 	let pendingSave: Promise<void> | undefined;
-	const canEdit = $derived(workspaceCtx.currentWorkspace?.role !== 'viewer');
+	const canEdit = $derived(workspaceCtx.currentWorkspace?.role === 'admin');
 	const canAdmin = $derived(workspaceCtx.currentWorkspace?.role === 'admin');
 	const dirty = $derived(JSON.stringify(doc) !== saved);
 	// Only a matching published revision identifies the live interval; drafts may differ.
@@ -202,9 +207,10 @@
 	const references = $derived(
 		availableReferences(doc.definition.steps ?? [], selectedID, inputData.source)
 	);
-	const runsQuery = createQuery(() =>
-		workflowRunsQueryOptions(workflowQueryAPI, initial.workspace_id, initial.id)
-	);
+	const runsQuery = createQuery(() => ({
+		...workflowRunSummariesQueryOptions(workflowQueryAPI, initial.workspace_id, initial.id),
+		enabled: Boolean(initial.workspace_id && panel === 'runs')
+	}));
 	function snapshot() {
 		return JSON.stringify({ doc, positions, selectedID });
 	}
@@ -646,6 +652,19 @@
 							: ''}"
 					>
 						<h2 class="mb-3 text-sm font-medium">{m.workflows_runs()}</h2>
+						{#if runsQuery.error}<InlineNotice
+								tone="error"
+								message={readQueryErrorMessage(runsQuery.error) || m.workflows_load_failed()}
+								>{#snippet actions()}<Button
+										variant="outline"
+										size="sm"
+										onclick={() => runsQuery.refetch()}>{m.common_retry()}</Button
+									>{/snippet}</InlineNotice
+							>{:else if runsQuery.isPending}<PageLoading
+								layout="list"
+								items={3}
+								label={m.common_loading()}
+							/>{/if}
 						{#each runsQuery.data ?? [] as run}<button
 								type="button"
 								class="mb-2 w-full rounded-lg border p-3 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring {selectedRun ===
@@ -666,7 +685,7 @@
 								><span class="block text-xs text-muted-foreground"
 									>{new Date(run.created_at).toLocaleString()}</span
 								></button
-							>{/each}{#if !runsQuery.data?.length}<p
+							>{/each}{#if !runsQuery.data?.length && runsQuery.isSuccess}<p
 								class="text-sm leading-6 text-muted-foreground"
 							>
 								{noRunsHelp}
@@ -676,7 +695,7 @@
 						{#if selectedRun}<Button variant="ghost" size="sm" onclick={() => (selectedRun = '')}
 								>{m.workflows_runs()}</Button
 							>
-							<div class="h-60 overflow-hidden rounded-lg border">
+							<div class="h-60 overflow-hidden rounded-lg border" hidden={!inspectedRun}>
 								<!-- Keep the immutable run alive while its canvas is torn down after query selection changes. -->
 								{#each inspectedRun ? [inspectedRun] : [] as run (run.id)}<Canvas
 										definition={run.definition}

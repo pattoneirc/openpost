@@ -42,10 +42,21 @@ apps/server/media/
 *.db-shm
 *.db-wal
 
-# Environment files
+# Local credentials must never enter a builder context.
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.example
+!**/.env.example
+*.jks
+**/*.jks
+*.keystore
+**/*.keystore
+*.p12
+**/*.p12
+*.pfx
+**/*.pfx
 
 # Docker
 docker-compose.yml

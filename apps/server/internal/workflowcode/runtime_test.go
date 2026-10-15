@@ -26,3 +26,24 @@ func TestEvaluateBoundsUntrustedPrograms(t *testing.T) {
 		})
 	}
 }
+
+func TestEvaluateRejectsExcessConcurrentGuestsAndReleasesSlots(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{}, 4)
+	for range 4 {
+		go func() { defer func() { done <- struct{}{} }(); _, _ = Evaluate(ctx, `while(true){}`, nil) }()
+	}
+	require.Eventually(t, func() bool { return len(guests) == 4 }, time.Second, time.Millisecond)
+	started := time.Now()
+	_, err := Evaluate(t.Context(), `return 1;`, nil)
+	require.ErrorContains(t, err, "busy")
+	require.Less(t, time.Since(started), time.Second)
+	cancel()
+	for range 4 {
+		<-done
+	}
+	value, err := Evaluate(t.Context(), `return 1;`, nil)
+	require.NoError(t, err)
+	require.Equal(t, float64(1), value)
+}

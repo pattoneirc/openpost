@@ -1,5 +1,7 @@
 # Mobile publishing loop revamp
 
+This specification records the original mobile publishing loop. The current AI authoring flow is maintained in [Ideate](../development/ideate.md), and client approval rules are maintained in [client reviews and series](../development/client-reviews-and-series.md). The failure-dismissal behavior below remains supported.
+
 ## Scope
 
 Revamp the signed-in Android publishing loop while preserving onboarding and server configuration. The changed mobile routes are Drafts, Composer, Calendar, Queue, and Publication detail. The web change is limited to failed-Publication dismissal and restoration.

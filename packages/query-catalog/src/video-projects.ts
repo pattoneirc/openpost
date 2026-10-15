@@ -3,12 +3,18 @@ import type { QueryFunctionContext } from "@tanstack/query-core";
 import { openPostWorkspaceKey } from "./keys";
 import { openPostQueryPolicy, queryStaleTime } from "./policies";
 
+export type VideoProjectSummary = components["schemas"]["VideoProjectSummaryResponse"];
 export type VideoProject = components["schemas"]["VideoProjectResponse"];
 export type VideoProjectRevision = components["schemas"]["VideoProjectRevisionResponse"];
 export type VideoProjectConflict = components["schemas"]["VideoProjectConflictResponse"];
 export type VideoProjectAsset = components["schemas"]["ProjectAssetResponse"];
 
 export interface VideoProjectQueryAPI {
+  listVideoProjectSummaries(
+    workspaceId: string,
+    includeTrash: boolean,
+    signal: AbortSignal,
+  ): Promise<VideoProjectSummary[]>;
   listVideoProjects(
     workspaceId: string,
     includeTrash: boolean,
@@ -41,6 +47,8 @@ export const videoProjectQueryKeys = {
   lists: (workspaceId: string) => openPostWorkspaceKey(workspaceId, "video-projects", "list"),
   list: (workspaceId: string, includeTrash: boolean) =>
     openPostWorkspaceKey(workspaceId, "video-projects", "list", { includeTrash }),
+  summaries: (workspaceId: string, includeTrash: boolean) =>
+    openPostWorkspaceKey(workspaceId, "video-projects", "list", "summaries", { includeTrash }),
   detail: (workspaceId: string, projectId: string) =>
     openPostWorkspaceKey(workspaceId, "video-projects", "detail", projectId),
   revisions: (workspaceId: string, projectId: string) =>
@@ -63,6 +71,21 @@ export function videoProjectListQueryOptions(
     enabled: Boolean(workspaceId),
     queryFn: ({ signal }: QueryFunctionContext<typeof queryKey>) =>
       api.listVideoProjects(workspaceId, includeTrash, signal),
+  };
+}
+
+export function videoProjectSummariesQueryOptions(
+  api: Pick<VideoProjectQueryAPI, "listVideoProjectSummaries">,
+  workspaceId: string,
+  includeTrash = false,
+) {
+  const queryKey = videoProjectQueryKeys.summaries(workspaceId, includeTrash);
+  return {
+    ...openPostQueryPolicy(queryStaleTime),
+    queryKey,
+    enabled: Boolean(workspaceId),
+    queryFn: ({ signal }: QueryFunctionContext<typeof queryKey>) =>
+      api.listVideoProjectSummaries(workspaceId, includeTrash, signal),
   };
 }
 

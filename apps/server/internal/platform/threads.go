@@ -349,7 +349,7 @@ func (t *ThreadsAdapter) ResolveContentURL(ctx context.Context, accessToken, _ s
 		oauthParamAccessToken: {accessToken},
 	}
 	endpoint := "https://graph.threads.net/v1.0/" + url.PathEscape(externalID) + "?" + query.Encode()
-	body, err := DoRequest(ctx, http.MethodGet, endpoint, nil, nil)
+	body, err := doMetaRequest(ctx, http.MethodGet, endpoint, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("threads post permalink: %w", err)
 	}

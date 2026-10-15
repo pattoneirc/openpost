@@ -326,6 +326,9 @@ func (p *PeerTubeAdapter) runPeerTubeUploadWithCheckpoint(
 ) (string, error) {
 	mimeType := firstNonEmptyString(req.MimeType, videoTypeMP4)
 	if session.UploadURL == "" {
+		if err := checkUploadWrite(ctx, req); err != nil {
+			return "", err
+		}
 		uploadURL, existed, err := p.initPeerTubeUpload(ctx, accessToken, metadata, total, mimeType)
 		if err != nil {
 			return "", err
@@ -348,7 +351,7 @@ func (p *PeerTubeAdapter) runPeerTubeUploadWithCheckpoint(
 			}
 		}
 	}
-	uuid, err := p.sendPeerTubeChunks(ctx, accessToken, session.UploadURL, total, req.OpenReaderAt, &state, checkpoint)
+	uuid, err := p.sendPeerTubeChunks(ctx, accessToken, session.UploadURL, total, req, &state, checkpoint)
 	if err != nil {
 		return "", err
 	}
@@ -415,7 +418,7 @@ func (p *PeerTubeAdapter) sendPeerTubeChunks(
 	ctx context.Context,
 	accessToken, uploadURL string,
 	total int64,
-	openReaderAt func(int64) (io.ReadCloser, error),
+	req UploadMediaRequest,
 	state *ResumableMediaUploadState,
 	checkpoint MediaUploadCheckpoint,
 ) (string, error) {
@@ -429,17 +432,11 @@ func (p *PeerTubeAdapter) sendPeerTubeChunks(
 		headers := peertubeAuthHeaders(accessToken)
 		headers["Content-Type"] = contentTypeOctet
 		headers["Content-Range"] = fmt.Sprintf("bytes %d-%d/%d", offset, end-1, total)
-		reader, err := openReaderAt(offset)
-		if err != nil {
-			return "", fmt.Errorf("opening peertube media at byte %d: %w", offset, err)
+		if err := readPeerTubeChunk(req, offset, buffer[:end-offset]); err != nil {
+			return "", err
 		}
-		_, readErr := io.ReadFull(reader, buffer[:end-offset])
-		closeErr := reader.Close()
-		if readErr != nil {
-			return "", fmt.Errorf("reading peertube media at byte %d: %w", offset, readErr)
-		}
-		if closeErr != nil {
-			return "", fmt.Errorf("closing peertube media at byte %d: %w", offset, closeErr)
+		if err := checkUploadWrite(ctx, req); err != nil {
+			return "", err
 		}
 		resp, err := peertubeRawRequest(ctx, http.MethodPut, uploadURL, headers, bytes.NewReader(buffer[:end-offset]))
 		if err != nil {
@@ -476,6 +473,23 @@ func (p *PeerTubeAdapter) sendPeerTubeChunks(
 		}
 	}
 	return "", &MediaUploadError{RetryClassification: MediaRetryTerminal, Err: fmt.Errorf("peertube upload ended without a video id")}
+}
+
+func readPeerTubeChunk(req UploadMediaRequest, offset int64, buffer []byte) error {
+	reader, err := req.OpenReaderAt(offset)
+	if err != nil {
+		return fmt.Errorf("opening peertube media at byte %d: %w", offset, err)
+	}
+	_, readErr := io.ReadFull(reader, buffer)
+	closeErr := reader.Close()
+	if readErr != nil {
+		return fmt.Errorf("reading peertube media at byte %d: %w", offset, readErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("closing peertube media at byte %d: %w", offset, closeErr)
+	}
+
+	return nil
 }
 
 func peertubeUploadResponseUUID(body []byte) (string, error) {
@@ -532,6 +546,9 @@ func (p *PeerTubeAdapter) finalizePeerTubeThumbnail(ctx context.Context, accessT
 		return fmt.Errorf("reading peertube thumbnail: %w", err)
 	}
 	if len(thumbnail) > 0 {
+		if err := checkUploadWrite(ctx, req); err != nil {
+			return err
+		}
 		if err := p.uploadPeerTubeThumbnail(ctx, accessToken, uuid, thumbnail, req); err != nil {
 			return err
 		}
@@ -549,6 +566,9 @@ func (p *PeerTubeAdapter) finalizePeerTubeCaption(ctx context.Context, accessTok
 		return fmt.Errorf("reading peertube captions: %w", err)
 	}
 	if len(caption) > 0 {
+		if err := checkUploadWrite(ctx, req); err != nil {
+			return err
+		}
 		language := firstNonEmptyString(settingString(req.Settings, "caption_language"), "en")
 		if err := p.uploadPeerTubeCaption(ctx, accessToken, uuid, language, caption, req); err != nil {
 			return err

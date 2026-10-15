@@ -15,7 +15,7 @@ OpenPost connects a LinkedIn member through OAuth. It can also offer Organizatio
 ## Create and configure the LinkedIn app
 
 1. In the [LinkedIn Developer Portal](https://www.linkedin.com/developers/apps), create an app and associate it with the LinkedIn Page requested by the portal. Copy its **Client ID** and **Client Secret** from **Auth**.
-2. In **Products**, add **Sign In with LinkedIn using OpenID Connect** and **Share on LinkedIn**. These provide member identity and `w_member_social` publishing access. For Pages, request the appropriate Community Management product and obtain `rw_organization_admin`, `w_organization_social`, and `r_organization_social` approval. OpenPost requests member analytics scopes when Organization support is enabled.
+2. In **Products**, add **Sign In with LinkedIn using OpenID Connect** and **Share on LinkedIn**. These provide member identity and `w_member_social` publishing access. For Pages, request the appropriate Community Management product and obtain `rw_organization_admin`, `w_organization_social`, and `r_organization_social` approval. Member analytics use a separate OpenPost setting described below.
 3. In **Auth → OAuth 2.0 settings**, add this exact **Authorized redirect URL**:
 
    ```text
@@ -55,6 +55,28 @@ For approved Organization Page access, set `OPENPOST_LINKEDIN_ORGANIZATIONS_ENAB
 LinkedIn restricts `r_member_social` to approved applications. After LinkedIn grants it to your app, set `OPENPOST_LINKEDIN_MEMBER_READS_ENABLED=true` and restart OpenPost. Reconnect the member account to approve that scope, then turn on **Imported posts** in its account details. Keep this setting off for apps without approval so normal connections do not request an unavailable scope.
 
 Page imports use `r_organization_social` and the existing `OPENPOST_LINKEDIN_ORGANIZATIONS_ENABLED` setting.
+
+## Enable analytics
+
+For personal profile analytics, obtain Community Management approval for `r_member_profileAnalytics` and `r_member_postAnalytics`. Enable member analytics in your deployment:
+
+```sh
+OPENPOST_LINKEDIN_MEMBER_ANALYTICS_ENABLED=true
+```
+
+Restart OpenPost or recreate the container. Reconnect the member account if its existing authorization lacks either scope, then enable **Analytics** in its account details. Member analytics do not require Organization Page support.
+
+For Organization Page analytics, enable Organization Page support and confirm the connected account has `rw_organization_admin`:
+
+```sh
+OPENPOST_LINKEDIN_ORGANIZATIONS_ENABLED=true
+```
+
+The member analytics setting does not control Page analytics.
+
+When upgrading an installation that already uses member analytics, explicitly enable the member analytics setting above. It defaults to false, so leaving it unset stops member analytics collection even for accounts with existing analytics permissions. Existing permissions do not need to be granted again unless they are missing. Stored metrics are preserved.
+
+LinkedIn requires a new app without other products for initial Community Management Development Tier access. After approval for Standard Tier, Community Management access can be added to an existing Advertising API app. Follow [LinkedIn's access guidance](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/community-management-overview#frequently-asked-questions).
 
 ## Troubleshoot
 

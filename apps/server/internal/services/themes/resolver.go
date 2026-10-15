@@ -44,7 +44,7 @@ func (r *resolver) Resolve(ctx context.Context, input ResolveInput) (ResolvedThe
 //nolint:gocyclo // Resolution keeps every reference failure mapped to one complete Workshop fallback rather than a hybrid theme.
 func (r *resolver) resolveReference(ctx context.Context, organizationID string, reference ThemeReference, scheme ColorScheme) (ResolvedTheme, error) {
 	if reference.Kind == ReferenceBuiltIn {
-		family, ok := BuiltIns()[reference.ID]
+		family, ok := builtIn(reference.ID)
 		if !ok || reference.Version != builtInVersion(family) {
 			return workshopFallback(scheme, FallbackInvalidReference), nil
 		}
@@ -52,11 +52,7 @@ func (r *resolver) resolveReference(ctx context.Context, organizationID string, 
 		if manifest == nil {
 			return workshopFallback(scheme, FallbackUnsupportedScheme), nil
 		}
-		normalized, err := NormalizeSchemeManifest(scheme, *manifest)
-		if err != nil {
-			return workshopFallback(scheme, FallbackInvalidManifest), nil
-		}
-		return resolved(family, reference, scheme, normalized, ResolutionBuiltIn, FallbackNone), nil
+		return resolved(family, reference, scheme, *manifest, ResolutionBuiltIn, FallbackNone), nil
 	}
 	if reference.Kind != ReferenceCustom || reference.ID == "" || reference.Version < 1 {
 		return workshopFallback(scheme, FallbackInvalidReference), nil
@@ -142,7 +138,7 @@ func runtimeFontFaces(fonts []ThemeFontFace) []ThemeRuntimeFontFace {
 }
 
 func workshopFallback(scheme ColorScheme, reason FallbackReason) ResolvedTheme {
-	family := BuiltIns()["workshop"]
+	family, _ := builtIn("workshop")
 	reference := builtInReference(family)
 	result := resolved(family, reference, scheme, Workshop(scheme), ResolutionFallback, reason)
 	result.CacheIdentity = fmt.Sprintf("fallback:workshop:%d:%s:%s", reference.Version, scheme, reason)

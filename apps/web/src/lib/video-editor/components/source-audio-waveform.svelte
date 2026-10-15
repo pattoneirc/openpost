@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
+	import { devicePixelRatio } from 'svelte/reactivity/window';
 	import { m } from '$lib/paraglide/messages';
 	import type { MediaMetadata } from '$lib/video-editor/media/types';
 	import {
@@ -28,22 +29,41 @@
 
 	let root = $state<HTMLDivElement>();
 	let canvas = $state<HTMLCanvasElement>();
+	let playheadCanvas = $state<HTMLCanvasElement>();
 	let width = $state(0);
 	let height = $state(0);
 	let waveform = $state<WaveformData | null>(null);
 	let failed = $state(false);
 	const overviewHeight = 34;
 	const detailWindow = $derived(sourceWaveformDetailWindow(durationSeconds, currentTimeSeconds));
+	const detailStart = $derived(detailWindow.start);
+	const detailEnd = $derived(detailWindow.end);
+	const inset = 8;
+	const sampleWidth = $derived(Math.max(1, width - inset * 2));
+	const overview = $derived(
+		waveform ? sampleSourceWaveform(waveform, 0, durationSeconds, sampleWidth) : null
+	);
+	const detail = $derived(
+		waveform ? sampleSourceWaveform(waveform, detailStart, detailEnd, sampleWidth) : null
+	);
 
 	$effect(() => {
 		const id = media.id;
+		let active = true;
 		failed = false;
 		waveform = null;
 		const unsubscribe = subscribeWaveform(id, (next) => (waveform = next));
 		void getWaveform(media)
-			.then((next) => (waveform = next))
-			.catch(() => (failed = true));
-		return unsubscribe;
+			.then((next) => {
+				if (active) waveform = next;
+			})
+			.catch(() => {
+				if (active) failed = true;
+			});
+		return () => {
+			active = false;
+			unsubscribe();
+		};
 	});
 
 	$effect(() => {
@@ -67,31 +87,29 @@
 		};
 	});
 
+	function prepareCanvas(target: HTMLCanvasElement): CanvasRenderingContext2D | null {
+		const dpr = devicePixelRatio.current || 1;
+		const pixelWidth = Math.max(1, Math.round(width * dpr));
+		const pixelHeight = Math.max(1, Math.round(height * dpr));
+		if (target.width !== pixelWidth) target.width = pixelWidth;
+		if (target.height !== pixelHeight) target.height = pixelHeight;
+		if (target.style.width !== `${width}px`) target.style.width = `${width}px`;
+		if (target.style.height !== `${height}px`) target.style.height = `${height}px`;
+		const context = target.getContext('2d');
+		context?.setTransform(dpr, 0, 0, dpr, 0, 0);
+		return context;
+	}
+
 	$effect(() => {
-		if (!canvas || !waveform || width <= 0 || height <= 0) return;
-		const dpr = window.devicePixelRatio || 1;
-		canvas.width = Math.max(1, Math.round(width * dpr));
-		canvas.height = Math.max(1, Math.round(height * dpr));
-		if (canvas.style.width !== `${width}px`) canvas.style.width = `${width}px`;
-		if (canvas.style.height !== `${height}px`) canvas.style.height = `${height}px`;
-		const context = canvas.getContext('2d');
+		if (!canvas || !overview || !detail || width <= 0 || height <= 0) return;
+		const context = prepareCanvas(canvas);
 		if (!context) return;
-		context.setTransform(dpr, 0, 0, dpr, 0, 0);
 		context.clearRect(0, 0, width, height);
 		context.fillStyle = '#121316';
 		context.fillRect(0, 0, width, height);
 		context.fillStyle = '#202127';
 		context.fillRect(0, 0, width, overviewHeight);
 
-		const inset = 8;
-		const sampleWidth = Math.max(1, width - inset * 2);
-		const overview = sampleSourceWaveform(waveform, 0, durationSeconds, sampleWidth);
-		const detail = sampleSourceWaveform(
-			waveform,
-			detailWindow.start,
-			detailWindow.end,
-			sampleWidth
-		);
 		const draw = (values: Float32Array, y: number, regionHeight: number, color: string) => {
 			const center = y + regionHeight / 2;
 			const maxHeight = Math.max(1, regionHeight / 2 - 5);
@@ -105,22 +123,26 @@
 		const detailY = overviewHeight + 8;
 		draw(detail, detailY, Math.max(1, height - detailY - 8), 'rgba(205,206,208,0.94)');
 
-		const windowLeft = inset + (detailWindow.start / durationSeconds) * sampleWidth;
-		const windowWidth = Math.max(
-			1,
-			((detailWindow.end - detailWindow.start) / durationSeconds) * sampleWidth
-		);
+		const windowLeft = inset + (detailStart / durationSeconds) * sampleWidth;
+		const windowWidth = Math.max(1, ((detailEnd - detailStart) / durationSeconds) * sampleWidth);
 		context.fillStyle = 'rgba(255,255,255,0.1)';
 		context.fillRect(windowLeft, 1, windowWidth, overviewHeight - 2);
 		context.strokeStyle = 'rgba(238,238,238,0.72)';
 		context.strokeRect(windowLeft + 0.5, 1.5, windowWidth, overviewHeight - 3);
+	});
+
+	// Playback moves two cursors; retain the sampled waveform and its bitmap.
+	$effect(() => {
+		if (!playheadCanvas || !waveform || width <= 0 || height <= 0) return;
+		const context = prepareCanvas(playheadCanvas);
+		if (!context) return;
+		context.clearRect(0, 0, width, height);
+		const detailY = overviewHeight + 8;
 
 		const safeTime = Math.max(0, Math.min(durationSeconds, currentTimeSeconds));
 		const overviewX = inset + (safeTime / durationSeconds) * sampleWidth;
 		const detailProgress =
-			detailWindow.end - detailWindow.start > 0
-				? (safeTime - detailWindow.start) / (detailWindow.end - detailWindow.start)
-				: 0;
+			detailEnd - detailStart > 0 ? (safeTime - detailStart) / (detailEnd - detailStart) : 0;
 		const detailX = inset + Math.max(0, Math.min(1, detailProgress)) * sampleWidth;
 		context.strokeStyle = 'rgba(239,68,68,0.98)';
 		for (const [x, y, lineHeight] of [
@@ -197,6 +219,7 @@
 >
 	{#if waveform}
 		<canvas bind:this={canvas} class="block"></canvas>
+		<canvas bind:this={playheadCanvas} class="pointer-events-none absolute inset-0 block"></canvas>
 	{:else if failed}
 		<div class="absolute inset-x-4 top-1/2 h-px bg-white/20" aria-hidden="true"></div>
 	{:else}

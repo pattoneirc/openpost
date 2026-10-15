@@ -1,3 +1,4 @@
+import { PublicationReviews } from "@/components/publication-reviews";
 import { NativeText as Text } from "@/components/native-text";
 import { PlatformIcon } from "@/components/platform-icon";
 import { MediaImage } from "@/components/media-image";
@@ -35,6 +36,7 @@ import {
   prefetchPublicationEditor,
   useAccounts,
   usePublication,
+  useWorkspaceCapabilities,
 } from "@/lib/queries";
 import type { PublicationActivity } from "@/lib/query-policy";
 import { getWorkspaceId } from "@/lib/api/token-store";
@@ -64,6 +66,7 @@ export default function PostScreen() {
   const { colors, spacing, typography } = theme.manifest;
   const queryClient = useQueryClient();
   const accounts = useAccounts();
+  const canEdit = Boolean(useWorkspaceCapabilities()?.can_edit);
   const [expandedDestination, setExpandedDestination] = useState<string | null>(null);
   const { id } = useLocalSearchParams<{ id: string }>();
   const [pickerStep, setPickerStep] = useState<PickerStep | null>(null);
@@ -377,176 +380,195 @@ export default function PostScreen() {
           })}
         </View>
 
-        <SectionHeader label="Actions" />
-        <View style={{ gap: spacing.small }}>
-          {status === "draft" || status === "ready" ? (
-            <>
-              <Button
-                title="Edit"
-                intent="primary"
-                onPress={() => {
-                  const scope = captureScope();
-                  void prefetchPublicationEditor(
-                    queryClient,
-                    scope.workspaceId,
-                    scope.publicationId,
-                  );
-                  router.push({
-                    pathname: "/publications/[id]/edit",
-                    params: { id: scope.publicationId },
-                  });
-                }}
-              />
-              {pub.scheduled_at ? (
-                <Button
-                  title="Schedule & queue"
-                  intent="ordinary"
-                  onPress={() =>
-                    run(
-                      async (scope) => {
-                        const { error, response } = await api().POST(
-                          "/publications/{id}/schedule",
-                          {
-                            params: { path: { id: scope.publicationId } },
-                            body: { expected_revision: pub.revision ?? 0 },
+        {pub.review_state ? (
+          <PublicationReviews key={`${pub.workspace_id}:${pub.id}`} publication={pub} />
+        ) : null}
+
+        {canEdit ? (
+          <>
+            <SectionHeader label="Actions" />
+            <View style={{ gap: spacing.small }}>
+              {status === "draft" || status === "ready" ? (
+                <>
+                  <Button
+                    title="Edit"
+                    intent="primary"
+                    onPress={() => {
+                      const scope = captureScope();
+                      void prefetchPublicationEditor(
+                        queryClient,
+                        scope.workspaceId,
+                        scope.publicationId,
+                      );
+                      router.push({
+                        pathname: "/publications/[id]/edit",
+                        params: { id: scope.publicationId },
+                      });
+                    }}
+                  />
+                  {pub.scheduled_at ? (
+                    <Button
+                      title="Schedule & queue"
+                      intent="ordinary"
+                      onPress={() =>
+                        run(
+                          async (scope) => {
+                            const { error, response } = await api().POST(
+                              "/publications/{id}/schedule",
+                              {
+                                params: { path: { id: scope.publicationId } },
+                                body: { expected_revision: pub.revision ?? 0 },
+                              },
+                            );
+                            if (error)
+                              throw new Error(await errorMessage(response, "Could not schedule"));
                           },
-                        );
-                        if (error)
-                          throw new Error(await errorMessage(response, "Could not schedule"));
+                          { activities: ["draft", "scheduled"], calendar: true, haptic: true },
+                        )
+                      }
+                    />
+                  ) : null}
+                </>
+              ) : null}
+
+              {status === "scheduled" ? (
+                <>
+                  <Button
+                    title="Reschedule"
+                    intent="ordinary"
+                    onPress={() =>
+                      setPickerStep((current) =>
+                        current
+                          ? null
+                          : firstPickerStep(Platform.OS === "android" ? "android" : "ios"),
+                      )
+                    }
+                  />
+                  <Button
+                    title="Cancel schedule"
+                    intent="destructive"
+                    onPress={() =>
+                      run(
+                        async (scope) => {
+                          const { error, response } = await api().POST(
+                            "/publications/{id}/cancel",
+                            {
+                              params: { path: { id: scope.publicationId } },
+                              body: { expected_revision: pub.revision ?? 0 },
+                            },
+                          );
+                          if (error)
+                            throw new Error(await errorMessage(response, "Could not cancel"));
+                        },
+                        { activities: ["draft", "scheduled"], calendar: true, haptic: true },
+                      )
+                    }
+                  />
+                </>
+              ) : null}
+
+              {status === "failed" ? (
+                <>
+                  <Button
+                    title="Retry failed destinations"
+                    intent="primary"
+                    onPress={() =>
+                      run(
+                        async (scope) => {
+                          const { error, response } = await api().POST(
+                            "/publications/{id}/retry-failed",
+                            {
+                              params: { path: { id: scope.publicationId } },
+                            },
+                          );
+                          if (error)
+                            throw new Error(await errorMessage(response, "Could not retry"));
+                        },
+                        { activities: ["failed", "scheduled"], calendar: true, haptic: true },
+                      )
+                    }
+                  />
+                  <Button
+                    title={
+                      pub.failure_dismissed_at
+                        ? "Restore in failed posts"
+                        : "Dismiss from failed posts"
+                    }
+                    intent="quiet"
+                    onPress={() =>
+                      run(
+                        async (scope) => {
+                          const result = pub.failure_dismissed_at
+                            ? await api().DELETE("/publications/{id}/failure-dismissal", {
+                                params: { path: { id: scope.publicationId } },
+                              })
+                            : await api().POST("/publications/{id}/failure-dismissal", {
+                                params: { path: { id: scope.publicationId } },
+                              });
+                          if (result.error)
+                            throw new Error(
+                              await errorMessage(result.response, "Could not update failed post"),
+                            );
+                        },
+                        { activities: ["failed"], haptic: true },
+                      )
+                    }
+                  />
+                </>
+              ) : null}
+
+              {(status === "failed" || status === "scheduled") && pub.revision !== undefined ? (
+                <Button
+                  title="Delete post"
+                  intent="destructive"
+                  onPress={() =>
+                    Alert.alert("Delete post?", "This removes it from the queue permanently.", [
+                      { text: "Cancel", style: "cancel" },
+                      {
+                        text: "Delete",
+                        style: "destructive",
+                        onPress: () => {
+                          void (async () => {
+                            const deleted = await run(
+                              async (scope) => {
+                                const { error, response } = await api().DELETE(
+                                  "/publications/{id}",
+                                  {
+                                    params: {
+                                      path: { id: scope.publicationId },
+                                      query: {
+                                        confirm: true,
+                                        expected_revision: pub.revision!,
+                                      },
+                                    },
+                                  },
+                                );
+                                if (error)
+                                  throw new Error(await errorMessage(response, "Could not delete"));
+                              },
+                              {
+                                activities: [status === "scheduled" ? "scheduled" : "failed"],
+                                calendar: status === "scheduled",
+                              },
+                            );
+                            if (deleted) router.back();
+                          })();
+                        },
                       },
-                      { activities: ["draft", "scheduled"], calendar: true, haptic: true },
-                    )
+                    ])
                   }
                 />
               ) : null}
-            </>
-          ) : null}
 
-          {status === "scheduled" ? (
-            <>
-              <Button
-                title="Reschedule"
-                intent="ordinary"
-                onPress={() =>
-                  setPickerStep((current) =>
-                    current ? null : firstPickerStep(Platform.OS === "android" ? "android" : "ios"),
-                  )
-                }
-              />
-              <Button
-                title="Cancel schedule"
-                intent="destructive"
-                onPress={() =>
-                  run(
-                    async (scope) => {
-                      const { error, response } = await api().POST("/publications/{id}/cancel", {
-                        params: { path: { id: scope.publicationId } },
-                        body: { expected_revision: pub.revision ?? 0 },
-                      });
-                      if (error) throw new Error(await errorMessage(response, "Could not cancel"));
-                    },
-                    { activities: ["draft", "scheduled"], calendar: true, haptic: true },
-                  )
-                }
-              />
-            </>
-          ) : null}
-
-          {status === "failed" ? (
-            <>
-              <Button
-                title="Retry failed destinations"
-                intent="primary"
-                onPress={() =>
-                  run(
-                    async (scope) => {
-                      const { error, response } = await api().POST(
-                        "/publications/{id}/retry-failed",
-                        {
-                          params: { path: { id: scope.publicationId } },
-                        },
-                      );
-                      if (error) throw new Error(await errorMessage(response, "Could not retry"));
-                    },
-                    { activities: ["failed", "scheduled"], calendar: true, haptic: true },
-                  )
-                }
-              />
-              <Button
-                title={
-                  pub.failure_dismissed_at ? "Restore in failed posts" : "Dismiss from failed posts"
-                }
-                intent="quiet"
-                onPress={() =>
-                  run(
-                    async (scope) => {
-                      const result = pub.failure_dismissed_at
-                        ? await api().DELETE("/publications/{id}/failure-dismissal", {
-                            params: { path: { id: scope.publicationId } },
-                          })
-                        : await api().POST("/publications/{id}/failure-dismissal", {
-                            params: { path: { id: scope.publicationId } },
-                          });
-                      if (result.error)
-                        throw new Error(
-                          await errorMessage(result.response, "Could not update failed post"),
-                        );
-                    },
-                    { activities: ["failed"], haptic: true },
-                  )
-                }
-              />
-            </>
-          ) : null}
-
-          {(status === "failed" || status === "scheduled") && pub.revision !== undefined ? (
-            <Button
-              title="Delete post"
-              intent="destructive"
-              onPress={() =>
-                Alert.alert("Delete post?", "This removes it from the queue permanently.", [
-                  { text: "Cancel", style: "cancel" },
-                  {
-                    text: "Delete",
-                    style: "destructive",
-                    onPress: () => {
-                      void (async () => {
-                        const deleted = await run(
-                          async (scope) => {
-                            const { error, response } = await api().DELETE("/publications/{id}", {
-                              params: {
-                                path: { id: scope.publicationId },
-                                query: {
-                                  confirm: true,
-                                  expected_revision: pub.revision!,
-                                },
-                              },
-                            });
-                            if (error)
-                              throw new Error(await errorMessage(response, "Could not delete"));
-                          },
-                          {
-                            activities: [status === "scheduled" ? "scheduled" : "failed"],
-                            calendar: status === "scheduled",
-                          },
-                        );
-                        if (deleted) router.back();
-                      })();
-                    },
-                  },
-                ])
-              }
-            />
-          ) : null}
-
-          {status === "published" ? (
-            <BodyText style={{ textAlign: "center" }}>
-              Published. Open a destination above to see the live post.
-            </BodyText>
-          ) : null}
-        </View>
-
-        {pickerStep && status === "scheduled" ? (
+              {status === "published" ? (
+                <BodyText style={{ textAlign: "center" }}>
+                  Published. Open a destination above to see the live post.
+                </BodyText>
+              ) : null}
+            </View>
+          </>
+        ) : null}
+        {canEdit && pickerStep && status === "scheduled" ? (
           <ContentSection style={{ marginTop: spacing.medium, gap: spacing.small }}>
             <DateTimePicker
               value={newDate ?? (pub.scheduled_at ? new Date(pub.scheduled_at) : nextHour())}

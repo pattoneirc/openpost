@@ -92,6 +92,7 @@ func NewPublicationBuildHandler(
 }
 
 type CreatePublicationBuildBody struct {
+	SeriesCount       int                                  `json:"series_count,omitempty" minimum:"0" maximum:"3" doc:"Plan up to three complementary posts before generating selected drafts"`
 	OptionCount       int                                  `json:"option_count,omitempty" enum:"0,4" doc:"Four complete creative alternatives, or the existing single package"`
 	WorkspaceID       string                               `json:"workspace_id" doc:"Workspace that owns the source material and destinations"`
 	Idea              string                               `json:"idea,omitempty" maxLength:"20000" doc:"Idea, note, update, or Markdown source text"`
@@ -156,6 +157,7 @@ type SavePublicationOptionInput struct {
 }
 
 func (h *PublicationBuildHandler) RegisterRoutes(api huma.API) {
+	h.registerSeriesRoutes(api)
 	huma.Register(api, huma.Operation{
 		OperationID: "plan-publication-angles", Method: http.MethodPost, Path: publicationBuildsPath + "/angles",
 		Summary: "Plan creative directions", Tags: []string{publicationBuildsTag},
@@ -359,8 +361,8 @@ func (h *PublicationBuildHandler) preparePublicationBuildRequest(
 			IdentityProviderID: decision.ProviderID, AssuredAt: h.now().UTC(),
 		},
 		Input: publicationbuilder.BuildInput{
-			OptionCount: input.Body.OptionCount,
-			Idea:        source.idea, Sources: source.sources, Destinations: destinations,
+			OptionCount: input.Body.OptionCount, SeriesCount: input.Body.SeriesCount,
+			Idea: source.idea, Sources: source.sources, Destinations: destinations,
 			Direction: source.direction, DestinationPolicy: policy,
 		},
 		ContextURLs:    source.contextURLs,

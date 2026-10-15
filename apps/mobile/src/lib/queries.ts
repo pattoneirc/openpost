@@ -184,3 +184,9 @@ export function currentWorkspaceId(): string {
 export function useWorkspaceId(): string | null {
   return useSyncExternalStore(subscribeWorkspaceId, getWorkspaceId);
 }
+
+export function useWorkspaceCapabilities() {
+  const workspaceId = useWorkspaceId();
+  const workspaces = useQuery(workspaceListQueryOptions(mobileQueryAPI));
+  return workspaces.data?.find((workspace) => workspace.id === workspaceId);
+}

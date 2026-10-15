@@ -1,12 +1,13 @@
 <script lang="ts">
-	import { workflowGraph } from './graph';
-	import type { Definition, Run } from './api';
+	import { workflowGraph, type GraphRun } from './graph';
+	import type { Definition } from './api';
 	import NodeIcon from './node-icon.svelte';
-	let { definition, run }: { definition: Definition; run?: Run } = $props();
+	let { definition, run }: { definition: Definition; run?: GraphRun } = $props();
 	const NODE_SIZE = 36;
 	const COLUMN_GAP = 58;
 	let width = $state(240);
-	const graph = $derived(workflowGraph(definition, run));
+	// Compact previews display structure and status, without validation badges.
+	const graph = $derived(workflowGraph(definition, run, []));
 	const columns = $derived(Math.max(1, Math.floor((width - 32 - NODE_SIZE) / COLUMN_GAP) + 1));
 	const nodes = $derived(graph.nodes.filter((node) => node.x / 300 < columns));
 	const hiddenCount = $derived(graph.nodes.length - nodes.length);

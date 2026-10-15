@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -6,7 +7,8 @@
 	import {
 		isMoreNavigationRoute,
 		isNavigationItemActive,
-		mobileNavigation
+		mobileNavigation,
+		primaryNavigation
 	} from '$lib/app-navigation';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -16,7 +18,14 @@
 	import MobileMoreMenu from './mobile-more-menu.svelte';
 	import { publicationView } from '$lib/stores/publication-view.svelte';
 
-	const items = mobileNavigation;
+	const items = $derived(
+		workspaceCtx.currentWorkspace?.can_edit
+			? mobileNavigation
+			: [
+					...mobileNavigation.filter((item) => item.id !== 'new'),
+					...primaryNavigation.filter((item) => item.id === 'analytics')
+				]
+	);
 	let moreMenuOpen = $state(false);
 	let moreMenuContent = $state<HTMLDivElement | null>(null);
 
@@ -32,6 +41,8 @@
 
 	function iconFor(id: (typeof items)[number]['id']): ThemeIconRole {
 		switch (id) {
+			case 'analytics':
+				return 'analytics';
 			case 'communications':
 				return 'communications';
 			case 'publications':
@@ -45,6 +56,8 @@
 
 	function labelFor(id: (typeof items)[number]['id']) {
 		switch (id) {
+			case 'analytics':
+				return m.sidebar_analytics();
 			case 'new':
 				return m.sidebar_new();
 			case 'communications':

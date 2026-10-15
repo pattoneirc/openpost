@@ -357,3 +357,15 @@ func TestPublisherRefreshesExpiredReadyXMedia(t *testing.T) {
 	require.Equal(t, "x-media-2", upload())
 	require.Equal(t, 2, adapter.uploads)
 }
+
+func TestClientReviewBlocksMediaUploadBeforeProviderWrite(t *testing.T) {
+	adapter := &fakePublisherAdapter{}
+	srv := newPublisherMediaStateTestServer(t, "youtube", adapter)
+	media := models.MediaAttachment{ID: "review-video", WorkspaceID: "ws-1", FilePath: "review.mp4", MimeType: "video/mp4", Size: int64(len(srv.storage.body)), ProcessingStatus: "ready"}
+	publication, rendition, account := srv.seedRenditionWithMedia(t, "review-post", "review-rendition", media)
+	_, err := srv.db.NewUpdate().Model((*models.Publication)(nil)).Set("review_id = 'review'").Set("review_state = 'pending'").Where("id = ?", publication.ID).Exec(t.Context())
+	require.NoError(t, err)
+	_, err = srv.service.platformMediaIDForRendition(t.Context(), &publication, &rendition, &account, adapter, "token", media)
+	require.ErrorContains(t, err, "requires approval")
+	require.Zero(t, adapter.uploadCalls)
+}

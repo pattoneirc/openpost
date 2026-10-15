@@ -27,6 +27,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 	import { EditorHistory } from '$lib/editor-history';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { getUnsavedChanges } from '$lib/unsaved-changes.svelte';
 	import { loadWorkspaceMediaFile } from '$lib/video-editor/media/workspace-source';
 	import { resolveAppPath } from '$lib/app-path';
 	import type { QuickCutMarker } from '$lib/quick-cut/types';
@@ -58,13 +59,6 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		formatTimecode,
 		segmentsOutsideMarkedRanges
 	} from '$lib/quick-cut/model';
-	import { probeSourceFile } from '$lib/quick-cut/source';
-	import {
-		preflightExport,
-		exportSegments,
-		copyScratchToWorkspace,
-		discardScratchFile
-	} from '$lib/quick-cut/export';
 	import type {
 		QuickCutSource,
 		QuickCutSourceMetadata,
@@ -72,7 +66,11 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		CutMode,
 		LoopMode
 	} from '$lib/quick-cut/types';
-	import type { PreflightResult, QuickCutExportProgress } from '$lib/quick-cut/export';
+	import type {
+		PreflightResult,
+		QuickCutExportProgress,
+		QuickCutScratchArtifact
+	} from '$lib/quick-cut/export';
 	import {
 		createNewProject,
 		listProjectsFromWorkspace,
@@ -124,7 +122,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 	} from '$lib/quick-cut/cloud-project';
 	import {
 		CloudVideoProjectConflictError,
-		type CloudVideoProject
+		type CloudVideoProjectSummary
 	} from '$lib/video-editor/cloud/project-repository';
 	import {
 		clampTimelineViewport,
@@ -167,7 +165,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 	let storageMode = $state<'cloud' | 'local'>('cloud');
 	let storageModeChosen = $state(false);
 	let cloudSession = $state.raw<QuickCutCloudSession | null>(null);
-	let cloudProjects = $state.raw<Array<CloudVideoProject<QuickCutCloudDocument>>>([]);
+	let cloudProjects = $state.raw<Array<CloudVideoProjectSummary>>([]);
 	let cloudLoading = $state(false);
 	let openingProjectId = $state<string | null>(null);
 	let cloudError = $state('');
@@ -176,6 +174,8 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 	let cloudLoadGeneration = 0;
 	let routeProjectRequest = '';
 	let disposed = false;
+	const lifetime = new AbortController();
+	const unsavedChanges = getUnsavedChanges();
 	let lastSavedProjectId = $state<string | null>(null);
 	const localGate = createWorkspaceGate();
 	let localProjects = $state<QuickCutProject[]>([]);
@@ -217,6 +217,8 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 	let individualPreflight = $state<PreflightResult | null>(null);
 	let mergedPreflight = $state<PreflightResult | null>(null);
 	let preflightGeneration = 0;
+	let preflightFailed = $state(false);
+	let exportModule = $state.raw<typeof import('$lib/quick-cut/export') | null>(null);
 	let previewWait: AbortController | null = null;
 	let sourceRemovalDialogOpen = $state(false);
 	let closeProjectDialogOpen = $state(false);
@@ -259,15 +261,32 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		const generation = ++preflightGeneration;
 		individualPreflight = null;
 		mergedPreflight = null;
-		void Promise.all([
-			preflightExport(requestSources, requestSegments, requestCutMode, false),
-			preflightExport(requestSources, requestSegments, requestCutMode, true)
-		]).then(([individual, merged]) => {
-			if (generation === preflightGeneration) {
-				individualPreflight = individual;
-				mergedPreflight = merged;
-			}
-		});
+		preflightFailed = false;
+		if (requestSegments.length === 0) return;
+		if (!exportModule) {
+			void import('$lib/quick-cut/export')
+				.then((loaded) => {
+					if (generation === preflightGeneration) exportModule = loaded;
+				})
+				.catch(() => {
+					if (generation === preflightGeneration) preflightFailed = true;
+				});
+		} else {
+			void Promise.all([
+				exportModule.preflightExport(requestSources, requestSegments, requestCutMode, false),
+				exportModule.preflightExport(requestSources, requestSegments, requestCutMode, true)
+			])
+				.then(([individual, merged]) => {
+					if (generation === preflightGeneration) {
+						individualPreflight = individual;
+						mergedPreflight = merged;
+					}
+				})
+				.catch(() => {
+					if (generation === preflightGeneration) preflightFailed = true;
+				});
+		}
+
 		return () => {
 			if (generation === preflightGeneration) preflightGeneration += 1;
 		};
@@ -382,6 +401,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 			return;
 		}
 		stopPreview();
+		unsavedChanges.clear('quick-cut');
 		await goto(resolveAppPath('/quick-cut'));
 		clearSourceUrls();
 		sources = [];
@@ -463,6 +483,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 				next.set(source.id, URL.createObjectURL(source.file));
 				sourceUrls = next;
 			}
+			saveState = 'saved';
 			await writeProjectURL(opened.project.id, 'cloud');
 			if (transcriptUnavailable) showToast(m.repurpose_transcript_storage_failed(), 'warning');
 		} catch (error) {
@@ -479,7 +500,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 	}
 
 	async function openCloudProject(
-		cloudProject: CloudVideoProject<QuickCutCloudDocument>
+		cloudProject: Pick<CloudVideoProjectSummary, 'id'>
 	): Promise<void> {
 		const repository = cloudRepository;
 		if (!repository) return;
@@ -521,8 +542,10 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 			storageModeChosen = true;
 			lastSavedProjectId = session.project.id;
 			resetHistory();
+			saveState = 'saved';
 			await writeProjectURL(projectId, 'local');
 		} catch (error) {
+			if (disposed) return;
 			showToast(error instanceof Error ? error.message : String(error), 'error');
 		} finally {
 			openingProjectId = null;
@@ -530,7 +553,20 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 	}
 
 	async function writeProjectURL(projectId: string, mode: 'cloud' | 'local'): Promise<void> {
-		const url = new URL(page.url);
+		const revision = saveRevision;
+		// Publish the saved state before navigation so the shared unsaved guard sees it.
+		await tick();
+		if (
+			disposed ||
+			revision !== saveRevision ||
+			project?.id !== projectId ||
+			storageMode !== mode ||
+			saveState === 'saving' ||
+			saveState === 'error' ||
+			unsavedChanges.hasChanges
+		)
+			return;
+		const url = new URL(window.location.href);
 		if (url.searchParams.get('project') === projectId && url.searchParams.get('storage') === mode)
 			return;
 		url.searchParams.set('project', projectId);
@@ -538,8 +574,8 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		url.searchParams.delete('source');
 		await goto(resolveAppPath(`${url.pathname}${url.search}`), {
 			replaceState: true,
-			keepFocus: true,
-			noScroll: true
+			noScroll: true,
+			keepFocus: true
 		});
 	}
 
@@ -622,6 +658,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 				handles
 			);
 		} catch (error) {
+			if (disposed) return;
 			showToast(error instanceof Error ? error.message : String(error), 'error');
 		}
 	}
@@ -670,6 +707,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 				) as FileSystemFileHandle[];
 				files = await Promise.all(handles.map((h) => h.getFile()));
 			} catch (e) {
+				if (disposed) return;
 				if (e instanceof DOMException && e.name === 'AbortError') return;
 				showToast(e instanceof Error ? e.message : String(e), 'error');
 				return;
@@ -685,7 +723,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		try {
 			await addFiles(files, handles);
 		} catch (error) {
-			showToast(error instanceof Error ? error.message : String(error), 'error');
+			if (!disposed) showToast(error instanceof Error ? error.message : String(error), 'error');
 		}
 	}
 
@@ -695,8 +733,12 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		signal?: AbortSignal
 	): Promise<void> {
 		if (files.length === 0) return;
+		signal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+		signal.throwIfAborted();
+		const { probeSourceFile } = await import('$lib/quick-cut/source');
+		signal?.throwIfAborted();
 		const imported = await Promise.all(
-			files.map((file, index) => probeSourceFile(file, handles[index]))
+			files.map((file, index) => probeSourceFile(file, handles[index], undefined, signal))
 		);
 		signal?.throwIfAborted();
 		for (let i = 0; i < files.length; i++) {
@@ -712,6 +754,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		}
 		if (!project) resetHistory();
 		await persistSourceHandles(sources);
+		signal.throwIfAborted();
 		if (!project) {
 			const metas = sources.map((s) => {
 				const { handle: _h, file: _f, ...m } = s;
@@ -1185,14 +1228,18 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		};
 		abortController = new AbortController();
 		const controller = abortController;
-		let artifacts: Awaited<ReturnType<typeof exportSegments>> = [];
+		let artifacts: QuickCutScratchArtifact[] = [];
+		let runtime: typeof import('$lib/quick-cut/export') | undefined;
 		try {
-			const pre = await preflightExport(sources, toExport, cutMode, doMerge);
+			runtime = await import('$lib/quick-cut/export');
+			controller.signal.throwIfAborted();
+			const pre = await runtime.preflightExport(sources, toExport, cutMode, doMerge);
+			controller.signal.throwIfAborted();
 			if (!pre.eligible) {
 				showToast(pre.reason, 'error');
 				return false;
 			}
-			artifacts = await exportSegments({
+			artifacts = await runtime.exportSegments({
 				sources,
 				segments: toExport,
 				cutMode,
@@ -1201,12 +1248,14 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 				onProgress: (p) => (exportProgress = p)
 			});
 			for (const art of artifacts) {
+				controller.signal.throwIfAborted();
 				if (destination === 'send') {
 					const uploaded = await sendToOpenPost({
 						workspaceId: workspaceId!,
 						blob: art.scratchFile,
 						fileName: art.fileName
 					});
+					controller.signal.throwIfAborted();
 					const returnId = page.url.searchParams.get('return');
 					const target = returnId ? `/publications/${encodeURIComponent(returnId)}` : '/';
 					const query = new URLSearchParams({
@@ -1219,12 +1268,13 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 					];
 				} else {
 					if (getWorkspaceRoot()) {
-						const saved = await copyScratchToWorkspace(
+						const saved = await runtime.copyScratchToWorkspace(
 							art.scratchFile,
 							project?.id,
 							art.fileName,
 							controller.signal
 						);
+						controller.signal.throwIfAborted();
 						showToast(`${m.quick_cut_saved()} · ${saved.relPath}`, 'success');
 					} else {
 						const url = URL.createObjectURL(art.scratchFile);
@@ -1249,6 +1299,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 			});
 			return true;
 		} catch (err) {
+			if (disposed) return false;
 			if (err instanceof DOMException && err.name === 'AbortError')
 				showToast(m.quick_cut_cancelled(), 'error');
 			else {
@@ -1263,11 +1314,14 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 			return false;
 		} finally {
 			for (const artifact of artifacts) {
-				await discardScratchFile(artifact.scratchPath).catch(() => undefined);
+				await runtime?.discardScratchFile(artifact.scratchPath).catch(() => undefined);
 			}
 			exporting = false;
 			exportProgress = null;
 			abortController = null;
+			if (project && lastSavedProjectId === project.id) {
+				await writeProjectURL(project.id, storageMode);
+			}
 		}
 	}
 
@@ -1294,8 +1348,22 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 	let saveQueue: Promise<void> = Promise.resolve();
 	let saveRevision = 0;
 
+	$effect(() => {
+		const unsavedProject =
+			project !== null &&
+			(lastSavedProjectId !== project.id ||
+				saveState === 'saving' ||
+				saveState === 'error' ||
+				(storageMode === 'local' && !getWorkspaceRoot()));
+		unsavedChanges.set(
+			'quick-cut',
+			unsavedProject || exporting,
+			m.quick_cut_close_unsaved_description()
+		);
+	});
+
 	function syncProject(): void {
-		if (!project) return;
+		if (!project || disposed) return;
 		recordHistory();
 		project.markers = markers;
 		project.segments = segments;
@@ -1323,22 +1391,21 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 						toSave,
 						sourcesToSave
 					);
-					await writeProjectURL(toSave.id, 'cloud');
 					return;
 				}
 				await saveProjectToWorkspace(toSave);
-				await writeProjectURL(toSave.id, 'local');
 			})
-			.then(() => {
-				if (revision !== saveRevision) return;
+			.then(async () => {
+				if (disposed || revision !== saveRevision) return;
 				lastSavedProjectId = toSave.id;
 				saveState = 'saved';
+				await writeProjectURL(toSave.id, saveToCloud ? 'cloud' : 'local');
 				setTimeout(() => {
-					if (revision === saveRevision && saveState === 'saved') saveState = 'idle';
+					if (!disposed && revision === saveRevision && saveState === 'saved') saveState = 'idle';
 				}, 1500);
 			})
 			.catch((error: Error) => {
-				if (revision !== saveRevision) return;
+				if (disposed || revision !== saveRevision) return;
 				saveState = 'error';
 				if (error instanceof CloudVideoProjectConflictError) {
 					cloudConflictId = error.conflictId;
@@ -1377,6 +1444,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 					file = await handle.getFile();
 				}
 			} catch (e) {
+				if (disposed) return;
 				if (e instanceof DOMException && e.name === 'AbortError') return;
 				showToast(e instanceof Error ? e.message : String(e), 'error');
 				return;
@@ -1393,7 +1461,8 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		}
 		if (!file) return;
 		try {
-			const probed = await probeSourceFile(file, handle, target.id);
+			const { probeSourceFile } = await import('$lib/quick-cut/source');
+			const probed = await probeSourceFile(file, handle, target.id, lifetime.signal);
 			const { reconciled, videoWasValid, audioWasValid } = reconcileSourceAfterProbe(
 				// SAFETY: target is QuickCutSource with same id/selection fields as QuickCutSourceMetadata
 				target as QuickCutSourceMetadata,
@@ -1412,9 +1481,11 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 			next.set(sourceId, url);
 			sourceUrls = next;
 			if (handle) await persistSourceHandles(sources.filter((s) => s.id === sourceId));
+			lifetime.signal.throwIfAborted();
 			syncProject();
 			showToast(m.quick_cut_reconnected(), 'success');
 		} catch (e) {
+			if (disposed) return;
 			showToast(e instanceof Error ? e.message : String(e), 'error');
 		}
 	}
@@ -1431,6 +1502,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 		if (!f) return;
 		const text = await f.text();
 		try {
+			lifetime.signal.throwIfAborted();
 			const parsed = deserializeProject(text);
 			segments = parsed.segments;
 			markers = parsed.markers ?? [];
@@ -1442,6 +1514,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 			// Sources are metadata only; need to reconnect handles
 			const { restoreSourceHandles } = await import('$lib/quick-cut/project');
 			const handleMap = await restoreSourceHandles(parsed.sources);
+			lifetime.signal.throwIfAborted();
 			// For missing handles, keep source entry but mark missing; user must re-add file
 			sources = parsed.sources.map((meta) => ({
 				...meta,
@@ -1453,7 +1526,8 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 				if (s.handle) {
 					try {
 						const file = await s.handle.getFile();
-						const probed = await probeSourceFile(file, s.handle, s.id);
+						const { probeSourceFile } = await import('$lib/quick-cut/source');
+						const probed = await probeSourceFile(file, s.handle, s.id, lifetime.signal);
 						const { reconciled, videoWasValid, audioWasValid } = reconcileSourceAfterProbe(
 							// SAFETY: target is QuickCutSource with same id/selection fields as QuickCutSourceMetadata
 							s as QuickCutSourceMetadata,
@@ -1468,6 +1542,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 						next.set(s.id, url);
 						sourceUrls = next;
 					} catch {
+						if (disposed) return;
 						// handle permission lost
 					}
 				}
@@ -1476,6 +1551,7 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 			syncProject();
 			showToast(m.quick_cut_project_loaded(), 'success');
 		} catch (e) {
+			if (disposed) return;
 			showToast(e instanceof Error ? e.message : String(e), 'error');
 		}
 	}
@@ -1760,6 +1836,9 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 
 	onDestroy(() => {
 		disposed = true;
+		lifetime.abort();
+		abortController?.abort();
+		unsavedChanges.clear('quick-cut');
 		stopPreview();
 		for (const url of sourceUrls.values()) URL.revokeObjectURL(url);
 	});
@@ -2428,6 +2507,19 @@ LosslessCut (GPL - behavioral reference only, no code ported).
 											}}
 										/>{m.quick_cut_merge_label()}</Label
 									>
+									{#if preflightFailed}
+										<p class="text-xs text-destructive" role="alert">
+											{m.video_editor_export_failed()}
+										</p>
+										<Button variant="outline" class="min-h-11 w-full" onclick={handleExportProject}
+											>{m.quick_cut_export_project()}</Button
+										>
+										<Button
+											variant="outline"
+											class="min-h-11 w-full"
+											onclick={() => window.location.reload()}>{m.common_refresh()}</Button
+										>
+									{/if}
 									{#if preflight}<p class="text-xs text-muted-foreground" role="status">
 											{preflight.reason}
 										</p>{/if}

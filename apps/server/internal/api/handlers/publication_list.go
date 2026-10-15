@@ -10,6 +10,7 @@ import (
 	"github.com/uptrace/bun"
 )
 
+// Matches the expression index in 160_publication_calendar_lookup.sql.
 const publicationCalendarOccurrenceSQL = `CASE
 	WHEN publication.status = 'published' THEN COALESCE(publication.actual_run_at, publication.scheduled_at, publication.updated_at, publication.created_at)
 	ELSE publication.scheduled_at

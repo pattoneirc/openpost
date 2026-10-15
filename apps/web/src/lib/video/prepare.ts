@@ -133,6 +133,7 @@ export async function prepareVideoForUpload(
 }
 
 export async function probeVideo(file: File, signal?: AbortSignal): Promise<VideoMetadata> {
+	assertNotAborted(signal);
 	const input = new Input({
 		formats: ALL_FORMATS,
 		source: new BlobSource(file)
@@ -143,6 +144,7 @@ export async function probeVideo(file: File, signal?: AbortSignal): Promise<Vide
 	signal?.addEventListener('abort', abort, { once: true });
 	try {
 		const videoTrack = await input.getPrimaryVideoTrack();
+		assertNotAborted(signal);
 		if (!videoTrack) {
 			return {
 				sizeBytes: file.size,
@@ -165,6 +167,7 @@ export async function probeVideo(file: File, signal?: AbortSignal): Promise<Vide
 			input.computeDuration()
 		]);
 		const audioCodec = audioTrack ? await audioTrack.getCodec() : null;
+		assertNotAborted(signal);
 		return {
 			sizeBytes: file.size,
 			mimeType: normalizedVideoMIME(file),
@@ -176,6 +179,9 @@ export async function probeVideo(file: File, signal?: AbortSignal): Promise<Vide
 			hasVideoTrack: true,
 			canDecode
 		};
+	} catch (cause) {
+		assertNotAborted(signal);
+		throw cause;
 	} finally {
 		signal?.removeEventListener('abort', abort);
 		if (!input.disposed) input.dispose();

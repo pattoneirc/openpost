@@ -2,15 +2,12 @@ package handlers
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humaecho"
@@ -37,6 +34,7 @@ func newNormServer(t *testing.T, providers map[string]platform.Adapter) (*echo.E
 		(*models.WorkspaceFirstConnection)(nil),
 		(*models.OAuthAccountSelectionReservation)(nil),
 	)
+	seedOAuthTestWorkspace(t, db)
 	_, err := db.NewInsert().Model(&models.WorkspaceMember{WorkspaceID: "ws-1", UserID: "user-1", Role: models.WorkspaceRoleAdmin}).Exec(ctx)
 	require.NoError(t, err)
 	if providers == nil {
@@ -83,7 +81,7 @@ func doNormCallback(t *testing.T, e *echo.Echo) *http.Response {
 	u, _ := url.Parse(body.URL)
 	state := u.Query().Get("state")
 	require.NotEmpty(t, state)
-	cb := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/"+provider+"/callback?code=code&state="+url.QueryEscape(state), nil, false)
+	cb := oauthSelectionRequest(t, e, http.MethodGet, "/api/v1/accounts/"+provider+"/callback?code=code&state="+url.QueryEscape(state), nil, true)
 	return cb.Result()
 }
 
@@ -144,27 +142,10 @@ func TestNormRoutesNewAccountWithSupportedFeaturesToComposer(t *testing.T) {
 }
 
 func TestBlueskyLoginUsesSessionIdentityWhenActorProfileIsUnavailable(t *testing.T) {
-	payload, err := json.Marshal(map[string]int64{"exp": time.Now().Add(time.Hour).Unix()})
-	require.NoError(t, err)
-	accessJWT := "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
-
-	pds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/xrpc/com.atproto.server.createSession":
-			_, _ = io.WriteString(w, `{"did":"did:plc:creator","handle":"canonical.bsky.social","accessJwt":"`+accessJWT+`","refreshJwt":"refresh-token"}`)
-		case "/xrpc/com.atproto.server.getSession":
-			_, _ = io.WriteString(w, `{"did":"did:plc:creator","handle":"canonical.bsky.social"}`)
-		case "/xrpc/app.bsky.actor.getProfile":
-			http.Error(w, `{"error":"ProfileNotFound","message":"Profile not found"}`, http.StatusServiceUnavailable)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(pds.Close)
+	const pdsURL = "https://pds.example"
 
 	e, handler := newNormServer(t, map[string]platform.Adapter{
-		"bluesky": platform.NewBlueskyAdapter(pds.URL),
+		"bluesky": &loginSessionFixture{BlueskyAdapter: platform.NewBlueskyAdapter(pdsURL), did: "did:plc:creator"},
 	})
 	handler.setBlueskyPDSResolver(func(context.Context, string) (string, string, error) {
 		return "", "", nil
@@ -179,14 +160,14 @@ func TestBlueskyLoginUsesSessionIdentityWhenActorProfileIsUnavailable(t *testing
 	var account models.SocialAccount
 	require.NoError(t, handler.db.NewSelect().Model(&account).Where("account_id = ?", "did:plc:creator").Scan(t.Context()))
 	require.Equal(t, "canonical.bsky.social", account.AccountUsername)
-	require.Equal(t, pds.URL, account.InstanceURL)
+	require.Equal(t, pdsURL, account.InstanceURL)
 	require.Empty(t, account.AccountAvatarURL)
 
 	var grant models.OAuthGrant
 	require.NoError(t, handler.db.NewSelect().Model(&grant).Where("id = ?", account.OAuthGrantID).Scan(t.Context()))
-	require.Equal(t, pds.URL, grant.ProviderProjectID)
-	require.Equal(t, pds.URL, grant.InstanceURL)
-	require.JSONEq(t, `{"exchange":"create_session","pds_url":"`+pds.URL+`","protocol":"atproto","source":"account_connection"}`, grant.AuthorizationEvidence)
+	require.Equal(t, pdsURL, grant.ProviderProjectID)
+	require.Equal(t, pdsURL, grant.InstanceURL)
+	require.JSONEq(t, `{"exchange":"create_session","pds_url":"`+pdsURL+`","protocol":"atproto","source":"account_connection"}`, grant.AuthorizationEvidence)
 }
 
 func TestOAuthProviderMapReturnsSnapshot(t *testing.T) {
@@ -204,24 +185,16 @@ func TestOAuthProviderMapReturnsSnapshot(t *testing.T) {
 
 // A hostile PDS must not be able to claim a DID the handle does not resolve to.
 func TestBlueskyLoginRejectsPDSAssertingAnotherDID(t *testing.T) {
-	payload, err := json.Marshal(map[string]int64{"exp": time.Now().Add(time.Hour).Unix()})
-	require.NoError(t, err)
-	accessJWT := "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
-
-	pds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/xrpc/com.atproto.server.createSession" {
-			_, _ = io.WriteString(w, `{"did":"did:plc:impostor","handle":"canonical.bsky.social","accessJwt":"`+accessJWT+`","refreshJwt":"refresh-token"}`)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	t.Cleanup(pds.Close)
+	const pdsURL = "https://pds.example"
 
 	e, handler := newNormServer(t, map[string]platform.Adapter{"bluesky": platform.NewBlueskyAdapter("https://bsky.social")})
 	handler.setBlueskyPDSResolver(func(context.Context, string) (string, string, error) {
-		return pds.URL, "did:plc:creator", nil
+		return pdsURL, "did:plc:creator", nil
 	})
+	handler.blueskyAdapter = func(pds string) blueskyLoginProvider {
+		return &loginSessionFixture{BlueskyAdapter: platform.NewBlueskyAdapter(pds), did: "did:plc:impostor"}
+	}
+
 	response := oauthSelectionRequest(t, e, http.MethodPost, "/api/v1/accounts/bluesky/login", map[string]string{
 		"workspace_id": "ws-1",
 		"handle":       "victim.example",
@@ -229,7 +202,7 @@ func TestBlueskyLoginRejectsPDSAssertingAnotherDID(t *testing.T) {
 	}, true)
 	require.Equal(t, http.StatusInternalServerError, response.Code)
 	require.Contains(t, response.Body.String(), "bluesky login failed")
-	require.NotContains(t, response.Body.String(), pds.URL)
+	require.NotContains(t, response.Body.String(), pdsURL)
 
 	count, err := handler.db.NewSelect().Model((*models.SocialAccount)(nil)).Count(t.Context())
 	require.NoError(t, err)
@@ -292,4 +265,16 @@ func TestNormComposerRedirectContainsOnlyContinuationData(t *testing.T) {
 	require.Empty(t, u.Query().Get("new_account_ids"))
 	require.Empty(t, u.Query().Get("open_fresh_composer"))
 	require.NotContains(t, loc, "code")
+}
+
+type loginSessionFixture struct {
+	*platform.BlueskyAdapter
+	did string
+}
+
+func (a *loginSessionFixture) CreateSession(context.Context, string, string) (string, string, string, string, int, error) {
+	return a.did, "canonical.bsky.social", "access-token", "refresh-token", 3600, nil
+}
+func (a *loginSessionFixture) GetProfile(context.Context, string) (*platform.UserProfile, error) {
+	return nil, errors.New("profile unavailable")
 }

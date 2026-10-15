@@ -25,6 +25,7 @@
 	import type { components } from '$lib/api/types';
 	import { publicationCalendarOccurrence } from '$lib/publication-calendar';
 	import CalendarDragOverlay from '$lib/calendar/calendar-drag-overlay.svelte';
+	import { createCalendarTimeIndex } from '$lib/calendar/calendar-time-index';
 	import {
 		resolveWeekCalendarTarget,
 		WeekCalendarDragController,
@@ -270,6 +271,7 @@
 		}
 		return map;
 	});
+	const calendarTimeIndex = $derived(createCalendarTimeIndex(itemsByDay, viewerTimeZone));
 	const selectedMonthDay = $derived(days.find((day) => day.key === selectedMonthDayKey) ?? null);
 	const selectedMonthDayItems = $derived(
 		selectedMonthDay ? (itemsByDay.get(selectedMonthDay.key) ?? []) : []
@@ -1072,7 +1074,7 @@
 
 	function workspaceDotStyle(workspaceId: string) {
 		const workspace = workspaces.find((candidate) => candidate.id === workspaceId);
-		return `background-color: ${workspace ? workspaceColor(workspace) : '#f97316'};`;
+		return `background-color: ${workspace ? workspaceColor(workspace) : 'var(--action-focal)'};`;
 	}
 
 	function platformLabel(platform: string) {
@@ -1125,20 +1127,11 @@
 	}
 
 	function timeParts(value: string) {
-		const parts = new Intl.DateTimeFormat('en-GB', {
-			hour: '2-digit',
-			minute: '2-digit',
-			hourCycle: 'h23',
-			timeZone: viewerTimeZone
-		}).formatToParts(new Date(value));
-		return {
-			hour: Number(parts.find((part) => part.type === 'hour')?.value ?? 0),
-			minute: Number(parts.find((part) => part.type === 'minute')?.value ?? 0)
-		};
+		return calendarTimeIndex.timeParts(value);
 	}
 
 	function itemsForHour(day: CalendarDay, hour: number) {
-		return (itemsByDay.get(day.key) ?? []).filter((item) => timeParts(item.occursAt).hour === hour);
+		return calendarTimeIndex.itemsForHour(day.key, hour);
 	}
 
 	function formatAgendaDate(value: Date) {
@@ -1786,7 +1779,9 @@
 							<div
 								class="sticky top-0 z-30 grid grid-cols-[4.5rem_repeat(7,minmax(0,1fr))] border-b bg-background/95 backdrop-blur"
 							>
-								<div class="border-r p-2 text-xs text-muted-foreground">{viewerTimeZone}</div>
+								<div class="border-r px-1 py-2 text-xs wrap-anywhere text-muted-foreground">
+									{viewerTimeZone}
+								</div>
 								{#each weekDays as day (day.key)}
 									<div
 										class={cn(

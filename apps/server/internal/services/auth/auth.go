@@ -34,6 +34,9 @@ func (s *Service) HashPassword(password string) (string, error) {
 
 func (s *Service) CheckPassword(password, hash string) bool {
 	if hash == "" {
+		// Use the same KDF cost when the account does not exist. The fixed hash
+		// is never a credential and cannot make this branch authenticate.
+		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$7EqJtq98hPqEX7fNZaFWoO5EFnENhRcwkpvaUnZeRsAG57IB6du9e"), prehashPassword(password))
 		return false
 	}
 	candidate := []byte(password)

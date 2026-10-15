@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -119,4 +120,33 @@ func (s *Service) SnapshotOrganizationMonthly(ctx context.Context, organizationI
 		snapshot[entitlements.LimitKey(row.Metric)] = row.Value
 	}
 	return snapshot, nil
+}
+
+var ErrQuotaExceeded = errors.New("monthly usage limit exceeded")
+
+// IncrementMonthlyLimitedInTransaction admits and accounts for usage in one
+// conditional database write. The caller commits it with the owning mutation.
+func IncrementMonthlyLimitedInTransaction(ctx context.Context, db bun.IDB, workspaceID string, metric entitlements.LimitKey, amount int64, at time.Time, decision entitlements.Decision) (int64, error) {
+	if amount <= 0 || workspaceID == "" || metric == "" {
+		return 0, fmt.Errorf("positive usage amount, workspace and metric are required")
+	}
+	if !decision.Allowed || (!decision.Unlimited && amount > decision.Limit) {
+		return 0, ErrQuotaExceeded
+	}
+	if decision.Unlimited {
+		return IncrementMonthlyInTransaction(ctx, db, workspaceID, metric, amount, at)
+	}
+	now := time.Now().UTC()
+	counter := models.UsageCounter{WorkspaceID: workspaceID, Metric: string(metric), PeriodStart: MonthStart(at), Value: amount, CreatedAt: now, UpdatedAt: now}
+	var value int64
+	err := db.NewInsert().Model(&counter).
+		On("CONFLICT (workspace_id, metric, period_start) DO UPDATE").
+		Set("value = usage_counter.value + EXCLUDED.value").
+		Set("updated_at = EXCLUDED.updated_at").
+		Where("usage_counter.value <= ? - EXCLUDED.value", decision.Limit).
+		Returning("value").Scan(ctx, &value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrQuotaExceeded
+	}
+	return value, err
 }

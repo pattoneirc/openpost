@@ -31,6 +31,8 @@ function seedWorkspace() {
 		avatar_url: '',
 		color: '',
 		can_edit: true,
+		can_connect: true,
+		can_approve: true,
 		role: 'admin' as const,
 		created_at: '',
 		organization_id: '',

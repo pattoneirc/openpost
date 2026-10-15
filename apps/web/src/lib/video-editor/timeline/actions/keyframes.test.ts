@@ -615,6 +615,21 @@ describe('interpolateAt', () => {
 		expect(interpolateAt(item, 'opacity', 5)).toBe(0);
 		expect(interpolateAt(item, 'opacity', 15)).toBeLessThan(0.2);
 	});
+
+	it('selects the preceding segment at exact interior keys in a longer lane', () => {
+		const item = itemWithTrack([0, 10, 20, 35, 50, 100], [0, 1, 2, 3.5, 5, 10]);
+		item.keyframes!.opacity!.easings = ['linear', 'hold', 'linear', 'hold', 'linear', 'linear'];
+		for (const [frame, expected] of [
+			[9.5, 0.95],
+			[20, 1],
+			[20.5, 2.05],
+			[50, 3.5],
+			[50.5, 5.05],
+			[100, 10]
+		]) {
+			expect(interpolateAt(item, 'opacity', frame)).toBeCloseTo(expected, 12);
+		}
+	});
 });
 
 describe('setAnimatedProperty', () => {

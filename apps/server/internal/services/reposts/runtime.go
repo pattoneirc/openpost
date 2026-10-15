@@ -16,6 +16,7 @@ import (
 	"github.com/openpost/backend/internal/services/lifecycle"
 	"github.com/openpost/backend/internal/services/organizationguard"
 	"github.com/openpost/backend/internal/services/providerwrite"
+	"github.com/openpost/backend/internal/services/publicationauth"
 	"github.com/openpost/backend/internal/services/publisher"
 	"github.com/uptrace/bun"
 )
@@ -512,10 +513,13 @@ func (s *Service) executeRepostWrite(
 	jobExecution, _ := providerwrite.JobExecutionFromContext(ctx)
 	return providerwrite.New(s.db).Execute(ctx, providerwrite.Input{
 		OperationID: fmt.Sprintf("repost:%s:stage:%d", execution.ID, execution.CurrentStage),
-		JobID:       jobExecution.ID, WorkspaceID: execution.WorkspaceID,
+		JobID:       jobExecution.ID, WorkspaceID: execution.WorkspaceID, PublicationID: execution.PublicationID,
 		SocialAccountID: target.ID, TargetKey: repostProviderKey(target),
 		Provider: target.Platform, Operation: "repost", PayloadFingerprint: fingerprint,
 	}, func(sendCtx context.Context, control *providerwrite.Control) (platform.PublishResult, error) {
+		if err := publicationauth.RequireUnreviewedRepost(sendCtx, s.db, execution.PublicationID); err != nil {
+			return platform.PublishResult{}, err
+		}
 		allowed, reason, quotaErr := s.checkProviderWriteQuota(sendCtx, execution.WorkspaceID)
 		if quotaErr != nil {
 			return platform.PublishResult{}, quotaErr

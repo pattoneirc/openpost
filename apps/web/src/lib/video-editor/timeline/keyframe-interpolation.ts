@@ -1,6 +1,7 @@
 import type { KeyframeProperty, KeyframeTrack, TimelineItem } from '../project/types';
 import { applyEasing, applyEasingConfig } from './easing';
 import { activePositionKeyframes, interpolatePosition } from './vector-keyframes';
+import { keyframeSegmentEnd } from './keyframe-search';
 
 /** Evaluate one property at an item-relative frame without touching editor state. */
 export function interpolateAt(
@@ -19,16 +20,13 @@ export function interpolateAt(
 	if (frame <= frames[0]) return values[0];
 	const last = frames.length - 1;
 	if (frame >= frames[last]) return values[last];
-	for (let index = 1; index <= last; index++) {
-		if (frame > frames[index]) continue;
-		const progress = (frame - frames[index - 1]) / (frames[index] - frames[index - 1]);
-		const easingConfig = track.easingConfigs?.[index - 1] ?? undefined;
-		const easedProgress = easingConfig
-			? applyEasingConfig(progress, easingConfig)
-			: applyEasing(progress, track.easings?.[index - 1] ?? 'linear');
-		return values[index - 1] + easedProgress * (values[index] - values[index - 1]);
-	}
-	return values[last];
+	const index = keyframeSegmentEnd(frames, frame);
+	const progress = (frame - frames[index - 1]) / (frames[index] - frames[index - 1]);
+	const easingConfig = track.easingConfigs?.[index - 1] ?? undefined;
+	const easedProgress = easingConfig
+		? applyEasingConfig(progress, easingConfig)
+		: applyEasing(progress, track.easings?.[index - 1] ?? 'linear');
+	return values[index - 1] + easedProgress * (values[index] - values[index - 1]);
 }
 
 /** Evaluate one property at an absolute timeline frame. */

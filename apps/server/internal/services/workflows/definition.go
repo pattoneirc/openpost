@@ -109,6 +109,9 @@ func validateStep(step Step, available map[string]bool, complete bool) error {
 			return fmt.Errorf("%s: %s: %w", step.Name, name, err)
 		}
 	}
+	if err := validateHTTPAuthentication(step); err != nil {
+		return err
+	}
 	if !complete {
 		return nil
 	}
@@ -157,6 +160,18 @@ func validateJSONInputs(step Step) error {
 	return nil
 }
 func validateHTTPAuthentication(step Step) error {
+	if step.Kind == KindHTTP {
+		inputs := map[string]any{}
+		for name, binding := range step.Inputs {
+			if binding.Reference == "" {
+				inputs[name] = binding.Literal
+			}
+		}
+		if err := validateInlineCredentials(inputs); err != nil {
+			return invalid(err.Error())
+		}
+	}
+
 	if step.Kind == KindHTTP && step.Inputs["headers"].Reference == "" {
 		headers, err := stringMap(step.Inputs["headers"].Literal)
 		if err != nil {

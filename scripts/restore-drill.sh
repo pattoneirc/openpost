@@ -57,9 +57,9 @@ workspace_count=$(
 	"$podman_bin" exec "$postgres_container" psql -Atqc \
 		"SELECT count(*) FROM workspaces" -U "$postgres_user" -d "$restore_database"
 )
-post_count=$(
+publication_count=$(
 	"$podman_bin" exec "$postgres_container" psql -Atqc \
-		"SELECT count(*) FROM posts" -U "$postgres_user" -d "$restore_database"
+		"SELECT count(*) FROM publications" -U "$postgres_user" -d "$restore_database"
 )
 database_media_count=$(
 	"$podman_bin" exec "$postgres_container" psql -Atqc \
@@ -97,13 +97,13 @@ echo "backup_bytes=$backup_size"
 echo "public_tables=$table_count"
 echo "users=$user_count"
 echo "workspaces=$workspace_count"
-echo "posts=$post_count"
+echo "publications=$publication_count"
 echo "database_media=$database_media_count"
 echo "media_snapshot=$media_status"
 echo "media_files=$media_file_count"
 
 if [[ -n "$evidence_path" ]]; then
-	install -d -m 0750 "$(dirname "$evidence_path")"
+	mkdir -p -m 0750 "$(dirname "$evidence_path")"
 	{
 		printf '{\n'
 		printf '  "status": "passed",\n'
@@ -113,7 +113,7 @@ if [[ -n "$evidence_path" ]]; then
 		printf '  "public_tables": %s,\n' "$table_count"
 		printf '  "users": %s,\n' "$user_count"
 		printf '  "workspaces": %s,\n' "$workspace_count"
-		printf '  "posts": %s,\n' "$post_count"
+		printf '  "publications": %s,\n' "$publication_count"
 		printf '  "database_media": %s,\n' "$database_media_count"
 		printf '  "media_snapshot": "%s",\n' "$media_status"
 		printf '  "media_files": %s\n' "$media_file_count"

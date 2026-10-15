@@ -11,12 +11,14 @@
 	import { queryClient } from '$lib/query/client';
 	import { ui } from '$lib/stores/ui.svelte';
 	import { workflowQueryAPI } from '$lib/query/workflows';
+	import { readQueryErrorMessage } from '$lib/query/error-message';
 	import { queryAPI } from '$lib/query/api';
 	import { approveRun, cancelRun } from './api';
 	import { runStateLabel } from './catalog';
 	import { Button } from '$lib/components/ui/button';
 	import ApprovalContent from './approval-content.svelte';
 	import InlineNotice from '$lib/components/inline-notice.svelte';
+	import PageLoading from '$lib/components/page-loading.svelte';
 	import { workspaceCtx } from '$lib/stores/workspace.svelte';
 	import { m } from '$lib/paraglide/messages';
 	let {
@@ -26,6 +28,7 @@
 	}: { workspaceID: string; runID: string; accounts: SocialAccount[] } = $props();
 	const usageSchema = z.object({ total_tokens: z.number(), cost_usd: z.number().nullish() });
 	const canAdmin = $derived(workspaceCtx.currentWorkspace?.role === 'admin');
+	const canApprove = $derived(workspaceCtx.currentWorkspace?.can_approve ?? false);
 	const runQuery = createQuery(() => ({
 		...workflowRunQueryOptions(workflowQueryAPI, workspaceID, runID),
 		refetchInterval: (query) =>
@@ -105,7 +108,17 @@
 <div class="space-y-4" aria-live="polite">
 	{#if error || runQuery.error}<InlineNotice
 			tone="error"
-			message={error || String(runQuery.error)}
+			message={error || readQueryErrorMessage(runQuery.error) || m.workflows_load_failed()}
+			>{#snippet actions()}{#if runQuery.error}<Button
+						variant="outline"
+						size="sm"
+						onclick={() => runQuery.refetch()}>{m.common_retry()}</Button
+					>{/if}{/snippet}</InlineNotice
+		>{/if}
+	{#if runQuery.isPending && !runQuery.error}<PageLoading
+			layout="list"
+			items={3}
+			label={m.common_loading()}
 		/>{/if}
 	{#if run}
 		<div class="flex flex-wrap items-center justify-between gap-3">
@@ -142,7 +155,7 @@
 				<h3 class="text-sm font-medium">{m.workflows_approval()}</h3>
 				{#if publicationQuery.error}<InlineNotice
 						tone="error"
-						message={String(publicationQuery.error)}
+						message={readQueryErrorMessage(publicationQuery.error) || m.workflows_load_failed()}
 					/>{/if}
 				{#if publicationQuery.data}
 					<p class="text-xs text-muted-foreground">
@@ -156,7 +169,10 @@
 						<Button variant="outline" href={`/publications/${publicationID}`}
 							>{m.workflows_edit()}</Button
 						><Button
-							disabled={!canAdmin || busy || refreshing || publicationQuery.data.status !== 'draft'}
+							disabled={!canApprove ||
+								busy ||
+								refreshing ||
+								publicationQuery.data.status !== 'draft'}
 							onclick={() => act('approve')}>{m.workflows_approve()}</Button
 						>
 					</div>

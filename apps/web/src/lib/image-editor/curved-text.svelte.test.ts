@@ -2,7 +2,7 @@ import { loadEditorBrandFonts } from '$lib/editor-fonts';
 import fontURL from '../../../../../assets/brand/fonts/Geist-Regular.ttf?url';
 import { registerLocalImageEditorMedia, releaseLocalImageEditorMedia } from './local-media-url';
 import { imageEditorTextFontFamily } from './fonts';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
 import { blankImageEditorDocument, defaultTransform } from './document';
 import { renderImageEditorPage } from './static-renderer';
@@ -280,46 +280,142 @@ it.each([
 	}
 );
 
-it('keeps the editable textarea and caret while reshaping a curved text edit', async () => {
-	let authored = fixture('لا');
-	const canvas = document.createElement('canvas');
-	document.body.append(canvas);
-	const adapter = new OpenPostFabricAdapter({
-		canvas,
-		document: authored,
-		page: authored.pages[0],
-		readOnly: false,
-		onSelection() {},
-		onTransform() {},
-		onTextChange(_id, text, edit) {
-			const value = editTextWithRuns(authored.pages[0].layers[0].text!, text, edit);
-			authored = structuredClone(authored);
-			authored.pages[0].layers[0].text = value;
-			adapter.accept(authored, authored.pages[0]);
-			return value;
+it.each([false, true])(
+	'keeps the editable textarea, caret, and artwork while reshaping curved text (stroke: %s)',
+	async (stroke) => {
+		let authored = fixture('لا');
+		if (stroke)
+			authored.pages[0].layers[0].effects = {
+				blend_mode: 'normal',
+				stroke: { color: '#ff0000', width: 3, opacity: 1, position: 'outside' }
+			};
+		const canvas = document.createElement('canvas');
+		document.body.append(canvas);
+		const adapter = new OpenPostFabricAdapter({
+			canvas,
+			document: authored,
+			page: authored.pages[0],
+			readOnly: false,
+			onSelection() {},
+			onTransform() {},
+			onTextChange(_id, text, edit) {
+				const value = editTextWithRuns(authored.pages[0].layers[0].text!, text, edit);
+				authored = structuredClone(authored);
+				authored.pages[0].layers[0].text = value;
+				adapter.accept(authored, authored.pages[0]);
+				return value;
+			}
+		});
+		try {
+			await adapter.mount();
+			adapter.enterTextEditing('arabic');
+			const textarea = document.querySelector<HTMLTextAreaElement>(
+				'textarea[data-fabric="textarea"]'
+			)!;
+			expect(textarea).not.toBeNull();
+			await userEvent.type(textarea, 'مرحبا');
+			expect(document.querySelector('textarea[data-fabric="textarea"]')).toBe(textarea);
+			expect(textarea.selectionStart).toBe('مرحبا'.length);
+			expect(authored.pages[0].layers[0].text!.text).toBe('مرحبا');
+			await userEvent.keyboard('{Escape}');
+			const exported = await exportedCanvas(authored);
+			adapter.setSelection([]);
+			const expected = pixels(exported);
+			await expect
+				.poll(() => pixels(canvas).every((value, index) => value === expected[index]))
+				.toBe(true);
+		} finally {
+			adapter.dispose();
+			canvas.remove();
 		}
-	});
-	try {
-		await adapter.mount();
-		adapter.enterTextEditing('arabic');
-		const textarea = document.querySelector<HTMLTextAreaElement>(
-			'textarea[data-fabric="textarea"]'
-		)!;
-		expect(textarea).not.toBeNull();
-		await userEvent.type(textarea, 'مرحبا');
-		expect(document.querySelector('textarea[data-fabric="textarea"]')).toBe(textarea);
-		expect(textarea.selectionStart).toBe('مرحبا'.length);
-		expect(authored.pages[0].layers[0].text!.text).toBe('مرحبا');
-		await userEvent.keyboard('{Escape}');
-		await adapter.sync(authored, authored.pages[0]);
-		const exported = await exportedCanvas(authored);
-		adapter.setSelection([]);
-		const expected = pixels(exported);
-		await expect
-			.poll(() => pixels(canvas).every((value, index) => value === expected[index]))
-			.toBe(true);
-	} finally {
-		adapter.dispose();
-		canvas.remove();
 	}
-});
+);
+
+it.each(['lock', 'rename'])(
+	'finishes accepted curved text when an ancestor %s interrupts image decoding',
+	async (change) => {
+		let authored = fixture('لا');
+		authored.pages[0].layers[0].effects = {
+			blend_mode: 'normal',
+			stroke: { color: '#ff0000', width: 3, opacity: 1, position: 'outside' }
+		};
+		const root = {
+			id: 'group',
+			type: 'group' as const,
+			name: 'Group',
+			visible: true,
+			locked: false,
+			opacity: 1,
+			transform: defaultTransform(640, 320, 0, 0)
+		};
+		authored.pages[0].layers = [{ ...authored.pages[0].layers[0], parent_id: root.id }, root];
+		const canvas = document.createElement('canvas');
+		document.body.append(canvas);
+		const adapter = new OpenPostFabricAdapter({
+			canvas,
+			document: authored,
+			page: authored.pages[0],
+			readOnly: false,
+			onSelection() {},
+			onTransform() {},
+			onTextChange(_id, text, edit) {
+				const page = authored.pages[0];
+				const layer = page.layers[0];
+				const value = editTextWithRuns(layer.text!, text, edit);
+				authored = { ...authored, pages: [{ ...page, layers: [{ ...layer, text: value }, root] }] };
+				adapter.accept(authored, authored.pages[0]);
+				return value;
+			}
+		});
+		const held = Promise.withResolvers<void>();
+		const started = Promise.withResolvers<void>();
+		const original = HTMLImageElement.prototype.decode;
+		let restoreDecode = () => {};
+		try {
+			await adapter.mount();
+			adapter.enterTextEditing('arabic');
+			const decoder = vi
+				.spyOn(HTMLImageElement.prototype, 'decode')
+				.mockImplementationOnce(function (this: HTMLImageElement) {
+					const decoding = original.call(this);
+					started.resolve();
+					return held.promise.then(() => decoding);
+				});
+			restoreDecode = () => decoder.mockRestore();
+			const textarea = document.querySelector<HTMLTextAreaElement>(
+				'textarea[data-fabric="textarea"]'
+			)!;
+			await userEvent.type(textarea, 'W');
+			await started.promise;
+			expect(authored.pages[0].layers[0].text!.text).toBe('W');
+			await userEvent.keyboard('{Escape}');
+			const page = authored.pages[0];
+			authored = {
+				...authored,
+				pages: [
+					{
+						...page,
+						layers: [
+							page.layers[0],
+							{ ...root, ...(change === 'lock' ? { locked: true } : { name: 'Renamed' }) }
+						]
+					}
+				]
+			};
+			await adapter.sync(authored, authored.pages[0]);
+			held.resolve();
+			restoreDecode();
+			adapter.setSelection([]);
+			const exported = await exportedCanvas(authored);
+			const expected = pixels(exported);
+			await expect
+				.poll(() => pixels(canvas).every((value, index) => value === expected[index]))
+				.toBe(true);
+		} finally {
+			held.resolve();
+			restoreDecode();
+			adapter.dispose();
+			canvas.remove();
+		}
+	}
+);

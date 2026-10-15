@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
 	"strings"
@@ -48,8 +49,8 @@ func decodeManifest(raw []byte, validation manifestValidation) (ThemeManifest, e
 	if err := decoder.Decode(&manifest); err != nil {
 		return ThemeManifest{}, fmt.Errorf("%w: %v", ErrInvalidManifest, err)
 	}
-	if decoder.Decode(&struct{}{}) == nil {
-		return ThemeManifest{}, fmt.Errorf("%w: multiple JSON values", ErrInvalidManifest)
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return ThemeManifest{}, fmt.Errorf("%w: manifest must contain exactly one JSON object", ErrInvalidManifest)
 	}
 	return normalizeManifest(manifest, validation)
 }

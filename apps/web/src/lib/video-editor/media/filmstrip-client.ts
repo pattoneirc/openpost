@@ -86,7 +86,10 @@ function getMaxConcurrentExtractions(): number {
 }
 
 class FilmstripCacheService {
-	private cache = new SizedAccessedMemoryCache<FilmstripCacheEntry>(MEMORY_SOFT_LIMIT_BYTES);
+	private cache = new SizedAccessedMemoryCache<FilmstripCacheEntry>(MEMORY_SOFT_LIMIT_BYTES, {
+		onEvict: (_mediaId, entry) => revokeFrames(entry.filmstrip),
+		isPinned: (mediaId) => this.isPinned(mediaId)
+	});
 	private pendingExtractions = new Map<
 		string,
 		{ requestId: string; targetIndices: number[]; frames: Map<number, string | null> }
@@ -105,7 +108,7 @@ class FilmstripCacheService {
 	private pendingPersistence = new Map<string, Promise<void>>();
 	private taskRevisions = new Map<string, number>();
 	private cancelExtractions = new Map<string, () => void>();
-	private cancelRequested = new Set<string>();
+	private cancelRequested = new Map<string, number>();
 
 	private readonly workerPool = createManagedWorkerPool({
 		createWorker: () =>
@@ -189,9 +192,11 @@ class FilmstripCacheService {
 			options.targetFrameIndices
 		);
 
+		const version = this.cacheVersions.get(media.id) ?? 0;
 		const loading = this.loadingPromises.get(media.id);
 		if (loading) {
 			return loading.then((loaded) => {
+				if (!this.cacheIsCurrent(media.id, version)) return emptyFilmstrip();
 				const current = this.cachedFilmstrip(media.id) ?? loaded;
 				if ((options.allowExtraction ?? true) && this.missingTargets(current, targetIndices)) {
 					return this.getFilmstrip(media, options);
@@ -205,7 +210,6 @@ class FilmstripCacheService {
 			return cached;
 		}
 
-		const version = this.cacheVersions.get(media.id) ?? 0;
 		const finishProfile = startProfileSpan('Media', 'Load filmstrip');
 		const promise = this.loadPersistedOrExtract(
 			media,
@@ -220,7 +224,10 @@ class FilmstripCacheService {
 		} finally {
 			finishProfile?.();
 			const current = this.loadingPromises.get(media.id);
-			if (current === promise) this.loadingPromises.delete(media.id);
+			if (current === promise) {
+				this.loadingPromises.delete(media.id);
+				this.scheduleIdleEviction(media.id);
+			}
 		}
 	}
 
@@ -232,7 +239,10 @@ class FilmstripCacheService {
 		version: number
 	): Promise<Filmstrip> {
 		const persisted = await loadFilmstrip(media.id);
-		if (!this.cacheIsCurrent(media.id, version)) return emptyFilmstrip();
+		if (!this.cacheIsCurrent(media.id, version)) {
+			revokeFrames({ frames: persisted });
+			return emptyFilmstrip();
+		}
 		if (persisted.length > 0) {
 			const filmstrip: Filmstrip = {
 				frames: persisted,
@@ -260,6 +270,9 @@ class FilmstripCacheService {
 	}
 
 	clearAll(): void {
+		for (const mediaId of this.loadingPromises.keys()) {
+			this.cacheVersions.set(mediaId, (this.cacheVersions.get(mediaId) ?? 0) + 1);
+		}
 		for (const mediaId of this.taskRevisions.keys()) {
 			this.requestCancel(mediaId);
 			mediaTasks.finish(mediaTaskId('filmstrip', mediaId));
@@ -335,7 +348,11 @@ class FilmstripCacheService {
 			this.finishTask(media.id, taskRevision);
 			throw error;
 		}
-		if (this.cancelRequested.delete(media.id)) {
+		if (!this.cacheIsCurrent(media.id, version)) {
+			this.finishTask(media.id, taskRevision);
+			throw new DOMException('Filmstrip extraction cancelled', 'AbortError');
+		}
+		if (this.consumeCancelRequest(media.id, taskRevision)) {
 			this.finishTask(media.id, taskRevision);
 			this.markExtractionStopped(media.id);
 			throw new DOMException('Filmstrip extraction cancelled', 'AbortError');
@@ -375,7 +392,7 @@ class FilmstripCacheService {
 					reject
 				);
 			});
-			if (this.cancelRequested.delete(media.id)) {
+			if (this.consumeCancelRequest(media.id, taskRevision)) {
 				cancelQueued();
 				return;
 			}
@@ -464,13 +481,15 @@ class FilmstripCacheService {
 			const current = this.cacheIsCurrent(media.id, version);
 
 			if (message.type === 'progress') {
-				if (!current) return;
+				if (!current) {
+					for (const transferred of message.bitmapFrames) transferred.bitmap.close();
+					return;
+				}
 				for (const transferred of message.bitmapFrames) {
 					bitmaps.get(transferred.index)?.close();
 					bitmaps.set(transferred.index, transferred.bitmap);
 				}
 				for (const saved of message.savedFrames) {
-					pendingFrameUrlRevoker(this.cache.get(media.id)?.filmstrip, saved.index);
 					frames.set(saved.index, URL.createObjectURL(saved.blob));
 					void this.queuePersistence(media.id, () =>
 						saveFilmstripFrame(media.id, saved.index, saved.blob)
@@ -500,6 +519,7 @@ class FilmstripCacheService {
 				}
 				for (const index of message.unavailableIndices ?? []) {
 					frames.delete(index);
+					bitmaps.delete(index);
 				}
 				const filmstrip: Filmstrip = {
 					frames: sortFrames(frames, bitmaps),
@@ -522,18 +542,20 @@ class FilmstripCacheService {
 
 			if (message.type === 'error') {
 				if (!cleanup()) return;
+				this.markExtractionStopped(media.id);
 				reject(new Error(message.error));
 			}
 		};
 
 		const onError = (event: ErrorEvent) => {
 			if (!cleanup()) return;
+			this.markExtractionStopped(media.id);
 			reject(new Error(event.message));
 		};
 
 		worker.addEventListener('message', onMessage);
 		worker.addEventListener('error', onError);
-		if (this.cancelRequested.delete(media.id)) {
+		if (this.consumeCancelRequest(media.id, taskRevision)) {
 			cancelActive();
 			return;
 		}
@@ -549,13 +571,21 @@ class FilmstripCacheService {
 	}
 
 	private requestCancel(mediaId: string): void {
-		if (!this.taskRevisions.has(mediaId)) return;
+		const revision = this.taskRevisions.get(mediaId);
+		if (revision === undefined) return;
 		const cancel = this.cancelExtractions.get(mediaId);
 		if (cancel) cancel();
-		else this.cancelRequested.add(mediaId);
+		else this.cancelRequested.set(mediaId, revision);
+	}
+
+	private consumeCancelRequest(mediaId: string, revision: number): boolean {
+		if (this.cancelRequested.get(mediaId) !== revision) return false;
+		this.cancelRequested.delete(mediaId);
+		return true;
 	}
 
 	private finishTask(mediaId: string, revision: number): void {
+		this.consumeCancelRequest(mediaId, revision);
 		mediaTasks.finish(mediaTaskId('filmstrip', mediaId), revision);
 		if (this.taskRevisions.get(mediaId) === revision) this.taskRevisions.delete(mediaId);
 	}
@@ -616,10 +646,6 @@ class FilmstripCacheService {
 	}
 
 	private dropEntry(mediaId: string): void {
-		const entry = this.cache.get(mediaId);
-		if (entry) {
-			revokeFrames(entry.filmstrip);
-		}
 		this.cache.delete(mediaId);
 	}
 
@@ -629,18 +655,14 @@ class FilmstripCacheService {
 		this.lastMemoryCheckAt = now;
 
 		while (this.cache.sizeBytes > MEMORY_SOFT_LIMIT_BYTES && this.cache.keys().length > 0) {
-			const evictable = this.cache
-				.keys()
-				.filter(
-					(mediaId) => !this.hasSubscribers(mediaId) && !this.pendingExtractions.has(mediaId)
-				);
+			const evictable = this.cache.keys().filter((mediaId) => !this.isPinned(mediaId));
 			if (evictable.length === 0) break;
-			// Drop the oldest-accessed evictable entry; SizedAccessedMemoryCache
-			// would pick strictly-oldest overall but subscribers must survive.
+			// Retry the budget after extraction releases entries that were pinned
+			// during insertion. Reading timestamps must not change their LRU order.
 			let oldestId: string | null = null;
 			let oldestTime = Number.POSITIVE_INFINITY;
 			for (const mediaId of evictable) {
-				const accessed = this.cache.get(mediaId)?.lastAccessed ?? 0;
+				const accessed = this.cache.peek(mediaId)?.lastAccessed ?? 0;
 				if (accessed < oldestTime) {
 					oldestTime = accessed;
 					oldestId = mediaId;
@@ -656,15 +678,23 @@ class FilmstripCacheService {
 		return !!callbacks && callbacks.size > 0;
 	}
 
+	private isPinned(mediaId: string): boolean {
+		return (
+			this.hasSubscribers(mediaId) ||
+			this.loadingPromises.has(mediaId) ||
+			this.pendingExtractions.has(mediaId)
+		);
+	}
+
 	private scheduleIdleEviction(mediaId: string): void {
 		this.clearIdleTimer(mediaId);
-		if (this.pendingExtractions.has(mediaId)) return;
+		if (this.isPinned(mediaId)) return;
 		if (!this.cache.get(mediaId)) return;
 		this.idleTimers.set(
 			mediaId,
 			setTimeout(() => {
 				this.idleTimers.delete(mediaId);
-				if (this.hasSubscribers(mediaId) || this.pendingExtractions.has(mediaId)) return;
+				if (this.isPinned(mediaId)) return;
 				this.dropEntry(mediaId);
 			}, CACHE_EVICT_IDLE_MS)
 		);
@@ -684,7 +714,7 @@ function emptyFilmstrip(): Filmstrip {
 }
 
 async function resolveMediaBlobForFilmstrip(media: MediaMetadata): Promise<Blob> {
-	const { resolveMediaBlob } = await import('./import.svelte');
+	const { resolveMediaBlob } = await import('./resolve-media-blob');
 	return resolveMediaBlob(media);
 }
 
@@ -692,28 +722,21 @@ function sortFrames(
 	frames: Map<number, string | null>,
 	bitmaps: Map<number, ImageBitmap> = new Map()
 ): FilmstripFrame[] {
-	return [...frames.entries()]
-		.sort((a, b) => a[0] - b[0])
-		.map(([index, url]) => ({ index, url, bitmap: bitmaps.get(index) }));
+	return [...new Set([...frames.keys(), ...bitmaps.keys()])]
+		.sort((a, b) => a - b)
+		.map((index) => ({ index, url: frames.get(index) ?? null, bitmap: bitmaps.get(index) }));
 }
 
 function closeReplacedFrames(previous: Filmstrip, next: Filmstrip): void {
 	const retained = new Set(next.frames.map((frame) => frame.url));
+	const retainedBitmaps = new Set(next.frames.map((frame) => frame.bitmap));
 	for (const frame of previous.frames) {
 		if (frame.url && !retained.has(frame.url)) URL.revokeObjectURL(frame.url);
-		if (frame.bitmap && !next.frames.some((candidate) => candidate.bitmap === frame.bitmap))
-			frame.bitmap.close();
+		if (frame.bitmap && !retainedBitmaps.has(frame.bitmap)) frame.bitmap.close();
 	}
 }
 
-function pendingFrameUrlRevoker(previous: Filmstrip | undefined, index: number): void {
-	if (!previous) return;
-	const frame = previous.frames.find((candidate) => candidate.index === index);
-	if (frame?.url) URL.revokeObjectURL(frame.url);
-	frame?.bitmap?.close();
-}
-
-function revokeFrames(filmstrip: Filmstrip): void {
+function revokeFrames(filmstrip: Pick<Filmstrip, 'frames'>): void {
 	for (const frame of filmstrip.frames) {
 		if (frame.url) URL.revokeObjectURL(frame.url);
 		frame.bitmap?.close();

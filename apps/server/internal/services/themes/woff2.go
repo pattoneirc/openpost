@@ -34,6 +34,34 @@ type woff2Table struct {
 	transformed       bool
 }
 
+// ValidateFontContent checks the complete uploaded font container without theme
+// metadata restrictions. Brand fonts can include variable fonts.
+func ValidateFontContent(content []byte, format string) error {
+	if len(content) < 12 || len(content) > maxDecodedThemeFontBytes {
+		return fmt.Errorf("font size is invalid")
+	}
+	var tables map[string][]byte
+	var err error
+	if format == "woff2" {
+		tables, err = decodeWOFF2Tables(content)
+	} else {
+		tables, err = decodeSFNTTables(content)
+	}
+	if err != nil {
+		return err
+	}
+	if err := validateSFNTStructure(tables, format); err != nil {
+		return err
+	}
+	if _, ok := tables["cmap"]; !ok {
+		return fmt.Errorf("font is missing character mappings")
+	}
+	if _, ok := tables["name"]; !ok {
+		return fmt.Errorf("font is missing names")
+	}
+	return nil
+}
+
 func validateWOFF2(content []byte, expectedFamily string, expectedWeight int, expectedStyle string) error {
 	tables, err := decodeWOFF2Tables(content)
 	if err != nil {
@@ -346,6 +374,7 @@ func decodeWOFF2Tables(content []byte) (map[string][]byte, error) {
 	}
 
 	tables := make(map[string][]byte, numTables)
+	hasTransformedMetrics := false
 	offset = 0
 	for _, table := range directory {
 		end := offset + int(table.transformedLength)
@@ -354,8 +383,19 @@ func decodeWOFF2Tables(content []byte) (map[string][]byte, error) {
 		}
 		if !table.transformed {
 			tables[table.tag] = decoded[offset:end]
+		} else if table.tag == "hmtx" {
+			hasTransformedMetrics = true
 		}
 		offset = end
+	}
+	if hasTransformedMetrics {
+		// The bounded container checks above precede reconstruction. The maintained
+		// decoder restores omitted side bearings from glyph outlines and locations.
+		sfnt, err := convertWOFF2ToSFNT(content)
+		if err != nil {
+			return nil, fmt.Errorf("WOFF2 transformed metrics are invalid: %w", err)
+		}
+		return decodeSFNTTables(sfnt)
 	}
 	return tables, nil
 }

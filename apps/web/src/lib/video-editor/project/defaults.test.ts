@@ -7,7 +7,7 @@ import {
 	normalizeProject,
 	CURRENT_SCHEMA_VERSION
 } from './defaults';
-import type { Project } from './types';
+import type { KeyframeTrack, Project, TimelineItem } from './types';
 
 afterEach(() => setLocale('en', { reload: false }));
 
@@ -167,5 +167,53 @@ describe('createBlankProject', () => {
 		expect(second.warnings).toEqual([]);
 		expect(second.appliedMigrations).toEqual([]);
 		expect(second.migrated).toBe(false);
+	});
+
+	it('orders imported animation lanes without detaching values, easing, or identities', () => {
+		const stored = createBlankProject('Unordered animation');
+		const track: KeyframeTrack = {
+			frames: [0, 30, 10, 20, 40],
+			values: [0, 30, 100, 200, 40],
+			ids: ['zero', 'thirty', 'ten', 'twenty', 'forty'],
+			easings: ['linear', 'linear', 'hold', 'ease-in', 'ease-out'],
+			easingConfigs: [
+				null,
+				null,
+				{ type: 'spring', spring: { tension: 100, friction: 10, mass: 1 } },
+				null,
+				null
+			],
+			sources: [null, null, null, null, null]
+		};
+		const item: TimelineItem = {
+			id: 'clip',
+			trackId: 'track-video-main',
+			type: 'video',
+			from: 0,
+			durationInFrames: 50,
+			label: 'Clip',
+			keyframes: { rotation: track, opacity: undefined },
+			vectorKeyframes: {
+				scale: undefined,
+				position: [
+					{ id: 'last', frame: 20, value: { x: 200, y: 100 }, easing: 'hold' },
+					{ id: 'first', frame: 0, value: { x: 0, y: 0 }, easing: 'linear' }
+				]
+			}
+		};
+		stored.timeline!.items = [item];
+		const result = migrateProjectDocument(stored).project.timeline!.items[0];
+		expect(result.keyframes?.rotation).toMatchObject({
+			frames: [0, 10, 20, 30, 40],
+			values: [0, 100, 200, 30, 40],
+			ids: ['zero', 'ten', 'twenty', 'thirty', 'forty'],
+			easings: ['linear', 'hold', 'ease-in', 'linear', 'ease-out'],
+			easingConfigs: [null, track.easingConfigs![2], null, null, null]
+		});
+		expect(result.vectorKeyframes?.position).toEqual([
+			{ id: 'first', frame: 0, value: { x: 0, y: 0 }, easing: 'linear' },
+			{ id: 'last', frame: 20, value: { x: 200, y: 100 }, easing: 'hold' }
+		]);
+		expect(track.frames).toEqual([0, 30, 10, 20, 40]);
 	});
 });

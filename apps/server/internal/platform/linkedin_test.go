@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,164 @@ func TestLinkedInGenerateAuthURLEncodesScopesWithPercentSpaces(t *testing.T) {
 	}
 	if parsed.Query().Get("scope") != "openid profile w_member_social" {
 		t.Fatalf("unexpected parsed scope %q", parsed.Query().Get("scope"))
+	}
+}
+
+func TestLinkedInGenerateAuthURLScopeSeparation(t *testing.T) {
+	tests := []struct {
+		name         string
+		adapter      *LinkedInAdapter
+		wantScopes   []string
+		absentScopes []string
+	}{
+		{
+			name:    "default: personal only",
+			adapter: NewLinkedInAdapter("id", "secret", "https://app.example/callback", false),
+			wantScopes: []string{
+				"openid", "profile", "w_member_social", "w_member_social_feed",
+			},
+			absentScopes: []string{
+				"r_member_social", "rw_organization_admin", "w_organization_social",
+				"r_organization_social", "r_member_profileAnalytics", "r_member_postAnalytics",
+			},
+		},
+		{
+			name:    "organizations only (no analytics)",
+			adapter: NewLinkedInAdapter("id", "secret", "https://app.example/callback", false, true),
+			wantScopes: []string{
+				"openid", "profile", "w_member_social", "w_member_social_feed",
+				"rw_organization_admin", "w_organization_social", "r_organization_social",
+			},
+			absentScopes: []string{
+				"r_member_profileAnalytics", "r_member_postAnalytics", "r_member_social",
+			},
+		},
+		{
+			name: "organizations + member analytics",
+			adapter: func() *LinkedInAdapter {
+				a := NewLinkedInAdapter("id", "secret", "https://app.example/callback", false, true)
+				a.enableMemberAnalytics = true
+				return a
+			}(),
+			wantScopes: []string{
+				"openid", "profile", "w_member_social", "w_member_social_feed",
+				"rw_organization_admin", "w_organization_social", "r_organization_social",
+				"r_member_profileAnalytics", "r_member_postAnalytics",
+			},
+			absentScopes: []string{},
+		},
+		{
+			name: "member analytics only (no organizations)",
+			adapter: func() *LinkedInAdapter {
+				a := NewLinkedInAdapter("id", "secret", "https://app.example/callback", false)
+				a.enableMemberAnalytics = true
+				return a
+			}(),
+			wantScopes: []string{
+				"openid", "profile", "w_member_social", "w_member_social_feed",
+				"r_member_profileAnalytics", "r_member_postAnalytics",
+			},
+			absentScopes: []string{
+				"rw_organization_admin", "w_organization_social", "r_organization_social",
+			},
+		},
+		{
+			name: "member reads + organizations (no analytics)",
+			adapter: func() *LinkedInAdapter {
+				a := NewLinkedInAdapter("id", "secret", "https://app.example/callback", false, true)
+				a.enableMemberReads = true
+				return a
+			}(),
+			wantScopes: []string{
+				"openid", "profile", "w_member_social", "w_member_social_feed",
+				"r_member_social",
+				"rw_organization_admin", "w_organization_social", "r_organization_social",
+			},
+			absentScopes: []string{
+				"r_member_profileAnalytics", "r_member_postAnalytics",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authURL, _ := tt.adapter.GenerateAuthURL("state-123")
+			parsed, err := url.Parse(authURL)
+			if err != nil {
+				t.Fatalf("parsing auth URL: %v", err)
+			}
+			scope := parsed.Query().Get("scope")
+			for _, want := range tt.wantScopes {
+				if !strings.Contains(" "+scope+" ", " "+want+" ") {
+					t.Errorf("expected scope %q to be present in %q", want, scope)
+				}
+			}
+			for _, absent := range tt.absentScopes {
+				if strings.Contains(" "+scope+" ", " "+absent+" ") {
+					t.Errorf("expected scope %q to be absent from %q", absent, scope)
+				}
+			}
+		})
+	}
+}
+
+func TestLinkedInAnalyticsSupportRespectsMemberAnalyticsToggle(t *testing.T) {
+	cases := []struct {
+		name       string
+		options    RegistryOptions
+		wantAny    bool
+		wantPerson bool
+		wantOrg    bool
+	}{
+		{name: "disabled"},
+		{name: "organizations only", options: RegistryOptions{EnableLinkedInOrganizations: true}, wantAny: true, wantOrg: true},
+		{name: "member analytics only", options: RegistryOptions{EnableLinkedInMemberAnalytics: true}, wantAny: true, wantPerson: true},
+		{name: "organizations and member analytics", options: RegistryOptions{EnableLinkedInOrganizations: true, EnableLinkedInMemberAnalytics: true}, wantAny: true, wantPerson: true, wantOrg: true},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			adapters, _, err := BuildAdapterRegistry([]AppConfig{{
+				Provider: "linkedin", ClientID: "id", ClientSecret: "secret", RedirectURI: "https://app.example/callback",
+			}}, tt.options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := adapters["linkedin"].(*LinkedInAdapter)
+			support := adapter.AnalyticsSupport()
+			if support.Account != tt.wantAny || support.Content != tt.wantAny {
+				t.Fatalf("unexpected overall analytics support: %+v", support)
+			}
+			accounts := []struct {
+				name         string
+				id           string
+				want         bool
+				accountScope string
+				contentScope string
+			}{
+				{name: "person", id: "urn:li:person:123", want: tt.wantPerson, accountScope: "r_member_profileAnalytics", contentScope: "r_member_postAnalytics"},
+				{name: "organization", id: "urn:li:organization:42", want: tt.wantOrg, accountScope: "rw_organization_admin", contentScope: "rw_organization_admin"},
+			}
+			for _, account := range accounts {
+				t.Run(account.name, func(t *testing.T) {
+					support := adapter.AnalyticsSupportForAccount(AnalyticsAccountContext{AccountID: account.id})
+					if support.Account != account.want || support.Content != account.want {
+						t.Fatalf("unexpected account analytics support: %+v", support)
+					}
+					if !account.want {
+						if support.AccountUnavailable == "" || support.ContentUnavailable == "" {
+							t.Fatalf("missing analytics unavailability explanation: %+v", support)
+						}
+						return
+					}
+					if !reflect.DeepEqual(support.AccountRequiredScopes, []string{account.accountScope}) {
+						t.Errorf("account scopes = %v, want %s", support.AccountRequiredScopes, account.accountScope)
+					}
+					if !reflect.DeepEqual(support.ContentRequiredScopes, []string{account.contentScope}) {
+						t.Errorf("content scopes = %v, want %s", support.ContentRequiredScopes, account.contentScope)
+					}
+				})
+			}
+		})
 	}
 }
 

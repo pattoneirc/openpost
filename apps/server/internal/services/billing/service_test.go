@@ -124,7 +124,7 @@ func TestCheckoutCancellationWinningBeforeReconciliationLockTerminatesSubscripti
 		require.NoError(t, insertErr)
 	}
 
-	require.NoError(t, service.reconcileSubscription(t.Context(), recoverySubscription(paddle.SubscriptionStatusActive, now), nil))
+	require.NoError(t, service.reconcileSubscription(t.Context(), recoverySubscription(now), nil))
 	require.Equal(t, 1, api.cancelCalls)
 	require.Equal(t, "sub_1", api.cancelInput.SubscriptionID)
 	count, err := db.NewSelect().Model((*models.BillingSubscription)(nil)).Where("organization_id = ?", "org-1").Count(t.Context())
@@ -204,10 +204,10 @@ func TestAcceptPaddleWebhookRejectsInvalidSignature(t *testing.T) {
 	require.ErrorContains(t, err, "invalid Paddle webhook signature")
 }
 
-func recoverySubscription(status paddle.SubscriptionStatus, updatedAt time.Time) *paddle.Subscription {
+func recoverySubscription(updatedAt time.Time) *paddle.Subscription {
 	return &paddle.Subscription{
 		ID:         "sub_1",
-		Status:     status,
+		Status:     paddle.SubscriptionStatusActive,
 		CustomerID: "ctm_1",
 		UpdatedAt:  updatedAt.Format(time.RFC3339Nano),
 		CustomData: paddle.CustomData{"checkout_id": "chkat_recovery"},
@@ -227,9 +227,9 @@ func TestOldSubscriptionEventsCannotReplaceNewCheckout(t *testing.T) {
 		_, err := db.NewInsert().Model(&models.BillingCheckoutAttempt{CheckoutAttemptID: id, OrganizationID: "org-1", WorkspaceID: "ws-1", UserID: "user-1", Provider: ProviderPaddle, ProviderPriceID: "pri_founder_month", PlanID: "founder", BillingPeriod: "monthly", Status: "created", CreatedAt: now.Add(time.Duration(i) * time.Hour), UpdatedAt: now}).Exec(t.Context())
 		require.NoError(t, err)
 	}
-	old := recoverySubscription(paddle.SubscriptionStatusActive, now)
+	old := recoverySubscription(now)
 	require.NoError(t, service.reconcileSubscription(t.Context(), old, nil))
-	newer := recoverySubscription(paddle.SubscriptionStatusActive, now.Add(time.Hour))
+	newer := recoverySubscription(now.Add(time.Hour))
 	newer.ID = "sub_new"
 	newer.CustomData = paddle.CustomData{"checkout_id": "chkat_new"}
 	require.NoError(t, service.reconcileSubscription(t.Context(), newer, nil))
@@ -241,5 +241,26 @@ func TestOldSubscriptionEventsCannotReplaceNewCheckout(t *testing.T) {
 		require.NoError(t, db.NewSelect().Model(&stored).Where("organization_id = ?", "org-1").Scan(t.Context()))
 		require.Equal(t, "sub_new", stored.ProviderSubscriptionID)
 		require.Equal(t, "active", stored.Status)
+	}
+}
+
+func TestSubscriptionReconciliationRejectsCheckoutPriceSubstitution(t *testing.T) {
+	for _, priceID := range []string{"pri_founder_month", "pri_agency_year", "pri_unknown", ""} {
+		t.Run(priceID, func(t *testing.T) {
+			db := newBillingTestDB(t)
+			now := time.Now().UTC()
+			_, err := db.NewInsert().Model(&models.BillingCheckoutAttempt{CheckoutAttemptID: "chkat_recovery", OrganizationID: "org-1", WorkspaceID: "ws-1", UserID: "user-1", Provider: ProviderPaddle, ProviderPriceID: "pri_agency_month", PlanID: "agency", BillingPeriod: "monthly", Status: "created", CreatedAt: now, UpdatedAt: now}).Exec(t.Context())
+			require.NoError(t, err)
+			service := NewService(db, "", PaddleConfig{Plans: testCatalog()})
+			api := &fakePaddleAPI{customer: &paddle.Customer{ID: "ctm_1", Email: "owner@example.com"}}
+			service.api = api
+			subscription := recoverySubscription(now)
+			subscription.Items[0].Price.ID = priceID
+			require.Error(t, service.reconcileSubscription(t.Context(), subscription, nil))
+			count, err := db.NewSelect().Model((*models.BillingSubscription)(nil)).Count(t.Context())
+			require.NoError(t, err)
+			require.Zero(t, count)
+			require.Zero(t, api.customerGets)
+		})
 	}
 }

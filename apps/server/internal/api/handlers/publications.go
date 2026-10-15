@@ -30,6 +30,7 @@ import (
 	"github.com/openpost/backend/internal/services/entitlements"
 	"github.com/openpost/backend/internal/services/lifecycle"
 	"github.com/openpost/backend/internal/services/medialifecycle"
+	"github.com/openpost/backend/internal/services/notifications"
 	"github.com/openpost/backend/internal/services/providerreadiness"
 	"github.com/openpost/backend/internal/services/providerwrite"
 	"github.com/openpost/backend/internal/services/publicationauth"
@@ -66,19 +67,20 @@ var (
 )
 
 type PublicationHandler struct {
-	db          *bun.DB
-	auth        middleware.Authenticator
-	entitlement entitlements.Service
-	usage       *usage.Service
-	providers   map[string]platform.Adapter
-	providersMu sync.RWMutex
-	tokenSource AccessTokenSource
-	publicMedia *publicurl.MediaVerifier
-	reposts     *repostservice.Service
-	readiness   *providerreadiness.Service
-	connectors  *connectors.Registry
-	telemetry   telemetry.Recorder
-	textCards   *publicationcards.Service
+	notifications *notifications.Service
+	db            *bun.DB
+	auth          middleware.Authenticator
+	entitlement   entitlements.Service
+	usage         *usage.Service
+	providers     map[string]platform.Adapter
+	providersMu   sync.RWMutex
+	tokenSource   AccessTokenSource
+	publicMedia   *publicurl.MediaVerifier
+	reposts       *repostservice.Service
+	readiness     *providerreadiness.Service
+	connectors    *connectors.Registry
+	telemetry     telemetry.Recorder
+	textCards     *publicationcards.Service
 	// beforeQueueTransaction is a deterministic concurrency seam for tests.
 	// Production constructors leave it nil.
 	beforeQueueTransaction func(context.Context) error
@@ -285,6 +287,8 @@ type PublicationLifecycleActor = publicationservice.PublicationLifecycleActor
 type PublicationLifecycleError = publicationservice.PublicationLifecycleError
 
 func (h *PublicationHandler) RegisterRoutes(api huma.API) {
+	h.registerPublicationReviews(api)
+	h.registerBatchScheduling(api)
 	h.previewTextCard(api)
 	h.createPublication(api)
 	h.listPublications(api)
@@ -439,7 +443,7 @@ func (h *PublicationHandler) deleteRenditionTx(
 	if err != nil || count == 0 {
 		return false, err
 	}
-	return true, h.recordRenditionDeletionTx(ctx, tx, current, before, input.ExpectedRevision, userID)
+	return true, h.recordRenditionDeletionTx(ctx, tx, current, before, userID)
 }
 
 func (h *PublicationHandler) recordRenditionDeletionTx(
@@ -447,7 +451,6 @@ func (h *PublicationHandler) recordRenditionDeletionTx(
 	tx bun.Tx,
 	current *models.Publication,
 	before publicationRevisionSnapshot,
-	expectedRevision int,
 	userID string,
 ) error {
 	now := time.Now().UTC()
@@ -464,7 +467,7 @@ func (h *PublicationHandler) recordRenditionDeletionTx(
 		return err
 	}
 	fields := publicationservice.ChangedAuthoredDomains(before.authored, after.authored)
-	if err := h.syncTextPostRevisionsTx(ctx, tx, current.ID, expectedRevision, nextRevision, fields, userID, now); err != nil {
+	if _, err := h.invalidatePublicationReviewTx(ctx, tx, current, fields); err != nil {
 		return err
 	}
 	return drafts.RecordChange(ctx, tx, drafts.AggregatePublication, current.ID, nextRevision, fields, userID, now)
@@ -799,22 +802,6 @@ func (h *PublicationHandler) publicationRevisionConflict(
 	})
 }
 
-func (h *PublicationHandler) syncTextPostRevisionsTx(
-	_ context.Context,
-	_ bun.Tx,
-	_ string,
-	_ int,
-	_ int,
-	_ []string,
-	_ string,
-	_ time.Time,
-) error {
-	// The Post compatibility projection is retired. Publication revisions are
-	// the only authoring revision source; historical upgrade migrations keep
-	// reading legacy rows, but no active write depends on a Post row.
-	return nil
-}
-
 func validateFuturePublicationSchedule(scheduledAt, now time.Time) error {
 	if !scheduledAt.After(now.UTC()) {
 		return errPublicationScheduleFuture
@@ -1008,12 +995,16 @@ func (h *PublicationHandler) upsertRenditionsTx(
 			return PublicationResponse{}, err
 		}
 		changedDomains := publicationservice.ChangedAuthoredDomains(before.authored, response.authored)
-		if err := h.syncTextPostRevisionsTx(ctx, tx, publication.ID, expectedRevision, nextRevision, changedDomains, userID, now); err != nil {
+		if _, err := h.invalidatePublicationReviewTx(ctx, tx, publication, changedDomains); err != nil {
 			return PublicationResponse{}, err
 		}
 		if err := drafts.RecordChange(ctx, tx, drafts.AggregatePublication, publication.ID, nextRevision, changedDomains, userID, now); err != nil {
 			return PublicationResponse{}, err
 		}
+	}
+	response, err = h.loadPublicationRevisionResponseTx(ctx, tx, publication)
+	if err != nil {
+		return PublicationResponse{}, err
 	}
 	return response.response, nil
 }
@@ -1086,21 +1077,25 @@ func (h *PublicationHandler) schedulePublication(api huma.API) {
 	})
 }
 
-func (h *PublicationHandler) checkScheduledPublicationQuota(ctx context.Context, workspaceID string, scheduledAt time.Time) (bool, error) {
+func (h *PublicationHandler) checkScheduledPublicationQuota(ctx context.Context, workspaceID string, scheduledAt time.Time) error {
+	return h.checkScheduledPublicationQuotaAmount(ctx, workspaceID, scheduledAt, 1)
+}
+
+func (h *PublicationHandler) checkScheduledPublicationQuotaAmount(ctx context.Context, workspaceID string, scheduledAt time.Time, amount int64) error {
 	if h.usage == nil || h.entitlement == nil {
-		return false, publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("scheduled publication usage is unavailable"))
+		return publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("scheduled publication usage is unavailable"))
 	}
 	request := entitlements.Request{
 		WorkspaceID: workspaceID,
 		Limit:       entitlements.LimitScheduledPostsMonthly,
-		Amount:      1,
+		Amount:      amount,
 	}
 	decision, err := h.entitlement.Check(ctx, request)
 	if err != nil {
-		return false, publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("failed to check scheduled publication limit"))
+		return publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("failed to check scheduled publication limit"))
 	}
 	if !decision.Allowed {
-		return false, scheduledPublicationQuotaError(decision)
+		return scheduledPublicationQuotaError(decision)
 	}
 	current, err := h.usage.CurrentMonthly(ctx, workspaceID, entitlements.LimitScheduledPostsMonthly, scheduledAt)
 	if err != nil {
@@ -1108,22 +1103,22 @@ func (h *PublicationHandler) checkScheduledPublicationQuota(ctx context.Context,
 			// Unlimited deployments do not depend on quota storage to publish.
 			// Record usage when the counter schema is present, but keep sparse
 			// self-hosted upgrades and application fixtures operational.
-			return false, nil
+			return nil
 		}
-		return false, publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("failed to load scheduled publication usage"))
+		return publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("failed to load scheduled publication usage"))
 	}
 	if decision.Unlimited {
-		return true, nil
+		return nil
 	}
 	request.Current = current
 	decision, err = h.entitlement.Check(ctx, request)
 	if err != nil {
-		return false, publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("failed to check scheduled publication limit"))
+		return publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("failed to check scheduled publication limit"))
 	}
 	if !decision.Allowed {
-		return false, scheduledPublicationQuotaError(decision)
+		return scheduledPublicationQuotaError(decision)
 	}
-	return true, nil
+	return nil
 }
 
 func scheduledPublicationQuotaError(decision entitlements.Decision) error {
@@ -1134,11 +1129,25 @@ func scheduledPublicationQuotaError(decision entitlements.Decision) error {
 	return huma.NewError(http.StatusPaymentRequired, reason)
 }
 
-func (h *PublicationHandler) recordScheduledPublicationUsage(ctx context.Context, workspaceID string, scheduledAt time.Time) error {
-	if h.usage == nil {
+func (h *PublicationHandler) recordScheduledPublicationUsageWithDB(ctx context.Context, db bun.IDB, workspaceID string, scheduledAt time.Time) error {
+	if h.usage == nil || h.entitlement == nil {
 		return publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("scheduled publication usage is unavailable"))
 	}
-	if _, err := h.usage.IncrementMonthly(ctx, workspaceID, entitlements.LimitScheduledPostsMonthly, 1, scheduledAt); err != nil {
+	decision, err := entitlements.CheckWithDB(ctx, h.entitlement, db, entitlements.Request{WorkspaceID: workspaceID, Limit: entitlements.LimitScheduledPostsMonthly, Amount: 1})
+	if err != nil {
+		return publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("failed to check scheduled publication limit"))
+	}
+	if !decision.Allowed {
+		return scheduledPublicationQuotaError(decision)
+	}
+	_, err = usage.IncrementMonthlyLimitedInTransaction(ctx, db, workspaceID, entitlements.LimitScheduledPostsMonthly, 1, scheduledAt, decision)
+	if errors.Is(err, usage.ErrQuotaExceeded) {
+		return scheduledPublicationQuotaError(decision)
+	}
+	if err != nil {
+		if decision.Unlimited && strings.Contains(err.Error(), "no such table: usage_counters") {
+			return nil
+		}
 		return publicationservice.NewError(publicationservice.ErrorTemporaryUnavailable, errors.New("failed to record scheduled publication usage"))
 	}
 	return nil
@@ -2732,6 +2741,8 @@ func publicationMutationHTTPError(err error, fallback string) error {
 	switch {
 	case errors.As(err, new(*providerreadiness.NotReadyError)):
 		return huma.Error409Conflict(err.Error())
+	case errors.Is(err, publicationauth.ErrReviewRequired):
+		return huma.Error409Conflict(err.Error())
 	case errors.Is(err, errPublicationNotFound):
 		return huma.Error404NotFound(errPublicationNotFound.Error())
 	case errors.Is(err, errPublicationAlreadyProcessing):
@@ -3656,6 +3667,9 @@ func (h *PublicationHandler) queuePublicationWithRunAtTx(
 	}
 	result := publicationEnqueueResult{}
 	if policyMode == publicationauth.PolicyScheduled {
+		if err := h.recordScheduledPublicationUsageWithDB(ctx, tx, publication.WorkspaceID, publication.ScheduledAt); err != nil {
+			return publicationEnqueueResult{}, err
+		}
 		result.JobID, err = h.replacePublicationJobWithIntentTx(ctx, tx, publicationID, runAt, intent)
 	} else {
 		result.JobID, err = h.replaceImmediatePublicationJobWithIntentTx(ctx, tx, publicationID, runAt, intent)
@@ -4325,21 +4339,22 @@ func publicationResponse(publication *models.Publication, media []MediaSummary) 
 	metadata := map[string]any{}
 	_ = json.Unmarshal([]byte(publication.MetadataJSON), &metadata)
 	return PublicationResponse{
-		ID:                   publication.ID,
-		WorkspaceID:          publication.WorkspaceID,
-		CreatedByID:          publication.CreatedByID,
-		Title:                publication.Title,
-		Intent:               publicationFirstNonEmpty(publication.Intent, publishingIntentForProfile(publication.ContentProfile)),
-		CreationPreset:       publicationFirstNonEmpty(publication.CreationPreset, publication.Intent, publishingIntentForProfile(publication.ContentProfile)),
-		CreationSource:       publicationFirstNonEmpty(publication.CreationSource, publicationCreationSourceUnknown),
-		SocialSetID:          publication.SocialSetID,
-		ContentProfile:       publication.ContentProfile,
-		SourceText:           publication.SourceText,
-		SourceURL:            publication.SourceURL,
-		Goal:                 publication.Goal,
-		Audience:             publication.Audience,
-		Status:               publication.Status,
-		Revision:             publication.Revision,
+		ID:             publication.ID,
+		WorkspaceID:    publication.WorkspaceID,
+		CreatedByID:    publication.CreatedByID,
+		Title:          publication.Title,
+		Intent:         publicationFirstNonEmpty(publication.Intent, publishingIntentForProfile(publication.ContentProfile)),
+		CreationPreset: publicationFirstNonEmpty(publication.CreationPreset, publication.Intent, publishingIntentForProfile(publication.ContentProfile)),
+		CreationSource: publicationFirstNonEmpty(publication.CreationSource, publicationCreationSourceUnknown),
+		SocialSetID:    publication.SocialSetID,
+		ContentProfile: publication.ContentProfile,
+		SourceText:     publication.SourceText,
+		SourceURL:      publication.SourceURL,
+		Goal:           publication.Goal,
+		Audience:       publication.Audience,
+		Status:         publication.Status,
+		Revision:       publication.Revision,
+		ReviewID:       publication.ReviewID, ReviewEpoch: publication.ReviewEpoch, ReviewState: publication.ReviewState,
 		ScheduledAt:          formatOptionalTime(publication.ScheduledAt),
 		ActualRunAt:          formatOptionalTime(publication.ActualRunAt),
 		FailureDismissedAt:   formatOptionalTime(publication.FailureDismissedAt),
@@ -4653,4 +4668,8 @@ func enqueueActionMessage(
 		resp.Body.ActivationPublicationID = result.ActivationPublicationID
 	}
 	return resp
+}
+
+func (h *PublicationHandler) SetNotificationService(service *notifications.Service) {
+	h.notifications = service
 }

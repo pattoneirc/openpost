@@ -147,6 +147,15 @@ test("YouTube settings explain required video before fields are resolved", async
     path: info.outputPath("youtube-video-fields-320-dark.png"),
   });
   await page.keyboard.press("Escape");
+  await expect
+    .poll(async () => {
+      const saved = await (await request.get(path, { headers })).json();
+      return [
+        saved.renditions[0].settings?.self_declared_made_for_kids ?? null,
+        saved.renditions[0].settings?.contains_synthetic_media ?? null,
+      ];
+    })
+    .toEqual([null, null]);
   for (const width of [1280, 390, 320])
     for (const scheme of ["light", "dark"] as const) {
       await page.setViewportSize({ width, height: 900 });

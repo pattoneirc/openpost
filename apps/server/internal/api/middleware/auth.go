@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -33,6 +32,7 @@ const (
 	ScopeKey           contextKey = "scope"
 	UserAgentKey       contextKey = "user_agent"
 	ClientIPKey        contextKey = "client_ip"
+	OriginKey          contextKey = "request_origin"
 	SecureKey          contextKey = "secure_request"
 	InstallationIDKey  contextKey = "external_app_installation_id"
 	DelegatedScopesKey contextKey = "external_app_delegated_scopes"
@@ -303,7 +303,7 @@ func AuthMiddleware(api huma.API, authenticator Authenticator) func(ctx huma.Con
 			_ = huma.WriteErr(api, ctx, http.StatusUnauthorized, "missing authorization header")
 			return
 		}
-		if cookieAuth && !cookieRequestAllowed(ctx.Method(), ctx.Header("Origin"), ctx.Host()) {
+		if cookieAuth && !cookieRequestAllowed(ctx.Method(), ctx.Header("Origin"), ctx.Host(), requestScheme(ctx)) {
 			_ = huma.WriteErr(api, ctx, http.StatusForbidden, "cross-site session request rejected")
 			return
 		}
@@ -317,6 +317,10 @@ func AuthMiddleware(api huma.API, authenticator Authenticator) func(ctx huma.Con
 				return
 			}
 			_ = huma.WriteErr(api, ctx, http.StatusUnauthorized, "invalid or expired token")
+			return
+		}
+		if SessionOriginRejected(principal, ctx.Header("Origin"), ctx.Host(), requestScheme(ctx)) {
+			_ = huma.WriteErr(api, ctx, http.StatusForbidden, "cross-site session request rejected")
 			return
 		}
 		if !PrincipalCanAccessREST(principal, contextOperationID(ctx)) {
@@ -339,7 +343,7 @@ func OptionalAuthMiddleware(api huma.API, authenticator Authenticator) func(ctx 
 			next(ctx)
 			return
 		}
-		if cookieAuth && !cookieRequestAllowed(ctx.Method(), ctx.Header("Origin"), ctx.Host()) {
+		if cookieAuth && !cookieRequestAllowed(ctx.Method(), ctx.Header("Origin"), ctx.Host(), requestScheme(ctx)) {
 			next(ctx)
 			return
 		}
@@ -352,6 +356,10 @@ func OptionalAuthMiddleware(api huma.API, authenticator Authenticator) func(ctx 
 				_ = huma.WriteErr(api, ctx, http.StatusServiceUnavailable, "authentication is temporarily unavailable")
 				return
 			}
+			next(ctx)
+			return
+		}
+		if SessionOriginRejected(principal, ctx.Header("Origin"), ctx.Host(), requestScheme(ctx)) {
 			next(ctx)
 			return
 		}
@@ -467,6 +475,11 @@ func GetClientIP(ctx context.Context) string {
 
 func RequestMetadataMiddleware() func(ctx huma.Context, next func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
+		browserOrigin := strings.TrimSpace(ctx.Header("Origin"))
+		if browserOrigin == "" && ctx.Header("Sec-Fetch-Site") != "" {
+			browserOrigin = "browser"
+		}
+		ctx = huma.WithValue(ctx, OriginKey, browserOrigin)
 		ctx = huma.WithValue(ctx, ClientIPKey, requestClientIP(ctx))
 		ctx = huma.WithValue(ctx, UserAgentKey, strings.TrimSpace(ctx.Header("User-Agent")))
 		ctx = huma.WithValue(ctx, SecureKey, ctx.TLS() != nil || strings.EqualFold(strings.TrimSpace(ctx.Header("X-Forwarded-Proto")), "https"))
@@ -530,7 +543,7 @@ func BearerMiddleware(authenticator Authenticator, operationID ...string) echo.M
 			if token == "" {
 				return c.JSON(http.StatusUnauthorized, map[string]string{string(errorKey): "missing authorization header"})
 			}
-			if cookieAuth && !cookieRequestAllowed(c.Request().Method, c.Request().Header.Get("Origin"), c.Request().Host) {
+			if cookieAuth && !cookieRequestAllowed(c.Request().Method, c.Request().Header.Get("Origin"), c.Request().Host, c.Scheme()) {
 				return c.JSON(http.StatusForbidden, map[string]string{string(errorKey): "cross-site session request rejected"})
 			}
 
@@ -543,6 +556,9 @@ func BearerMiddleware(authenticator Authenticator, operationID ...string) echo.M
 					return c.JSON(http.StatusServiceUnavailable, map[string]string{string(errorKey): "authentication is temporarily unavailable"})
 				}
 				return c.JSON(http.StatusUnauthorized, map[string]string{string(errorKey): "invalid or expired token"})
+			}
+			if SessionOriginRejected(principal, c.Request().Header.Get("Origin"), c.Request().Host, c.Scheme()) {
+				return c.JSON(http.StatusForbidden, map[string]string{string(errorKey): "cross-site session request rejected"})
 			}
 			if !PrincipalCanAccessREST(principal, operationID...) {
 				return c.JSON(http.StatusForbidden, map[string]string{string(errorKey): "token is not authorized for this API resource"})
@@ -626,20 +642,35 @@ func requestAuthToken(authHeader, cookieHeader string) (string, bool) {
 	return strings.TrimSpace(cookie.Value), true
 }
 
-func cookieRequestAllowed(method, origin, host string) bool {
-	switch method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return true
+func requestScheme(ctx huma.Context) string {
+	if ctx.TLS() != nil || strings.EqualFold(ctx.Header("X-Forwarded-Proto"), "https") {
+		return "https"
+	}
+	return "http"
+}
+
+func SessionOriginRejected(principal *Principal, origin, host, scheme string) bool {
+	return principal != nil && (principal.SessionID != "" || principal.Scope == "") && origin != "" && !cookieRequestAllowed(http.MethodPost, origin, host, scheme)
+}
+
+func HasBrowserOrigin(ctx context.Context) bool {
+	origin, _ := ctx.Value(OriginKey).(string)
+	return origin != ""
+}
+
+func cookieRequestAllowed(method, origin, host string, schemes ...string) bool {
+	if origin == "" {
+		return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 	}
 	originURL, err := url.Parse(strings.TrimSpace(origin))
-	if err != nil || originURL.Hostname() == "" {
+	if err != nil || originURL.Host == "" || originURL.User != nil || originURL.RawQuery != "" || originURL.Fragment != "" || originURL.Path != "" {
 		return false
 	}
-	hostname := strings.TrimSpace(host)
-	if parsedHost, _, splitErr := net.SplitHostPort(hostname); splitErr == nil {
-		hostname = parsedHost
+	scheme := "https"
+	if len(schemes) > 0 {
+		scheme = schemes[0]
 	}
-	return strings.EqualFold(originURL.Hostname(), strings.Trim(hostname, "[]"))
+	return strings.EqualFold(originURL.Scheme, scheme) && strings.EqualFold(originURL.Host, strings.TrimSpace(host))
 }
 
 func requestClientIP(ctx huma.Context) string {

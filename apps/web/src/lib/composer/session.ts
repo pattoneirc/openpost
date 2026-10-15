@@ -8,6 +8,7 @@ type DeliveryOutcome = components['schemas']['RenditionActionOutcome'];
 export type PublicationDraft = Omit<CreatePublication, 'workspace_id'>;
 
 export interface ComposerPublication {
+	review_state?: string;
 	id: string;
 	workspace_id: string;
 	revision: number;

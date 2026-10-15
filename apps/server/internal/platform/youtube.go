@@ -560,18 +560,22 @@ func (y *YouTubeAdapter) finalizeYouTubeUpload(
 			return err
 		}
 	}
-	if err := y.finalizeYouTubePlaylist(ctx, accessToken, videoID, settingString(req.Settings, "playlist_id"), resuming, providerState, state, checkpoint); err != nil {
+	if err := y.finalizeYouTubePlaylist(ctx, accessToken, videoID, settingString(req.Settings, "playlist_id"), req, resuming, providerState, state, checkpoint); err != nil {
 		return err
 	}
 	if err := y.finalizeYouTubeCaption(ctx, accessToken, videoID, req, resuming, providerState, state, checkpoint); err != nil {
 		return err
 	}
-	return y.checkYouTubeProcessingStatus(ctx, accessToken, videoID)
+	// The upload receipt is durable even while processing continues. Publication
+	// owns positive readiness confirmation and its subsequent reconciliation.
+	_, err := y.checkYouTubeProcessingStatus(ctx, accessToken, videoID)
+	return err
 }
 
 func (y *YouTubeAdapter) finalizeYouTubePlaylist(
 	ctx context.Context,
 	accessToken, videoID, playlistID string,
+	req UploadMediaRequest,
 	resuming bool,
 	providerState *youtubeResumableUploadState,
 	state *ResumableMediaUploadState,
@@ -589,6 +593,9 @@ func (y *YouTubeAdapter) finalizeYouTubePlaylist(
 			providerState.PlaylistApplied = true
 			return checkpointYouTubeProviderState(state, *providerState, checkpoint)
 		}
+	}
+	if err := checkUploadWrite(ctx, req); err != nil {
+		return err
 	}
 	if err := y.insertYouTubePlaylistItem(ctx, accessToken, playlistID, videoID); err != nil {
 		return err
@@ -698,6 +705,9 @@ func (y *YouTubeAdapter) youtubeCaptionExists(ctx context.Context, accessToken, 
 }
 
 func (y *YouTubeAdapter) insertYouTubeCaption(ctx context.Context, accessToken, videoID string, req UploadMediaRequest) error {
+	if err := checkUploadWrite(ctx, req); err != nil {
+		return err
+	}
 	body, contentType, err := buildYouTubeCaptionRequest(videoID, req)
 	if err != nil {
 		return err
@@ -785,6 +795,9 @@ func youtubeErrorReason(body []byte) string {
 }
 
 func (y *YouTubeAdapter) setYouTubeThumbnail(ctx context.Context, accessToken, videoID string, req UploadMediaRequest) error {
+	if err := checkUploadWrite(ctx, req); err != nil {
+		return err
+	}
 	thumbnailBytes, err := io.ReadAll(req.ThumbnailReader)
 	if err != nil {
 		return fmt.Errorf("reading youtube thumbnail: %w", err)
@@ -809,6 +822,9 @@ func (y *YouTubeAdapter) setYouTubeThumbnail(ctx context.Context, accessToken, v
 }
 
 func (y *YouTubeAdapter) startYouTubeResumableUpload(ctx context.Context, accessToken string, req UploadMediaRequest, metadata youtubeVideoInsertRequest, mediaSize int64) (string, error) {
+	if err := checkUploadWrite(ctx, req); err != nil {
+		return "", err
+	}
 	metaBytes, err := jsonMarshal(metadata)
 	if err != nil {
 		return "", fmt.Errorf("marshaling youtube metadata: %w", err)
@@ -838,10 +854,58 @@ func (y *YouTubeAdapter) startYouTubeResumableUpload(ctx context.Context, access
 	return sessionURL, nil
 }
 
-func (y *YouTubeAdapter) Publish(_ context.Context, _ string, _ string, req *PublishRequest) (PublishResult, error) {
-	return executePublishWrite(req, "finalize_resumable_upload", func() (string, error) {
-		return y.publish(req)
-	})
+func (y *YouTubeAdapter) Publish(ctx context.Context, token string, _ string, req *PublishRequest) (PublishResult, error) {
+	videoID, err := y.publish(req)
+	if err != nil {
+		return PublishResult{}, err
+	}
+	pending := pendingYouTubeVideo(videoID)
+	if err := req.BeginWrite(pending); err != nil {
+		return PublishResult{}, err
+	}
+	result, err := y.reconcileVideoProcessing(ctx, token, req, videoID)
+	if err == nil && result.SubmissionState == PublishSubmissionAccepted {
+		if checkpointErr := req.Checkpoint(result); checkpointErr != nil {
+			return result, checkpointErr
+		}
+	}
+	return result, err
+}
+
+func pendingYouTubeVideo(videoID string) PublishResult {
+	return PublishResult{SubmissionState: PublishSubmissionPending, ProviderState: "youtube_video_processing", ProviderReference: "yt1:" + videoID, RetrySafety: PublishRetryReconcileOnly, ReconcileAfter: time.Minute}
+}
+
+func (y *YouTubeAdapter) ReconcilePublishRequest(ctx context.Context, token, _ string, req *PublishRequest, reference string) (PublishResult, error) {
+	videoID, ok := strings.CutPrefix(reference, "yt1:")
+	if !ok || !safeContentID.MatchString(videoID) {
+		return PublishResult{SubmissionState: PublishSubmissionRejected, RetrySafety: PublishRetryNever}, fmt.Errorf("invalid YouTube video checkpoint")
+	}
+	return y.reconcileVideoProcessing(ctx, token, req, videoID)
+}
+
+func (y *YouTubeAdapter) reconcileVideoProcessing(ctx context.Context, token string, req *PublishRequest, videoID string) (PublishResult, error) {
+	pending := pendingYouTubeVideo(videoID)
+	ready, err := y.checkYouTubeProcessingStatus(ctx, token, videoID)
+	if err != nil {
+		if classification, ok := MediaRetryClassificationForError(err); ok && classification == MediaRetryTerminal {
+			pending.SubmissionState = PublishSubmissionRejected
+			pending.RetrySafety = PublishRetryNever
+		}
+		return pending, err
+	}
+	if !ready {
+		return pending, nil
+	}
+	result := AcceptedPublishResult(videoID)
+	result.ProviderState = "published"
+	result.ProviderReference = pending.ProviderReference
+	if req != nil {
+		if at, err := time.Parse(time.RFC3339, settingString(req.Settings, "publish_at")); err == nil && at.After(time.Now()) {
+			result.ProviderState = "scheduled"
+		}
+	}
+	return result, nil
 }
 
 func (y *YouTubeAdapter) publish(req *PublishRequest) (string, error) {
@@ -921,6 +985,9 @@ func (y *YouTubeAdapter) uploadYouTubeChunk(
 	sessionURL string,
 	offset int64,
 ) (*youtubeHTTPResponse, error) {
+	if err := checkUploadWrite(ctx, req); err != nil {
+		return nil, err
+	}
 	end := min(offset+youtubeUploadChunkSize-1, req.Size-1)
 	reader, err := req.OpenReaderAt(offset)
 	if err != nil {
@@ -1091,31 +1158,34 @@ func (y *YouTubeAdapter) youtubePlaylistItemExists(ctx context.Context, accessTo
 	return len(items.Items) > 0, nil
 }
 
-func (y *YouTubeAdapter) checkYouTubeProcessingStatus(ctx context.Context, accessToken, videoID string) error {
+func (y *YouTubeAdapter) checkYouTubeProcessingStatus(ctx context.Context, accessToken, videoID string) (bool, error) {
 	params := url.Values{}
 	params.Set("part", "status,processingDetails")
 	params.Set("id", videoID)
 	endpoint := youtubeAPIBaseURL + "/videos?" + params.Encode()
 	respBody, err := DoRequest(ctx, http.MethodGet, endpoint, nil, bearerHeaders(accessToken))
 	if err != nil {
-		return fmt.Errorf("youtube processing status: %w", err)
+		return false, fmt.Errorf("youtube processing status: %w", err)
 	}
 	var statusResp youtubeVideosListResponse
 	if err := json.Unmarshal(respBody, &statusResp); err != nil {
-		return fmt.Errorf("decoding youtube processing status: %w", err)
+		return false, fmt.Errorf("decoding youtube processing status: %w", err)
 	}
 	if statusResp.Error.Message != "" {
-		return &HTTPError{StatusCode: http.StatusBadRequest, Code: "youtube_processing_error"}
+		return false, &HTTPError{StatusCode: http.StatusBadRequest, Code: "youtube_processing_error"}
 	}
 	if len(statusResp.Items) == 0 {
-		return &MediaUploadError{
+		return false, &MediaUploadError{
 			RetryClassification: MediaRetryReconcile,
 			Err:                 errors.New("youtube processing status is not available yet"),
 		}
 	}
 	item := statusResp.Items[0]
-	if item.ProcessingDetails.ProcessingStatus == "failed" || item.Status.UploadStatus == "rejected" || item.Status.UploadStatus == "failed" {
-		return &MediaUploadError{
+	if item.ID != videoID {
+		return false, &MediaUploadError{RetryClassification: MediaRetryReconcile, Err: errors.New("youtube processing status returned an unexpected video")}
+	}
+	if item.ProcessingDetails.ProcessingStatus == "failed" || item.Status.UploadStatus == "rejected" || item.Status.UploadStatus == "failed" || item.Status.UploadStatus == "deleted" {
+		return false, &MediaUploadError{
 			RetryClassification: MediaRetryTerminal,
 			Err: fmt.Errorf("youtube processing failed: %s", firstNonEmptyString(
 				item.ProcessingDetails.ProcessingFailureReason,
@@ -1125,7 +1195,7 @@ func (y *YouTubeAdapter) checkYouTubeProcessingStatus(ctx context.Context, acces
 			)),
 		}
 	}
-	return nil
+	return item.ProcessingDetails.ProcessingStatus == "succeeded" || item.Status.UploadStatus == "processed", nil
 }
 
 func youtubeVideoIDFromResponse(label string, respBody []byte) (string, error) {
@@ -1282,8 +1352,6 @@ func youtubeSubscriberDescription(count string) string {
 
 func youtubeScopes() []string {
 	return []string{
-		"https://www.googleapis.com/auth/userinfo.profile",
-		"https://www.googleapis.com/auth/userinfo.email",
 		"https://www.googleapis.com/auth/youtube.readonly",
 		youtubeAnalyticsReadScope,
 		"https://www.googleapis.com/auth/youtube.upload",

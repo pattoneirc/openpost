@@ -471,6 +471,14 @@ export function availableReferences(
 	selectedID: string,
 	sourceData?: WorkflowData[string]
 ): Reference[] {
+	return createAvailableReferences(steps, sourceData)(selectedID);
+}
+
+/** Discover source fields and branch-scoped outputs once for a definition. */
+export function createAvailableReferences(
+	steps: Step[],
+	sourceData?: WorkflowData[string]
+): (selectedID: string) => Reference[] {
 	const sources: Reference[] = (
 		sourceData === undefined
 			? [
@@ -510,10 +518,11 @@ export function availableReferences(
 			dynamic: true
 		});
 	/* oxlint-enable anti-slop/no-runtime-typeof, anti-slop/no-object-parameters */
-	function visit(list: Step[], available: typeof sources): typeof sources | undefined {
-		let current = [...available];
+	const scopes = new Map<string, Reference[]>();
+	function visit(list: Step[], available: Reference[]): void {
+		let current = available;
 		for (const step of list) {
-			if (step.id === selectedID) return current;
+			if (!scopes.has(step.id)) scopes.set(step.id, current);
 			const fields = outputFields(step);
 			current = [
 				...current,
@@ -523,11 +532,12 @@ export function availableReferences(
 					dynamic
 				}))
 			];
-			const branch = visit(step.then ?? [], current) ?? visit(step.else ?? [], current);
-			if (branch) return branch;
+			visit(step.then ?? [], current);
+			visit(step.else ?? [], current);
 		}
 	}
-	return visit(steps, sources) ?? sources;
+	visit(steps, sources);
+	return (selectedID) => scopes.get(selectedID) ?? sources;
 }
 export function runStateLabel(state: string): string {
 	switch (state) {

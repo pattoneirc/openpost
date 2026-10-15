@@ -312,6 +312,12 @@ The marketing desktop header uses the shared Shadcn-svelte `NavigationMenu` for 
 
 Authenticated routes use `PageContainer`, `PageHeader`, `SectionHeader`, and content-shaped `PageLoading` recipes. Empty, notice, toast, error, and destructive-confirmation states use the shared primitives so hierarchy and feedback do not drift between routes.
 
+### Recovery states
+
+Recovery pages lead with a short heading, a brief explanation, and one primary action to continue. Keep optional help as a quiet secondary link and truthful status as small metadata. Public missing pages pair the copy with the shared transparent folded-paper artwork, placed above the copy on narrow screens.
+
+Use the shared recovery layout and semantic action roles across framework and static pages. Static actions preserve the shared Bayer geometry and hover, keyboard focus, and press density, with 44px targets, visible focus, and reduced-motion behavior. Offline recovery uses the compact text-only layout, stays self-contained, and retains localized reassurance about saved local projects.
+
 ## Do's and Don'ts
 
 ### Do:

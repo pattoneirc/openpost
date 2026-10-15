@@ -1,6 +1,7 @@
+import { NativeText as Text } from "@/components/native-text";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useCallback, useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text } from "react-native";
+import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet } from "react-native";
 
 import { BodyText, Button, ContentSection, Screen, TextField, useColors } from "@/components/ui";
 import { Brand } from "@/components/brand";

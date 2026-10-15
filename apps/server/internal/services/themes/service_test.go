@@ -430,14 +430,17 @@ func TestResolveFallsBackForCorruptStoredManifest(t *testing.T) {
 	require.NoError(t, err)
 	_, err = service.SetOrganizationSettings(t.Context(), actor, OrganizationSettingsInput{OrganizationID: "org-1", DefaultReference: ThemeReference{Kind: ReferenceCustom, ID: theme.Summary.Reference.ID, Version: 1}})
 	require.NoError(t, err)
-	_, err = db.NewUpdate().Model((*revisionRow)(nil)).Set("manifest_json = ?", `{not-json`).Where("theme_id = ? AND revision = 1", theme.Summary.Reference.ID).Exec(t.Context())
+	raw, err := json.Marshal(theme.Draft.Manifest)
 	require.NoError(t, err)
-
-	resolved, err := service.Resolve(t.Context(), actor, ResolveInput{WorkspaceID: "workspace-1", Scheme: SchemeLight})
-	require.NoError(t, err)
-	require.Equal(t, ResolutionFallback, resolved.Source)
-	require.Equal(t, FallbackInvalidManifest, resolved.FallbackReason)
-	require.Equal(t, Workshop(SchemeLight), resolved.Manifest)
+	for _, stored := range []string{`{not-json`, string(raw) + " garbage"} {
+		_, err = db.NewUpdate().Model((*revisionRow)(nil)).Set("manifest_json = ?", stored).Where("theme_id = ? AND revision = 1", theme.Summary.Reference.ID).Exec(t.Context())
+		require.NoError(t, err)
+		resolved, err := service.Resolve(t.Context(), actor, ResolveInput{WorkspaceID: "workspace-1", Scheme: SchemeLight})
+		require.NoError(t, err)
+		require.Equal(t, ResolutionFallback, resolved.Source)
+		require.Equal(t, FallbackInvalidManifest, resolved.FallbackReason)
+		require.Equal(t, Workshop(SchemeLight), resolved.Manifest)
+	}
 }
 
 func TestResolveUsesPublishedStateWithoutBlobReadsAndFallsBackForCorruptResourceMetadata(t *testing.T) {

@@ -12,6 +12,8 @@ function workspace(id: string, name: string): Workspace {
 		role: 'admin',
 		avatar_url: '',
 		can_edit: true,
+		can_connect: true,
+		can_approve: true,
 		color: '',
 		created_at: '2026-01-01T00:00:00Z',
 		organization_id: '',

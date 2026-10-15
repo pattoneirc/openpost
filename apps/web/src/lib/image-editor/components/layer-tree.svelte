@@ -456,7 +456,6 @@
 				{@const layer = item.layer}
 				{@const layerGlyphRef = layerIcon(layer)}
 				{@const effectivelyLocked = editor.isLayerLocked(layer.id)}
-				{@const groupDestinations = editor.groupDestinationsForLayer(layer.id)}
 				<div
 					animate:flip={{ duration: prefersReducedMotion.current ? 0 : 160 }}
 					transition:slide={{ duration: prefersReducedMotion.current ? 0 : 160 }}
@@ -681,6 +680,7 @@
 									<ProtectedIcon icon="editor-ungroup" class="size-4" />
 									{m.image_editor_ungroup()}
 								</ContextMenu.Item>
+								{@const groupDestinations = editor.groupDestinationsForLayer(layer.id)}
 								{#if groupDestinations.length > 0}
 									<ContextMenu.Sub>
 										<ContextMenu.SubTrigger class="image-editor-context-item">

@@ -13,6 +13,7 @@ import { createProject, getProject } from '../workspace-fs/projects';
 import { getWorkspaceRoot, setWorkspaceRoot } from '../workspace-fs/root';
 import '../../../routes/layout.css';
 import demoVideoURL from '../../../../../../tests/app/fixtures/product-screenshots/study-sos-demo.mp4?url';
+import demoAudioURL from '../../../../../../tests/app/fixtures/product-demos/tutorial-music.wav?url';
 import { mediaPool } from '../media/pool.svelte';
 import SourceMonitor from './source-monitor.svelte';
 
@@ -255,3 +256,44 @@ it('shuttles a decoded Source on hover while focused sliders keep their own keys
 		await screen.unmount();
 	}
 }, 10000);
+
+it('keeps audio waveforms visible in a short source panel with scrollable controls', async () => {
+	mediaPool.upsert(
+		{
+			id: 'short-panel-audio',
+			storageType: 'cloud',
+			remoteUrl: demoAudioURL,
+			fileName: 'music.wav',
+			fileSize: 1,
+			mimeType: 'audio/wav',
+			duration: 18,
+			width: 0,
+			height: 0,
+			fps: 30,
+			codec: 'pcm',
+			bitrate: 1,
+			tags: ['audio']
+		},
+		'ready'
+	);
+	const screen = await render(SourceMonitor, {
+		mediaId: 'short-panel-audio',
+		onclose: vi.fn(),
+		onedit: vi.fn()
+	});
+	screen.container.style.cssText = 'display: flex; width: 320px; height: 190px';
+	const waveform = screen.getByRole('slider', { name: 'Source audio waveform', exact: true });
+	await expect.element(waveform).toBeInTheDocument();
+	await expect
+		.poll(() => waveform.element().getBoundingClientRect().height)
+		.toBeGreaterThanOrEqual(80);
+	const add = screen.getByRole('button', { name: 'Add at end of sequence', exact: true });
+	add.element().scrollIntoView();
+	await expect.element(add).toBeVisible();
+	const source = screen.getByRole('region', { name: 'Source', exact: true }).element();
+	const close = screen.getByRole('button', { name: 'Close source monitor', exact: true }).element();
+	expect(close.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+		source.getBoundingClientRect().top
+	);
+	expect(screen.container.getBoundingClientRect().height).toBe(190);
+});

@@ -651,6 +651,8 @@ const workspace = {
 	organization_name: '',
 	role: 'admin',
 	can_edit: true,
+	can_connect: true,
+	can_approve: true,
 	sso_required: false,
 	sso_authenticated: true,
 	sso_identity_linked: true

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -57,5 +58,32 @@ func TestValidateTokenRejectsUnexpectedAlgorithmAndIssuer(t *testing.T) {
 	}
 	if _, err := service.ValidateToken(wrongIssuerToken); err == nil {
 		t.Fatal("expected token with a different issuer to be rejected")
+	}
+}
+
+// Use medians and a wide relative margin to distinguish an immediate account
+// existence oracle from normal scheduler noise around password verification.
+func TestMissingPasswordHashUsesPasswordVerificationCost(t *testing.T) {
+	service := NewService("test-secret")
+	hash, err := service.HashPassword("some unrelated password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	measure := func(hash string) time.Duration {
+		samples := make([]time.Duration, 3)
+		for i := range samples {
+			start := time.Now()
+			if service.CheckPassword("incorrect-password", hash) {
+				t.Fatal("invalid password authenticated")
+			}
+			samples[i] = time.Since(start)
+		}
+		slices.Sort(samples)
+		return samples[1]
+	}
+	known := measure(hash)
+	missing := measure("")
+	if missing < known/4 {
+		t.Fatalf("missing-account verification %s bypassed password KDF cost %s", missing, known)
 	}
 }

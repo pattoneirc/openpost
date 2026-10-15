@@ -1,5 +1,6 @@
 import { defineBrowserCommand, playwright } from '@vitest/browser-playwright';
 import { fileURLToPath } from 'node:url';
+import type { CDPSession, Page } from 'playwright';
 import { defineConfig } from 'vitest/config';
 
 const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
@@ -7,6 +8,7 @@ const runRealMusicModel = process.env.VITE_OPENPOST_REAL_MUSIC_TEST === '1';
 // Use Chromium's supported GPU backends. Forcing experimental WebGPU on a
 // software-only runner can lose unrelated Canvas2D and WebGL contexts.
 const browserArgs: string[] = [];
+const deviceScaleSessions = new WeakMap<Page, CDPSession>();
 const browserTestFiles = ['src/**/*.svelte.{test,spec}.{js,ts}'];
 if (runRealMusicModel) browserArgs.push('--unlimited-storage');
 
@@ -46,6 +48,26 @@ export default defineConfig({
 					browser: {
 						enabled: true,
 						commands: {
+							setDeviceScaleFactor: defineBrowserCommand(async ({ page }, scale: number | null) => {
+								let session = deviceScaleSessions.get(page);
+								if (scale === null) {
+									await session?.detach();
+									deviceScaleSessions.delete(page);
+									return;
+								}
+								if (!session) {
+									session = await page.context().newCDPSession(page);
+									deviceScaleSessions.set(page, session);
+								}
+								await session.send('Emulation.setDeviceMetricsOverride', {
+									...page.viewportSize(),
+									deviceScaleFactor: scale,
+									mobile: false
+								});
+								// CDP metrics alone do not notify resolution MediaQueryList listeners.
+								await session.send('Emulation.setEmulatedMedia', { media: 'screen' });
+								await session.send('Emulation.setEmulatedMedia', { media: '' });
+							}),
 							dragPointer: defineBrowserCommand(
 								async (
 									{ page, iframe },

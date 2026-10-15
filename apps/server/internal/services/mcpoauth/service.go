@@ -636,3 +636,21 @@ func tokenName(code models.MCPOAuthCode) string {
 	}
 	return "OpenPost MCP"
 }
+
+// Revoke invalidates MCP bearer tokens even when external application OAuth is
+// disabled. Presented authorization codes and outstanding grants for the same
+// client are retired so revocation cannot be undone by exchanging an old code.
+func (s *Service) Revoke(ctx context.Context, rawToken string) error {
+	principal, authErr := s.tokens.ValidateToken(ctx, rawToken)
+	if err := s.tokens.RevokePresentedToken(ctx, rawToken); err != nil {
+		return err
+	}
+	query := s.db.NewUpdate().Model((*models.MCPOAuthCode)(nil)).Set("consumed_at = ?", s.now()).Where("consumed_at IS NULL")
+	if authErr == nil && principal.ClientID != "" && (principal.Scope == apitokens.ScopeMCP || principal.Scope == apitokens.ScopeMCPRead || strings.Contains(principal.Scope, "mcp:")) {
+		query = query.Where("user_id = ? AND client_id = ?", principal.UserID, principal.ClientID)
+	} else {
+		query = query.Where("code_hash = ?", hashSecret(strings.TrimSpace(rawToken)))
+	}
+	_, err := query.Exec(ctx)
+	return err
+}

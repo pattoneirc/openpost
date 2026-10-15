@@ -367,7 +367,7 @@ func (s *Service) Create(ctx context.Context, actor Actor, input CreateInput) (T
 	}
 	manifest := input.Manifest
 	if builtInID := strings.TrimSpace(input.DuplicateBuiltInID); builtInID != "" {
-		family, ok := BuiltIns()[builtInID]
+		family, ok := builtIn(builtInID)
 		if !ok {
 			return Theme{}, fmt.Errorf("%w: duplicate built-in does not exist", ErrInvalidInput)
 		}

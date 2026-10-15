@@ -24,6 +24,29 @@ func TestDecodeManifestRejectsUnknownAndFutureSchemas(t *testing.T) {
 	}
 }
 
+func TestDecodeManifestRejectsTrailingData(t *testing.T) {
+	raw, err := json.Marshal(BuiltIns()["workshop"])
+	require.NoError(t, err)
+	for _, decode := range []struct {
+		name string
+		call func(string) (ThemeManifest, error)
+	}{
+		{"authored", func(value string) (ThemeManifest, error) { return DecodeManifest([]byte(value)) }},
+		{"stored", decodeStoredManifest},
+	} {
+		t.Run(decode.name, func(t *testing.T) {
+			_, err := decode.call(string(raw) + " \n\t")
+			require.NoError(t, err)
+			for _, trailing := range []string{`{}`, `[]`, `"extra"`, `42`, `true`, `null`, `{`, `garbage`} {
+				t.Run(trailing, func(t *testing.T) {
+					_, err := decode.call(string(raw) + " " + trailing)
+					require.Error(t, err)
+				})
+			}
+		})
+	}
+}
+
 func TestDitherRecipeRejectsUnreadableCustomActionTexture(t *testing.T) {
 	manifest := *BuiltIns()["workshop"].Schemes.Light
 	_, err := NormalizeSchemeManifest(SchemeLight, manifest)

@@ -23,19 +23,21 @@ import (
 )
 
 type Service struct {
-	telemetry     telemetry.Recorder
-	decider       ai.Decider
-	decisionModel string
-	generator     ai.Generator
-	model         string
-	db            *bun.DB
-	actions       Actions
-	encryptor     *servicecrypto.TokenEncryptor
-	client        *http.Client
+	aiEnabled      bool
+	aiMonthlyCalls int64
+	telemetry      telemetry.Recorder
+	decider        ai.Decider
+	decisionModel  string
+	generator      ai.Generator
+	model          string
+	db             *bun.DB
+	actions        Actions
+	encryptor      *servicecrypto.TokenEncryptor
+	client         *http.Client
 }
 
 func NewService(db *bun.DB, actions Actions, encryptor *servicecrypto.TokenEncryptor) *Service {
-	return &Service{db: db, actions: actions, encryptor: encryptor, client: netguard.NewHTTPClient(25*time.Second, sourceURLPolicy)}
+	return &Service{aiEnabled: true, aiMonthlyCalls: 1000, db: db, actions: actions, encryptor: encryptor, client: netguard.NewHTTPClient(25*time.Second, sourceURLPolicy)}
 }
 
 func (s *Service) SetTelemetry(recorder telemetry.Recorder) { s.telemetry = recorder }
@@ -303,4 +305,9 @@ func (s *Service) SetAI(generator ai.Generator, model string) {
 func (s *Service) SetDecisionAI(decider ai.Decider, model string) {
 	s.decider = decider
 	s.decisionModel = model
+}
+
+func (s *Service) SetAILimits(enabled bool, monthlyCalls int64) {
+	s.aiEnabled = enabled
+	s.aiMonthlyCalls = max(0, monthlyCalls)
 }

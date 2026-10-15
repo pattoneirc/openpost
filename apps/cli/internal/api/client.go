@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/openpost/cli/internal/transport"
 )
 
 const defaultVersion = "dev"
@@ -90,6 +92,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if err != nil {
 		return fmt.Errorf("invalid URL %s: %w", c.BaseURL+path, err)
 	}
+	if err := transport.ValidateURL(u); err != nil {
+		return err
+	}
 	var rdr io.Reader
 	if body != nil {
 		if r, ok := body.(io.Reader); ok {
@@ -117,7 +122,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	req.Header.Set("User-Agent", c.UserAgent)
 
-	resp, err := c.HTTP.Do(req)
+	client := *c.HTTP
+	client.CheckRedirect = transport.NoRedirect
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -128,7 +135,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return fmt.Errorf("read response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		apiErr := &Error{StatusCode: resp.StatusCode}
 		_ = json.Unmarshal(respBody, apiErr)
 		if apiErr.Message == "" && apiErr.Detail == "" {
@@ -745,6 +752,9 @@ func (c *Client) putFile(ctx context.Context, target mediaUploadSessionTarget, f
 	if !u.IsAbs() {
 		u = baseURL.ResolveReference(u)
 	}
+	if err := transport.ValidateURL(u); err != nil {
+		return err
+	}
 	method := target.Method
 	if method == "" {
 		method = http.MethodPut
@@ -1274,7 +1284,7 @@ func (c *Client) ListAPITokens(ctx context.Context) ([]Token, error) {
 }
 
 func (c *Client) RevokeAPIToken(ctx context.Context, id string) error {
-	return c.DeleteJSON(ctx, "/api/v1/api-tokens/"+id, nil)
+	return c.DeleteJSON(ctx, "/api/v1/api-tokens/"+url.PathEscape(id), nil)
 }
 
 // ----- Jobs -----

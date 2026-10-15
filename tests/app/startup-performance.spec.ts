@@ -1,9 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { authenticatePage, createWorkspace, registerUser } from "./helpers";
 
 // Cold downloads and network failures must reach the network, not a service worker.
 test.use({ serviceWorkers: "block" });
+
+async function downloadedScriptBytes(page: Page): Promise<number> {
+  return page.evaluate(() =>
+    performance
+      .getEntriesByType("resource")
+      .filter(
+        (entry): entry is PerformanceResourceTiming => entry instanceof PerformanceResourceTiming,
+      )
+      .filter((entry) => new URL(entry.name).pathname.endsWith(".js"))
+      .reduce((total, entry) => total + entry.decodedBodySize, 0),
+  );
+}
 
 test("Appearance does not download every settings panel", async ({ page, request }) => {
   const { token } = await registerUser(request, `settings-budget-${randomUUID()}@example.com`);
@@ -14,15 +26,7 @@ test("Appearance does not download every settings panel", async ({ page, request
     page.getByRole("heading", { name: "Appearance", exact: true }).first(),
   ).toBeVisible();
   await page.waitForLoadState("networkidle");
-  const scriptBytes = await page.evaluate(() =>
-    performance
-      .getEntriesByType("resource")
-      .filter(
-        (entry): entry is PerformanceResourceTiming => entry instanceof PerformanceResourceTiming,
-      )
-      .filter((entry) => new URL(entry.name).pathname.endsWith(".js"))
-      .reduce((total, entry) => total + entry.decodedBodySize, 0),
-  );
+  const scriptBytes = await downloadedScriptBytes(page);
   expect(scriptBytes).toBeGreaterThan(0);
   expect(scriptBytes).toBeLessThan(3_000_000);
 });
@@ -31,18 +35,40 @@ test("login stays within its JavaScript budget with analytics disabled", async (
   await page.goto("/login");
   await expect(page.getByRole("textbox", { name: "Email", exact: true })).toBeVisible();
   await page.waitForLoadState("networkidle");
-  const scriptBytes = await page.evaluate(() =>
-    performance
-      .getEntriesByType("resource")
-      .filter(
-        (entry): entry is PerformanceResourceTiming => entry instanceof PerformanceResourceTiming,
-      )
-      .filter((entry) => new URL(entry.name).pathname.endsWith(".js"))
-      .reduce((total, entry) => total + entry.decodedBodySize, 0),
-  );
+  const scriptBytes = await downloadedScriptBytes(page);
   // Decoded bytes make the budget independent of server compression settings.
   expect(scriptBytes).toBeGreaterThan(0);
   expect(scriptBytes).toBeLessThan(1_200_000);
+});
+
+test("Media browsing stays within its JavaScript budget before editing video", async ({
+  page,
+  request,
+}) => {
+  const { token } = await registerUser(request, `media-budget-${randomUUID()}@example.com`);
+  await createWorkspace(request, token, "Media performance");
+  await authenticatePage(page, token);
+  await page.goto("/media");
+  await expect(page.getByRole("heading", { name: "Media", exact: true })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  const scriptBytes = await downloadedScriptBytes(page);
+  expect(scriptBytes).toBeGreaterThan(0);
+  expect(scriptBytes).toBeLessThan(1_900_000);
+});
+
+test("Quick Cut stays within its JavaScript budget before opening a source", async ({
+  page,
+  request,
+}) => {
+  const { token } = await registerUser(request, `quick-cut-budget-${randomUUID()}@example.com`);
+  await createWorkspace(request, token, "Quick Cut performance");
+  await authenticatePage(page, token);
+  await page.goto("/quick-cut");
+  await expect(page.getByRole("button", { name: "Open videos", exact: true })).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  const scriptBytes = await downloadedScriptBytes(page);
+  expect(scriptBytes).toBeGreaterThan(0);
+  expect(scriptBytes).toBeLessThan(1_900_000);
 });
 
 test("a failed settings download leaves navigation usable and can recover", async ({

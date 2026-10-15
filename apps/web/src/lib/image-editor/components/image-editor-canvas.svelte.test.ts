@@ -1,11 +1,136 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { tick } from 'svelte';
 import { render } from 'vitest-browser-svelte';
 import { page, userEvent } from 'vitest/browser';
 import { ImageEditorController } from '../editor.svelte';
 import { blankImageEditorDocument, defaultTransform } from '../document';
 import { rectanglePixelMask } from '../selection';
+import { ImageEditorMagicScan } from '../magic-scan';
 import Fixture from './image-editor-canvas.fixture.svelte';
 import '../../../routes/layout.css';
+
+async function magicSelectionCanvas() {
+	const editor = floatingSelection();
+	editor.cancelFloatingPixelSelection();
+	editor.clearPixelSelection();
+	editor.activeTool = 'magic_wand';
+	const screen = await render(Fixture, { editor });
+	await expect.poll(() => screen.container.querySelector('.upper-canvas')).not.toBeNull();
+	editor.zoom = 1;
+	const surface = screen.getByTestId('image-editor-selection-surface');
+	await expect.poll(() => surface.element().getBoundingClientRect().width).toBeCloseTo(400, 1);
+	return { editor, screen, surface };
+}
+
+it.each([1280, 390, 320])(
+	'keeps scan progress clear of selection controls at %spx',
+	async (width) => {
+		const pending = Promise.withResolvers<Uint8Array>();
+		vi.spyOn(ImageEditorMagicScan.prototype, 'scan').mockReturnValue(pending.promise);
+		try {
+			const { screen, surface } = await magicSelectionCanvas();
+			await surface.click({ position: { x: 150, y: 120 } });
+			await page.viewport(width, 900);
+			const toolbar = screen
+				.getByTestId('image-editor-selection-options')
+				.element()
+				.getBoundingClientRect();
+			const cancel = screen
+				.getByRole('button', { name: 'Cancel', exact: true })
+				.element()
+				.getBoundingClientRect();
+			expect(cancel.bottom <= toolbar.top || cancel.top >= toolbar.bottom).toBe(true);
+		} finally {
+			pending.reject(new DOMException('Cancelled', 'AbortError'));
+			await tick();
+			vi.restoreAllMocks();
+			await page.viewport(1280, 900);
+		}
+	}
+);
+
+it('does not apply a magic selection cancelled during its preview frame', async () => {
+	const scan = Promise.withResolvers<Uint8Array>();
+	const frames: FrameRequestCallback[] = [];
+	vi.spyOn(ImageEditorMagicScan.prototype, 'scan').mockReturnValue(scan.promise);
+	try {
+		const { editor, screen, surface } = await magicSelectionCanvas();
+		await surface.click({ position: { x: 150, y: 120 } });
+		vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+			frames.push(callback);
+			return frames.length;
+		});
+		scan.resolve(new Uint8Array(400 * 300).fill(1));
+		await tick();
+		expect(frames.length).toBeGreaterThan(0);
+		screen
+			.getByRole('button', { name: 'Cancel', exact: true })
+			.element()
+			.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		vi.restoreAllMocks();
+		for (const frame of frames) frame(performance.now());
+		await tick();
+		expect(editor.pixelSelection).toBeNull();
+	} finally {
+		vi.restoreAllMocks();
+	}
+});
+
+it('keeps replacement magic scan controls visible after the previous scan aborts', async () => {
+	const previous = Promise.withResolvers<Uint8Array>();
+	const current = Promise.withResolvers<Uint8Array>();
+	vi.spyOn(ImageEditorMagicScan.prototype, 'scan')
+		.mockReturnValueOnce(previous.promise)
+		.mockReturnValueOnce(current.promise);
+	try {
+		const { editor, screen, surface } = await magicSelectionCanvas();
+		await surface.click({ position: { x: 150, y: 120 } });
+		await surface.click({ position: { x: 160, y: 130 } });
+		previous.reject(new DOMException('Cancelled', 'AbortError'));
+		await tick();
+		await expect.element(screen.getByRole('button', { name: 'Cancel', exact: true })).toBeVisible();
+		expect(editor.pixelSelection).toBeNull();
+	} finally {
+		current.reject(new DOMException('Cancelled', 'AbortError'));
+		await tick();
+		vi.restoreAllMocks();
+	}
+});
+
+it('clears the previous magic preview while a replacement scan is pending', async () => {
+	const previous = Promise.withResolvers<Uint8Array>();
+	const current = Promise.withResolvers<Uint8Array>();
+	const frames: FrameRequestCallback[] = [];
+	vi.spyOn(ImageEditorMagicScan.prototype, 'scan')
+		.mockReturnValueOnce(previous.promise)
+		.mockReturnValueOnce(current.promise);
+	try {
+		const { screen, surface } = await magicSelectionCanvas();
+		await surface.click({ position: { x: 150, y: 120 } });
+		const animationFrame = vi
+			.spyOn(window, 'requestAnimationFrame')
+			.mockImplementation((callback) => {
+				frames.push(callback);
+				return frames.length;
+			});
+		previous.resolve(new Uint8Array(400 * 300).fill(1));
+		await tick();
+		const overlay = screen.container.querySelector<HTMLCanvasElement>(
+			'canvas[data-testid="image-editor-pixel-selection"]'
+		)!;
+		const pixels = () => overlay.getContext('2d')!.getImageData(0, 0, 400, 300).data;
+		expect(pixels().some((value) => value !== 0)).toBe(true);
+		animationFrame.mockRestore();
+		await surface.click({ position: { x: 160, y: 130 } });
+		for (const frame of frames) frame(performance.now());
+		await tick();
+		expect(pixels().every((value) => value === 0)).toBe(true);
+	} finally {
+		current.reject(new DOMException('Cancelled', 'AbortError'));
+		await tick();
+		vi.restoreAllMocks();
+	}
+});
 
 it('keeps fit-to-canvas usable after the viewport shrinks during text editing', async () => {
 	await page.viewport(1280, 900);

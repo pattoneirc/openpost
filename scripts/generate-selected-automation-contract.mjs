@@ -2,21 +2,12 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const generatedDirectory = path.join(root, "packages/n8n-nodes-openpost/generated");
-const descriptionsDirectory = path.join(
-  root,
-  "packages/n8n-nodes-openpost/nodes/OpenPost/v1/descriptions/generated",
-);
-const actionsDirectory = path.join(
-  root,
-  "packages/n8n-nodes-openpost/nodes/OpenPost/v1/actions/generated",
-);
-const reportPath = path.join(root, "packages/n8n-nodes-openpost/docs/selected-contract-report.md");
 
 export const desiredActions = [
   action("workspace", "getMany", "list-workspaces", { fields: [] }),
@@ -355,7 +346,11 @@ export function buildSelectedContract(openapi, desired = desiredActions) {
   return contract;
 }
 
-export async function writeSelectedContract(contract) {
+export async function writeSelectedContract(contract, outputRoot = root) {
+  const [contractPath, descriptionsPath, mappersPath, reportPath] = outputFiles(outputRoot);
+  const generatedDirectory = path.dirname(contractPath);
+  const descriptionsDirectory = path.dirname(descriptionsPath);
+  const actionsDirectory = path.dirname(mappersPath);
   await mkdir(generatedDirectory, { recursive: true });
   await mkdir(descriptionsDirectory, { recursive: true });
   await mkdir(actionsDirectory, { recursive: true });
@@ -383,42 +378,50 @@ export async function writeSelectedContract(contract) {
   );
 
   await Bun.write(reportPath, buildReport(contract));
-  formatGeneratedFiles();
+  formatGeneratedFiles(outputFiles(outputRoot));
 }
 
 export async function checkGeneratedContract(contract) {
-  const before = await generatedFileHashes();
-  await writeSelectedContract(contract);
-  const after = await generatedFileHashes();
-  return [...after.keys()].filter((file) => before.get(file) !== after.get(file));
-}
-
-async function generatedFileHashes() {
-  const entries = await Promise.all(
-    outputFiles().map(async (file) => {
-      let contents = "";
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "openpost-selected-contract-"));
+  try {
+    await writeSelectedContract(contract, temporaryRoot);
+    const expectedFiles = outputFiles(temporaryRoot);
+    const currentFiles = outputFiles(root);
+    const stale = [];
+    for (let index = 0; index < currentFiles.length; index += 1) {
+      let current = null;
       try {
-        contents = await readFile(file, "utf8");
+        current = await readFile(currentFiles[index]);
       } catch (error) {
         if (error?.code !== "ENOENT") throw error;
       }
-      return [path.relative(root, file), createHash("sha256").update(contents).digest("hex")];
-    }),
-  );
-  return new Map(entries);
+      const expected = await readFile(expectedFiles[index]);
+      if (current === null || !current.equals(expected))
+        stale.push(path.relative(root, currentFiles[index]));
+    }
+    return stale;
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
 }
 
-function outputFiles() {
+function outputFiles(outputRoot = root) {
   return [
-    path.join(generatedDirectory, "selectedContract.ts"),
-    path.join(descriptionsDirectory, "descriptions.ts"),
-    path.join(actionsDirectory, "requestMappers.ts"),
-    reportPath,
+    path.join(outputRoot, "packages/n8n-nodes-openpost/generated/selectedContract.ts"),
+    path.join(
+      outputRoot,
+      "packages/n8n-nodes-openpost/nodes/OpenPost/v1/descriptions/generated/descriptions.ts",
+    ),
+    path.join(
+      outputRoot,
+      "packages/n8n-nodes-openpost/nodes/OpenPost/v1/actions/generated/requestMappers.ts",
+    ),
+    path.join(outputRoot, "packages/n8n-nodes-openpost/docs/selected-contract-report.md"),
   ];
 }
 
-function formatGeneratedFiles() {
-  const result = spawnSync("bunx", ["oxfmt", "--write", ...outputFiles()], {
+function formatGeneratedFiles(files) {
+  const result = spawnSync("bunx", ["oxfmt", "--write", ...files], {
     cwd: root,
     stdio: "inherit",
   });

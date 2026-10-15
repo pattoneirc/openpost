@@ -113,6 +113,9 @@ type Application struct {
 }
 
 type CreateBuildRequest struct {
+	recordID       string
+	seriesOrigin   *SeriesOrigin
+	sourceSnapshot *seriesSourceSnapshot
 	WorkspaceID    string                          `json:"workspace_id"`
 	CreatedByID    string                          `json:"created_by_id"`
 	IdempotencyKey string                          `json:"-"`
@@ -154,30 +157,37 @@ type BuildRecord struct {
 }
 
 type Build struct {
-	ID             string       `json:"id"`
-	WorkspaceID    string       `json:"workspace_id"`
-	PublicationID  string       `json:"publication_id,omitempty"`
-	State          string       `json:"state"`
-	Phase          string       `json:"phase"`
-	Revision       int          `json:"revision"`
-	Input          BuildInput   `json:"input"`
-	ContextURLs    []string     `json:"context_urls,omitempty"`
-	Assets         []BuildAsset `json:"assets,omitempty"`
-	SocialSetID    string       `json:"social_set_id,omitempty"`
-	VoiceProfileID string       `json:"voice_profile_id,omitempty"`
-	Result         *BuildResult `json:"result,omitempty"`
-	ErrorCode      string       `json:"error_code,omitempty"`
-	ErrorMessage   string       `json:"error_message,omitempty"`
-	CreatedAt      time.Time    `json:"created_at"`
-	UpdatedAt      time.Time    `json:"updated_at"`
+	SeriesOrigin   *SeriesOrigin `json:"series_origin,omitempty"`
+	ID             string        `json:"id"`
+	WorkspaceID    string        `json:"workspace_id"`
+	PublicationID  string        `json:"publication_id,omitempty"`
+	State          string        `json:"state"`
+	Phase          string        `json:"phase"`
+	Revision       int           `json:"revision"`
+	Input          BuildInput    `json:"input"`
+	ContextURLs    []string      `json:"context_urls,omitempty"`
+	Assets         []BuildAsset  `json:"assets,omitempty"`
+	SocialSetID    string        `json:"social_set_id,omitempty"`
+	VoiceProfileID string        `json:"voice_profile_id,omitempty"`
+	Result         *BuildResult  `json:"result,omitempty"`
+	ErrorCode      string        `json:"error_code,omitempty"`
+	ErrorMessage   string        `json:"error_message,omitempty"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+}
+
+type seriesSourceSnapshot struct {
+	Sources []SourceMaterial `json:"sources"`
 }
 
 type persistedBuildRequest struct {
-	Input          BuildInput   `json:"input"`
-	ContextURLs    []string     `json:"context_urls,omitempty"`
-	Assets         []BuildAsset `json:"assets,omitempty"`
-	SocialSetID    string       `json:"social_set_id,omitempty"`
-	VoiceProfileID string       `json:"voice_profile_id,omitempty"`
+	SeriesOrigin   *SeriesOrigin         `json:"series_origin,omitempty"`
+	SourceSnapshot *seriesSourceSnapshot `json:"source_snapshot,omitempty"`
+	Input          BuildInput            `json:"input"`
+	ContextURLs    []string              `json:"context_urls,omitempty"`
+	Assets         []BuildAsset          `json:"assets,omitempty"`
+	SocialSetID    string                `json:"social_set_id,omitempty"`
+	VoiceProfileID string                `json:"voice_profile_id,omitempty"`
 }
 
 type buildAssetRecord struct {
@@ -253,6 +263,7 @@ func (application *Application) Enqueue(ctx context.Context, request CreateBuild
 	}
 	persisted := persistedBuildRequest{
 		Input: request.Input, ContextURLs: request.ContextURLs, Assets: assets,
+		SeriesOrigin: request.seriesOrigin, SourceSnapshot: request.sourceSnapshot,
 		SocialSetID:    strings.TrimSpace(request.SocialSetID),
 		VoiceProfileID: strings.TrimSpace(request.VoiceProfileID),
 	}
@@ -276,6 +287,9 @@ func (application *Application) Enqueue(ctx context.Context, request CreateBuild
 		AuthorityJSON: string(authorityJSON), RequestJSON: requestJSON,
 		VoiceSnapshotJSON: voiceSnapshotJSON, ResultJSON: "{}", UsageJSON: "{}", Model: application.model,
 		CreatedAt: now, UpdatedAt: now,
+	}
+	if request.recordID != "" {
+		record.ID = request.recordID
 	}
 	var existing *BuildRecord
 	err = application.db.RunInTx(ctx, &sql.TxOptions{}, func(txCtx context.Context, tx bun.Tx) error {
@@ -371,7 +385,7 @@ func GetStoredBuild(ctx context.Context, db *bun.DB, userID, buildID string) (Bu
 		return Build{}, fmt.Errorf("load publication build: %w", err)
 	}
 	build, err := decodeBuild(record)
-	if err != nil || build.State != BuildStateFailed || build.Input.OptionCount != 4 {
+	if err != nil || build.State != BuildStateFailed || (build.Input.OptionCount != 4 && build.Input.SeriesCount == 0 && build.SeriesOrigin == nil) {
 		return build, err
 	}
 	// A failed generation attempt is not a terminal build while its durable job
@@ -464,7 +478,17 @@ func (application *Application) HandleJob(ctx context.Context, jobType, payload 
 		}
 		return application.fail(ctx, &record, leaseToken, trace, "generation_failed", "OpenPost could not build this post. You can retry it.", err)
 	}
+	if request.SeriesOrigin != nil && len(result.Options) == 0 {
+		result.Options = []PostOption{{ID: "post", Label: "Post", CanonicalText: result.CanonicalText, Direction: result.Direction, Destinations: result.Destinations, ReviewFlags: result.ReviewFlags}}
+	}
 	result.Sources = resolvedSourceIndex(input)
+	if input.SeriesCount > 0 {
+		request.SourceSnapshot = &seriesSourceSnapshot{Sources: input.Sources}
+	}
+	persistedJSON, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return application.fail(ctx, &record, leaseToken, trace, "result_encoding_failed", "OpenPost could not save the generated post.", err)
@@ -478,6 +502,7 @@ func (application *Application) HandleJob(ctx context.Context, jobType, payload 
 		Set("state = ?", BuildStateReady).
 		Set("phase = ?", BuildPhaseReady).
 		Set("result_json = ?", string(resultJSON)).
+		Set("request_json = ?", string(persistedJSON)).
 		Set("model = ?", model).
 		Set("provider_request_id = ?", providerRequestID).
 		Set("usage_json = ?", usageJSON).
@@ -576,7 +601,7 @@ func (application *Application) Retry(ctx context.Context, userID, buildID strin
 		if current.State == BuildStateQueued {
 			return ensureBuildJob(txCtx, tx, buildID, now)
 		}
-		if current.State != BuildStateFailed {
+		if current.State != BuildStateFailed && current.State != BuildStateCancelled {
 			return ErrBuildNotRetryable
 		}
 		active, countErr := countActiveBuilds(txCtx, tx, current.WorkspaceID, userID)
@@ -589,9 +614,10 @@ func (application *Application) Retry(ctx context.Context, userID, buildID strin
 		result, updateErr := tx.NewUpdate().Model((*BuildRecord)(nil)).
 			Set("state = ?", BuildStateQueued).Set("phase = ?", BuildPhaseQueued).
 			Set("error_code = ''").Set("error_message = ''").Set("updated_at = ?", now).
+			Set("cancelled_at = NULL").
 			Set("lease_token = ''").Set("lease_expires_at = NULL").
 			Set("revision = revision + 1").
-			Where("id = ? AND created_by_id = ? AND state = ?", buildID, userID, BuildStateFailed).
+			Where("id = ? AND created_by_id = ? AND state = ?", buildID, userID, current.State).
 			Exec(txCtx)
 		if updateErr != nil {
 			return updateErr
@@ -702,10 +728,16 @@ func (application *Application) setPhase(ctx context.Context, buildID, leaseToke
 }
 
 func (application *Application) resolveSources(ctx context.Context, workspaceID string, request persistedBuildRequest, input *BuildInput) error {
-	if len(request.ContextURLs) > 0 && application.sourceLoader == nil {
+	if request.SourceSnapshot != nil {
+		input.Sources = append([]SourceMaterial(nil), request.SourceSnapshot.Sources...)
+	}
+	if request.SourceSnapshot == nil && len(request.ContextURLs) > 0 && application.sourceLoader == nil {
 		return &sourceResolutionError{kind: "link", index: 1, cause: errors.New("public source loading is not configured")}
 	}
 	for index, rawURL := range request.ContextURLs {
+		if request.SourceSnapshot != nil {
+			break
+		}
 		document, err := application.sourceLoader.Load(ctx, rawURL)
 		if err != nil {
 			return &sourceResolutionError{kind: "link", index: index + 1, cause: err}
@@ -728,7 +760,9 @@ func (application *Application) resolveSources(ctx context.Context, workspaceID 
 		}
 		return &sourceResolutionError{kind: "asset", index: 1, cause: err}
 	}
-	input.Sources = append(input.Sources, loaded.Sources...)
+	if request.SourceSnapshot == nil {
+		input.Sources = append(input.Sources, loaded.Sources...)
+	}
 	input.Parts = append(input.Parts, loaded.Parts...)
 	input.Images = append(input.Images, loaded.Images...)
 	input.Files = append(input.Files, loaded.Files...)
@@ -1025,7 +1059,8 @@ func decodeBuild(record BuildRecord) (Build, error) {
 		publicationID = *record.PublicationID
 	}
 	return Build{
-		ID: record.ID, WorkspaceID: record.WorkspaceID, PublicationID: publicationID,
+		SeriesOrigin: request.SeriesOrigin,
+		ID:           record.ID, WorkspaceID: record.WorkspaceID, PublicationID: publicationID,
 		State: record.State, Phase: record.Phase, Revision: record.Revision,
 		Input: request.Input, ContextURLs: request.ContextURLs, Assets: request.Assets,
 		SocialSetID: request.SocialSetID, VoiceProfileID: request.VoiceProfileID,

@@ -42,7 +42,7 @@ Scheduled intervals start at activation and admit the latest elapsed slot, witho
 
 Source reads use the shared network guard, validate redirect destinations, limit response sizes, and reject private network targets. Authenticated GitHub reads stay on HTTPS at the original host. Connection secrets are encrypted, omitted from every response and run snapshot, and included in encryption-key rotation. Connections belong to a workspace. Deletion and definition changes share a workspace lock and recheck references before committing.
 
-Limits are enforced in the service: 40 steps, four nested branch levels, 100 workflows per workspace, 1,000 active runs, and a 30-day run lifetime. These are execution bounds, not sellable plan promises. Runs are inspected through `/workflow-runs`; the list returns the latest 50.
+Limits are enforced in the service: 40 steps, four nested branch levels, 100 workflows per workspace, 1,000 active runs, and a 30-day run lifetime. These are execution bounds, not sellable plan promises. Runs are inspected through `/workflow-runs`; the list returns the latest 50. Run cards use `/workflow-run-summaries`, which keeps the stored definition and ordered step statuses while omitting source data and step inputs and outputs. Opening a run loads its complete snapshot. Summary reads never replace full detail cache entries; advancing summaries invalidate the matching detail. Both list forms enforce the same Workspace authorization and optional workflow filter.
 
 ## Custom tools and usage
 

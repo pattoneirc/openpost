@@ -5,8 +5,10 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // builtins.v1.json is the code-owned contract consumed by both the backend and
@@ -58,22 +60,24 @@ func builtInReference(family BuiltInFamily) ThemeReference {
 	return ThemeReference{Kind: ReferenceBuiltIn, ID: family.ID, Version: builtInVersion(family)}
 }
 
-// BuiltIns returns fresh copies so callers cannot mutate the code-owned
-// manifests used by later resolutions.
-func BuiltIns() map[string]BuiltInFamily {
+// Retain validated JSON rather than shared manifests. Decoding only the requested
+// family gives each caller independent nested slices and scheme pointers.
+var builtInCatalog = sync.OnceValue(loadBuiltInCatalog)
+
+func loadBuiltInCatalog() map[string]json.RawMessage {
 	decoder := json.NewDecoder(bytes.NewReader(builtInFixture))
 	decoder.DisallowUnknownFields()
 	var decoded []ThemeManifest
 	if err := decoder.Decode(&decoded); err != nil {
 		panic(fmt.Sprintf("decode built-in theme fixture: %v", err))
 	}
-	if decoder.Decode(&struct{}{}) == nil {
-		panic("decode built-in theme fixture: multiple JSON values")
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		panic("decode built-in theme fixture: expected exactly one JSON array")
 	}
 	if len(decoded) != len(builtInOrder) {
 		panic(fmt.Sprintf("decode built-in theme fixture: got %d themes, want %d", len(decoded), len(builtInOrder)))
 	}
-	result := make(map[string]BuiltInFamily, len(decoded))
+	result := make(map[string]json.RawMessage, len(decoded))
 	for index, candidate := range decoded {
 		normalized, err := NormalizeManifest(candidate)
 		if err != nil {
@@ -86,13 +90,40 @@ func BuiltIns() map[string]BuiltInFamily {
 		if _, exists := result[normalized.ID]; exists {
 			panic(fmt.Sprintf("decode built-in theme fixture: duplicate id %q", normalized.ID))
 		}
-		result[normalized.ID] = normalized
+		encoded, err := json.Marshal(normalized)
+		if err != nil {
+			panic(fmt.Sprintf("encode built-in theme %q: %v", normalized.ID, err))
+		}
+		result[normalized.ID] = encoded
+	}
+	return result
+}
+
+func builtIn(id string) (BuiltInFamily, bool) {
+	encoded, ok := builtInCatalog()[id]
+	if !ok {
+		return BuiltInFamily{}, false
+	}
+	var family BuiltInFamily
+	if err := json.Unmarshal(encoded, &family); err != nil {
+		panic(fmt.Sprintf("decode validated built-in theme %q: %v", id, err))
+	}
+	return family, true
+}
+
+// BuiltIns returns fresh copies so callers cannot mutate the code-owned
+// manifests used by later resolutions.
+func BuiltIns() map[string]BuiltInFamily {
+	result := make(map[string]BuiltInFamily, len(builtInOrder))
+	for _, id := range builtInOrder {
+		family, _ := builtIn(id)
+		result[id] = family
 	}
 	return result
 }
 
 func Workshop(scheme ColorScheme) ThemeSchemeManifest {
-	family := BuiltIns()["workshop"]
+	family, _ := builtIn("workshop")
 	manifest := family.Schemes.For(scheme)
 	if manifest == nil {
 		panic(fmt.Sprintf("Workshop fixture does not support %q", scheme))

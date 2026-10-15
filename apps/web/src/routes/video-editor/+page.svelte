@@ -29,9 +29,8 @@
 	import { permanentlyDeleteProject } from '$lib/video-editor/project/project-trash';
 	import type { Project } from '$lib/video-editor/project/types';
 	import {
-		cloudVideoProjectFamily,
 		CloudVideoProjectRepository,
-		type CloudVideoProject
+		type CloudVideoProjectSummary
 	} from '$lib/video-editor/cloud/project-repository';
 	import { importLocalProjectToCloud } from '$lib/video-editor/cloud/import-local-project';
 	import { saveCloudProjectBundle } from '$lib/video-editor/cloud/export-project-bundle';
@@ -72,8 +71,8 @@
 	let trashLoadGeneration = 0;
 	let storageMode = $state<'cloud' | 'local'>('cloud');
 	let storageModeChosen = $state(false);
-	let cloudProjects = $state<CloudVideoProject<Project>[]>([]);
-	let cloudTrashedProjects = $state<CloudVideoProject<Project>[]>([]);
+	let cloudProjects = $state<CloudVideoProjectSummary[]>([]);
+	let cloudTrashedProjects = $state<CloudVideoProjectSummary[]>([]);
 	let cloudLoading = $state(false);
 	let cloudError = $state('');
 	let cloudCreating = $state(false);
@@ -98,13 +97,13 @@
 		cloudLoading = true;
 		cloudError = '';
 		try {
-			const projects = await repository.list(true);
+			const projects = await repository.listSummaries(true);
 			if (generation !== cloudLoadGeneration) return;
 			cloudProjects = projects.filter(
-				(project) => !project.trashedAt && cloudVideoProjectFamily(project) !== 'quick-cut'
+				(project) => !project.trashedAt && project.schemaFamily !== 'quick-cut'
 			);
 			cloudTrashedProjects = projects.filter(
-				(project) => project.trashedAt && cloudVideoProjectFamily(project) !== 'quick-cut'
+				(project) => project.trashedAt && project.schemaFamily !== 'quick-cut'
 			);
 			cloudLoading = false;
 			void loadCloudOfflineProjectIds(generation, cloudWorkspaceId, cloudProjects);
@@ -119,7 +118,7 @@
 	async function loadCloudOfflineProjectIds(
 		generation: number,
 		workspaceId: string,
-		projects: CloudVideoProject<Project>[]
+		projects: CloudVideoProjectSummary[]
 	): Promise<void> {
 		try {
 			const ids = (
@@ -179,7 +178,7 @@
 		await handleCreateProject(m.video_editor_project_untitled(), settings);
 	}
 
-	async function openCloudProject(project: CloudVideoProject<Project>): Promise<void> {
+	async function openCloudProject(project: Pick<CloudVideoProjectSummary, 'id'>): Promise<void> {
 		await goto(`/video-editor/${project.id}?storage=cloud`);
 	}
 
@@ -198,7 +197,7 @@
 		}
 	}
 
-	async function trashCloudProject(project: CloudVideoProject<Project>): Promise<void> {
+	async function trashCloudProject(project: CloudVideoProjectSummary): Promise<void> {
 		const repository = cloudRepository;
 		if (!repository) return;
 		try {
@@ -211,7 +210,7 @@
 		}
 	}
 
-	async function toggleCloudProjectOffline(project: CloudVideoProject<Project>): Promise<void> {
+	async function toggleCloudProjectOffline(project: CloudVideoProjectSummary): Promise<void> {
 		const repository = cloudRepository;
 		if (!repository || cloudOfflineBusyId) return;
 		cloudOfflineBusyId = project.id;
@@ -230,7 +229,7 @@
 		}
 	}
 
-	async function restoreCloudProject(project: CloudVideoProject<Project>): Promise<void> {
+	async function restoreCloudProject(project: CloudVideoProjectSummary): Promise<void> {
 		const repository = cloudRepository;
 		if (!repository) return;
 		try {

@@ -12,25 +12,6 @@ const excludedPrefixes = [
   "apps/web/static/image-editor-models/",
 ];
 
-export function configuredNavigationTargets(config) {
-  const targets = new Set();
-  const visit = (value) => {
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
-    }
-    if (!value || typeof value !== "object") return;
-    if (typeof value.link === "string") targets.add(value.link);
-    if (Array.isArray(value.items)) visit(value.items);
-  };
-
-  visit(config?.themeConfig?.nav);
-  for (const sidebar of Object.values(config?.themeConfig?.sidebar ?? {})) {
-    visit(sidebar);
-  }
-  return [...targets].sort();
-}
-
 function fumadocsPageRoute(page) {
   if (page === "index") return "/";
   if (page.endsWith("/index")) return `/${page.slice(0, -6)}`;
@@ -168,14 +149,10 @@ export function unreachableDocumentationPages(
   };
 
   queue(
-    pages.has("apps/docs/index.md")
-      ? "apps/docs/index.md"
-      : pages.has("apps/docs/content/docs/index.mdx")
-        ? "apps/docs/content/docs/index.mdx"
-        : undefined,
+    pages.has("apps/docs/content/docs/index.mdx") ? "apps/docs/content/docs/index.mdx" : undefined,
   );
   for (const target of navigationTargets) {
-    queue(resolvePage("apps/docs/.vitepress/config.ts", target));
+    queue(resolvePage("apps/docs/content/docs/index.mdx", target));
   }
 
   const reachable = new Set();
@@ -217,28 +194,16 @@ async function main() {
     }
   }
 
-  const configFile = "apps/docs/.vitepress/config.ts";
-  const hasLegacyConfig = existsSync(path.join(repositoryRoot, configFile));
-  const docsConfig = hasLegacyConfig
-    ? (await import(pathToFileURL(path.join(repositoryRoot, configFile)).href)).default
-    : undefined;
-  const navigationTargets = hasLegacyConfig
-    ? configuredNavigationTargets(docsConfig)
-    : fumadocsNavigationTargets(repositoryRoot);
+  const navigationTargets = fumadocsNavigationTargets(repositoryRoot);
   for (const target of navigationTargets) {
-    const exists = hasLegacyConfig
-      ? localDocumentationTargetExists(repositoryRoot, configFile, target)
-      : fumadocsNavigationTargetExists(repositoryRoot, target);
-    if (!exists) {
-      failures.push(`${configFile} -> ${target}`);
+    if (!fumadocsNavigationTargetExists(repositoryRoot, target)) {
+      failures.push(`apps/docs/content/docs/meta.json -> ${target}`);
     }
   }
 
   const documentationPages = files.filter(
     (file) =>
-      (file.startsWith("apps/docs/content/docs/") ||
-        (file.startsWith("apps/docs/") && !file.startsWith("apps/docs/content/"))) &&
-      !file.startsWith("apps/docs/.generated/") &&
+      file.startsWith("apps/docs/content/docs/") &&
       !/^apps\/docs\/content\/docs\/api-reference\/[^/]+\/[^/]+\.mdx$/u.test(file),
   );
   const unreachablePages = unreachableDocumentationPages(

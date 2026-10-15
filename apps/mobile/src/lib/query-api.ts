@@ -6,6 +6,7 @@ import {
   type AnalyticsQueryAPI,
   type PublicationBuild,
   type VoiceProfileQueryAPI,
+  type PublicationReview,
 } from "@openpost/query-catalog";
 
 import { api, captureApiRequestIdentity, settleApiUnauthorized, type Api } from "./api/client";
@@ -20,9 +21,14 @@ type MobileQueryAPI = Pick<
   | "listSocialSets"
   | "listWorkspaces"
 > &
-  Pick<VideoProjectQueryAPI, "listVideoProjects"> &
+  Pick<VideoProjectQueryAPI, "listVideoProjectSummaries"> &
   AnalyticsQueryAPI &
   VoiceProfileQueryAPI & {
+    listPublicationReviews(
+      workspaceId: string,
+      publicationId: string,
+      signal: AbortSignal,
+    ): Promise<PublicationReview[]>;
     getPublicationBuild(
       workspaceId: string,
       id: string,
@@ -48,6 +54,22 @@ export async function mobileQueryTransportRequest<T>(
 
 export function createMobileQueryAPI(getTransport: () => QueryTransport): MobileQueryAPI {
   return {
+    async listPublicationReviews(workspaceId, publicationId, signal) {
+      const { data } = await queryGET({
+        signal,
+        fallback: "Could not load client reviews",
+        request: (requestSignal) =>
+          getTransport().GET("/publications/{id}/reviews", {
+            signal: requestSignal,
+            params: { path: { id: publicationId } },
+          }),
+      });
+      if (
+        data.some((row) => row.workspace_id !== workspaceId || row.publication_id !== publicationId)
+      )
+        throw new Error("Review workspace does not match this post.");
+      return data;
+    },
     async getPublicationBuild(workspaceId, id, signal) {
       const { data } = await queryGET({
         signal,
@@ -178,17 +200,29 @@ export function createMobileQueryAPI(getTransport: () => QueryTransport): Mobile
       });
       return data;
     },
-    async listVideoProjects(workspaceId, includeTrash, signal) {
+    async listVideoProjectSummaries(workspaceId, includeTrash, signal) {
       const { data } = await queryGET({
         signal,
         fallback: "Could not load Video Projects",
-        request: (requestSignal) =>
-          getTransport().GET("/video-projects", {
+        request: async (requestSignal) => {
+          const transport = getTransport();
+          const options = {
             signal: requestSignal,
-            params: {
-              query: { workspace_id: workspaceId, include_trash: includeTrash },
-            },
-          }),
+            params: { query: { workspace_id: workspaceId, include_trash: includeTrash } },
+          };
+          const summaries = await transport.GET("/video-project-summaries", options);
+          if (summaries.response.status !== 404) return summaries;
+          // Native clients may connect to self-hosted servers predating summary reads.
+          const legacy = await transport.GET("/video-projects", options);
+          return {
+            ...legacy,
+            data: legacy.data?.map(({ document, ...metadata }) => ({
+              ...metadata,
+              schema_family:
+                typeof document?.schemaFamily === "string" ? document.schemaFamily : "",
+            })),
+          };
+        },
       });
       return data;
     },

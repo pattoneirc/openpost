@@ -78,6 +78,12 @@ func ClassifyFailure(err error) Failure {
 	if retryAfter, pending := providerwrite.IsPending(err); pending {
 		return pendingProviderFailure(err, retryAfter)
 	}
+	if errors.Is(err, providerwrite.ErrReconciliationExpired) {
+		failure := classifyAmbiguousWrite(err)
+		failure.Kind = FailureProviderProcessing
+		failure.Code = "provider_reconciliation_expired"
+		return failure
+	}
 	if providerwrite.IsAmbiguous(err) {
 		return classifyAmbiguousWrite(err)
 	}

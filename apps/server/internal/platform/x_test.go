@@ -268,6 +268,7 @@ func TestXMediaProcessingFailureIsTerminal(t *testing.T) {
 			State: "failed",
 			Error: &xMediaProcessingError{Message: "unsupported resolution"},
 		},
+		time.Time{},
 	)
 	if err == nil {
 		t.Fatal("expected failed X processing to return an error")
@@ -278,6 +279,58 @@ func TestXMediaProcessingFailureIsTerminal(t *testing.T) {
 	classification, ok := MediaRetryClassificationForError(err)
 	if !ok || classification != MediaRetryTerminal {
 		t.Fatalf("expected terminal media failure, got %q, %v", classification, ok)
+	}
+}
+
+func TestXResumableProcessingStopsAtPersistedExpiry(t *testing.T) {
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Query().Get("command") != "STATUS" {
+			t.Error("processing resume must only read the existing upload")
+		}
+		polls++
+		w.Header().Set("Content-Type", "application/json")
+		if polls == 1 {
+			_, _ = io.WriteString(w, `{"processing_info":{"state":"pending","check_after_secs":1}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"processing_info":{"state":"succeeded"}}`)
+	}))
+	defer server.Close()
+	adapter := NewXAdapter("", "", "")
+	defer close(adapter.cleanupDone)
+	adapter.uploadBaseURL = server.URL
+	state := ResumableMediaUploadState{ProviderMediaID: "media-1", Status: MediaUploadUploaded, OpaqueState: "processing", TotalBytes: 3, UploadedBytes: 3, SessionExpiresAt: time.Now().UTC().Add(200 * time.Millisecond)}
+	req := UploadMediaRequest{MimeType: "video/mp4", Size: 3, OpenReaderAt: func(int64) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("abc")), nil }}
+	_, err := adapter.UploadMediaResumable(t.Context(), "access|secret", "account", req, state, func(ResumableMediaUploadState) error { return nil })
+	classification, ok := MediaRetryClassificationForError(err)
+	if !ok || classification != MediaRetryTerminal || polls > 1 {
+		t.Fatalf("expired media must stop before another status poll: %v polls=%d", err, polls)
+	}
+}
+
+func TestXResumableProcessingYieldsForDurableReconciliation(t *testing.T) {
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Query().Get("command") != "STATUS" {
+			t.Error("processing resume must not replay the upload or finalize")
+		}
+		polls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"processing_info":{"state":"pending","check_after_secs":1}}`)
+	}))
+	defer server.Close()
+	adapter := NewXAdapter("", "", "")
+	defer close(adapter.cleanupDone)
+	adapter.uploadBaseURL = server.URL
+	state := ResumableMediaUploadState{ProviderMediaID: "media-1", Status: MediaUploadUploaded, OpaqueState: "processing", TotalBytes: 3, UploadedBytes: 3, SessionExpiresAt: time.Now().UTC().Add(time.Hour)}
+	req := UploadMediaRequest{MimeType: "video/mp4", Size: 3, OpenReaderAt: func(int64) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader("abc")), nil }}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	_, err := adapter.UploadMediaResumable(ctx, "access|secret", "account", req, state, func(ResumableMediaUploadState) error { return nil })
+	classification, ok := MediaRetryClassificationForError(err)
+	if !ok || classification != MediaRetryReconcile || ctx.Err() != nil || polls > 4 {
+		t.Fatalf("long processing must yield with the receipt before exhausting the worker: %v polls=%d", err, polls)
 	}
 }
 
@@ -301,7 +354,7 @@ func TestXMediaProcessingWaitsWhenCheckAfterSecsIsOmitted(t *testing.T) {
 	defer cancel()
 	err := adapter.waitForMediaProcessing(ctx, "access-token|access-secret", "media-1", &xMediaProcessingInfo{
 		State: "pending",
-	})
+	}, time.Time{})
 	if err == nil {
 		t.Fatal("expected wait to stop when the context expires")
 	}
@@ -331,7 +384,7 @@ func TestXMediaProcessingCompletesAfterOmittedCheckAfterSecs(t *testing.T) {
 
 	err := adapter.waitForMediaProcessing(t.Context(), "access-token|access-secret", "media-1", &xMediaProcessingInfo{
 		State: "pending",
-	})
+	}, time.Time{})
 	if err != nil {
 		t.Fatalf("waitForMediaProcessing returned error: %v", err)
 	}

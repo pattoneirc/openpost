@@ -89,3 +89,30 @@ export async function savePostVisual(
 	await saveScreenshotExport(design.id, design.revision, media.id);
 	return media;
 }
+
+export async function renderOptionMedia(
+	workspaceId: string,
+	option: import('./client').PublicationPostOption,
+	saved = new Map<string, string>(),
+	signal?: AbortSignal
+) {
+	const rendered: Array<{ account_id: string; media_id: string }> = [];
+	for (const destination of option.destinations) {
+		const recipe = destination.media.document;
+		if (!recipe) continue;
+		const key = JSON.stringify(recipe);
+		let id = saved.get(key);
+		if (!id) {
+			const visual = await renderPostVisual(workspaceId, recipe, signal);
+			try {
+				id = (await savePostVisual(workspaceId, visual, destination.media.alt_text ?? '', signal))
+					.id;
+			} finally {
+				releasePostVisual(visual);
+			}
+			saved.set(key, id);
+		}
+		rendered.push({ account_id: destination.account_id, media_id: id });
+	}
+	return rendered;
+}
